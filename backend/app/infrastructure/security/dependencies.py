@@ -68,7 +68,7 @@ async def get_current_user(
 
         return AuthenticatedUser(
             user_id=str(user_db.id),
-            emial=email,
+            email=email,
             is_active=user_db.is_active,
             role=role,
             raw_payload=payload
