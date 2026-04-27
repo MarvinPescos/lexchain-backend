@@ -24,6 +24,8 @@ class UserScopeRepository(BaseRepository[ModelType]):
             except ValueError:
                 # TODO check later if slug still needed or just straight up encrypt url
                 conditions.append(self.model.slug == identifier)
+                
+        return conditions
 
     async def get_one(
         self,
