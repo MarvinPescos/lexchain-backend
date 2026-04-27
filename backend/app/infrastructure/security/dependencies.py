@@ -77,7 +77,7 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(e),
-            header={"WWW-Authenticate": "Bearer"}
+            headers={"WWW-Authenticate": "Bearer"}
         )
 
 def require_auth(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
