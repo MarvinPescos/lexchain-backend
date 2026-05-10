@@ -32,6 +32,24 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str = Field(..., description="Supabase role key for admin operations")
     # SUPABASE_JWT_SECRET: str = Field(..., description="Supabase JWT secret for token verification") #Not been used I think
 
+    # LLM
+    GROQ_API_KEY: str = Field(..., description="Groq api key")
+    USE_REAL_LLM: bool = Field(default=True, description="Groq api key")
+
+    # Embedder
+    USE_REAL_EMBEDDER: bool = Field(default=False, description="Basta Embedder")
+    SBERT_MODEL: str = "all-MiniLM-L6-v2"
+
+    # OCR
+    USE_REAL_OCR: bool = Field(default=False, description="Use real OCR providers")
+    OCR_ENGINE: str = Field(default="pypdf", description="pypdf | tesseract")
+
+    WEB_RPC_URL: str = Field(...,  description="")
+    CONTRACT_ADDRESS: str = Field(...,  description="")
+    CONTRACT_OWNER_PRIVATE_KEY: str = Field(...,  description="")
+
+
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
