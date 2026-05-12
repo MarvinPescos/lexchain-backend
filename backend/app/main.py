@@ -4,9 +4,10 @@ from fastapi.responses import JSONResponse
 from app.features.auth import router as auth_router
 from app.features.documents import router as document_router
 from app.features.retrieval import router as retrieval_router
-
+from app.features.blockchain import router as blockchain_router
 
 from app.shared.errors.exceptions import BaseAppException
+
 
 app = FastAPI()
 
@@ -21,4 +22,6 @@ async def app_exception_handler(request: Request, exc: BaseAppException):
 app.include_router(auth_router)
 app.include_router(document_router)
 app.include_router(retrieval_router)
+app.include_router(blockchain_router)
+
 
