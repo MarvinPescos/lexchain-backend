@@ -1,4 +1,4 @@
 from .router import router
-from .models import Document
+from .models import Document, DocumentParty
 
-__all__ = ["router", "Document"]
+__all__ = ["router", "Document", "DocumentParty"]

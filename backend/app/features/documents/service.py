@@ -9,22 +9,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.errors.exceptions import BadRequestError, NotFoundError
 from app.infrastructure.observability.logging_setup import log
+from app.infrastructure.clients.supabase_storage import get_storage_client
 
+from app.features.insights import DocumentInsightRepository
 from app.infrastructure.queue import DocumentQueue
 from .repository import DocumentRepository
-from .schemas import DocumentUploadAcceptedResponse, DocumentUploadResponse
+from .schemas import (
+    DocumentPartyListResponse,
+    DocumentPartyResponse, 
+    DocumentUploadAcceptedResponse, 
+    DocumentResponse, 
+    RemovePartyResponse,
+    VersionHistoryItem,
+    VersionHistoryResponse
+    )
 from .models import Document
 
-ALLOWED_CONTENT_TYPES = {
-    "application/pdf",
-    "text/plain",
-    "application/msword",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-}
-
-MAX_FILE_SIZE = 15 * 1024 * 1024  # 10 MB
-
-UPLOAD_DIR = Path("uploads")
+MAX_FILE_SIZE = 60 * 1024 * 1024  # 10 MB
 
 STATUS_UPLOADED = "UPLOADED"
 STATUS_QUEUED = "QUEUED"
@@ -37,27 +38,44 @@ class DocumentService:
         self.session = session
         self.queue = queue
         self.repo = DocumentRepository(session)
+        self.insight_repo = DocumentInsightRepository(session)
 
     # === Read ===
 
     async def get_all_documents(self, user_id: uuid.UUID, limit: int = 100, offset: int = 0) -> List[Document]:
         """Return all documents scoped to the user."""
         log.info("document.fetch.all", user_id=str(user_id))
-        return await self.repo.get_many(user_id, limit, offset)
+        return await self.repo.get_document_for_user(user_id, limit, offset)
 
-    async def get_document(self, user_id: uuid.UUID, document_id: uuid.UUID) -> Document:
-        """Return a single document, raising 404 if not found."""
+    async def get_document(self, user_id: uuid.UUID, document_id: uuid.UUID) -> DocumentResponse:
+        """Return a single document with its analysis insight, raising 404 if not found."""
         document = await self.repo.get_one(user_id, document_id)
 
         if not document:
-            raise NotFoundError("Document not found")
+            is_party = await self.repo.is_party(document_id, user_id)
+            if not is_party:
+                raise NotFoundError("Document not found")
+
+        insight = await self.insight_repo.get_by_document_id(document_id)
 
         log.info("document.get", user_id=str(user_id), document_id=str(document_id))
-        return document
+
+        return DocumentResponse(
+            document_id=document.id,
+            file_name=document.file_name,
+            content_type=document.content_type,
+            status=document.status,
+            summary=insight.summary if insight else None,
+            labels=(insight.labels or {}).get("items", []) if insight else [],
+            entities=(insight.entities or {}).get("items", []) if insight else [],
+            risk_flags=(insight.risk_flags or {}).get("items", []) if insight else [],
+            created_at=document.created_at,
+            updated_at=document.updated_at
+        )
 
     # === Write ===
 
-    async def upload_document(self, user_id: uuid.UUID, file: UploadFile) -> DocumentUploadAcceptedResponse:
+    async def upload_document(self, user_id: uuid.UUID, file: UploadFile, file_name: str) -> DocumentUploadAcceptedResponse:
         """Validate, store locally, persist metadata, and enqueue processing."""
 
         # 1. Read file bytes 
@@ -67,15 +85,22 @@ class DocumentService:
         # 3. Hash content for integrity / future deduplication
         document_hash = hashlib.sha256(content).hexdigest()
 
-        # 4. Write to local disk (non-blocking)
-        storage_path = self._build_storage_path(user_id, file.filename)
-        await self._write_file(storage_path, content)
+        # 4. Write to Supabase
+        storage_path = await self._build_storage_path(
+            file_bytes=content,
+            user_id=user_id, 
+            folder="Docs",
+            file_name=file_name,
+            content_type=file.content_type
+        )
+
+        # await self._write_file(storage_path, content)
 
         # 5. Persist metadata to the database
         try:
             document = await self.repo.create(
                 user_id=user_id,
-                file_name=file.filename,
+                file_name=file_name if file_name else file.file_name,
                 content_type=file.content_type,
                 storage_url=str(storage_path),
                 document_hash=document_hash,
@@ -85,7 +110,11 @@ class DocumentService:
             await self.session.commit()
         except Exception:
             await self.session.rollback()
-            await self._delete_file_if_exists(storage_path)
+            await get_storage_client().delete_docs(
+                folder="Docs",
+                file_name=document.file_name,
+                user_id=user_id
+            )
             raise
 
         # 6. Queue async processing and transition status.
@@ -114,7 +143,6 @@ class DocumentService:
                 message="Document uploaded but queueing failed. Retry will be required.",
             )
             
-
         log.info(
             "document.upload",
             user_id=str(user_id),
@@ -129,17 +157,228 @@ class DocumentService:
             message="Document accepted for processing",
         )
 
+    
+    async def update_document(
+        self, 
+        user_id: uuid.UUID, 
+        document_id: uuid.UUID, 
+        file: UploadFile, 
+        file_name: str
+    ) -> DocumentUploadAcceptedResponse:
+        """
+            Create a new version of an existing document.
+
+            - Superseded the old version (is_latest = False
+            - New version link back via previous_document_id
+            - Goes through the full upload pipeline
+        """
+        old_doc = await self.repo.get_one(user_id, document_id)
+        if not old_doc:
+            raise NotFoundError("Document not Found")
+        
+        content = await file.read()
+        self._validate_file(file, content)
+        document_hash = hashlib.sha256(content).hexdigest()
+
+        storage_path = await self._build_storage_path(
+            file_bytes=content,
+            user_id=user_id, 
+            folder="Docs",
+            file_name=file_name,
+            content_type=file.content_type
+        )
+
+        try:
+            new_doc = await self.repo.create(
+                user_id=user_id,
+                file_name=file_name if file_name else file.filename,
+                content_type=file.content_type,
+                storage_url=str(storage_path),
+                document_hash=document_hash,
+                status=STATUS_UPLOADED,
+                previous_document_id=old_doc.id,
+                is_latest=True,
+            )
+            await self.repo.supersede(old_doc)
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            await get_storage_client().delete_docs(
+                folder="Docs",
+                file_name=new_doc.file_name,
+                user_id=user_id
+            )
+            raise
+        try:
+            await self.queue.enqueue_process_document(
+                document_id=new_doc.id,
+                user_id=user_id,
+                storage_url=new_doc.storage_url,
+                content_type=new_doc.content_type,
+                document_hash=new_doc.document_hash,
+            )
+            new_doc = await self.repo.update(new_doc, status=STATUS_QUEUED)
+            await self.session.commit()
+        except Exception as enqueue_error:
+            await self.session.rollback()
+            log.error(
+                "document.update.enqueue.failed",
+                document_id=str(new_doc.id),
+                user_id=str(user_id),
+                error=str(enqueue_error),
+            )
+            return DocumentUploadAcceptedResponse(
+                document_id=new_doc.id,
+                status=STATUS_UPLOADED,
+                message="Document update uploaded but queueing failed.",
+            )
+        log.info(
+            "document.update",
+            user_id=str(user_id),
+            old_document_id=str(old_doc.id),
+            new_document_id=str(new_doc.id),
+            file_name=new_doc.file_name,
+        )
+        return DocumentUploadAcceptedResponse(
+            document_id=new_doc.id,
+            status=new_doc.status,
+            message="Document update accepted for processing",
+        ) 
+
+    async def get_version_history(
+        self, user_id: uuid.UUID, document_id: uuid.UUID
+    ) -> VersionHistoryResponse:
+        """Walk the linked list to return all versions of a document."""
+        doc = await self.repo.get_one(user_id, document_id)
+        is_party = await self.repo.is_party(document_id, user_id)
+        if not doc and not is_party:
+            raise NotFoundError("Document not found")
+        chain = await self.repo.get_version_history(document_id)
+        versions = [
+            VersionHistoryItem(
+                document_id=v.id,
+                file_name=v.file_name,
+                document_hash=v.document_hash,
+                status=v.status,
+                tx_hash=v.on_chain_record.tx_hash if v.on_chain_record else None,
+                is_latest=v.is_latest,
+                created_at=v.created_at,
+            )
+            for v in chain
+        ]
+        return VersionHistoryResponse(
+            current_document_id=document_id,
+            versions=versions,
+            total_version=len(versions),
+        )
+
+    async def update_file_name(
+        self, 
+        user_id: uuid.UUID, 
+        document_id: uuid.UUID, 
+        new_file_name: str
+    ) -> Document:
+        """Update a document's display name."""
+        doc = await self.repo.get_one(user_id, document_id)
+        if not doc:
+            raise NotFoundError("Document was not found")
+
+        updated = await self.repo.update(doc, file_name=new_file_name)
+
+        log.info(
+            "document.update.file.name",
+            document_id=str(document_id),
+            user_id=str(user_id),
+            file_name=new_file_name,
+        )
+        return updated
+
+
+    async def add_party(
+        self,
+        owner_id: uuid.UUID,
+        document_id: uuid.UUID,
+        email: str,
+        role: str = "viewer"
+    ):
+        doc = await self.repo.get_one(owner_id, document_id)
+        if not doc:
+            raise NotFoundError("Document not found")
+
+        from app.features.users.repository import UserRepository
+        user_repo = UserRepository(self.session)
+        user = await user_repo.get_by_email(email)
+        if not user:
+            raise NotFoundError("User with that email not found")
+        
+        party = await self.repo.add_party(document_id, user.id, role)
+        await self.session.commit()
+
+        log.info(
+            "document.party.add",
+            document_id=str(document_id),
+            owner_id=str(owner_id),
+            email=email,
+            role=role
+        )
+
+        return party
+
+    
+    async def get_parties(
+        self,
+        user_id: uuid.UUID,
+        document_id: uuid.UUID
+    ):
+        doc = await self.repo.get_one(user_id, document_id)
+        is_party = await self.repo.is_party(document_id, user_id)
+        if not doc and not is_party:
+            raise NotFoundError("Document not found")
+        
+        parties = await self.repo.get_parties(document_id)
+        return DocumentPartyListResponse(
+            document_id=document_id,
+            parties = [
+                DocumentPartyResponse(
+                    id=p.id,
+                    user_id=p.user_id,
+                    role=p.role,
+                    created_at=p.created_at
+                )
+                for p in parties
+            ],
+        )
+        
+    async def remove_party(
+        self,
+        user_id: uuid.UUID,
+        document_id: uuid.UUID,
+        party_user_id: uuid.UUID
+    ):
+        doc = await self.repo.get_one(user_id, document_id)
+        if not doc:
+            raise NotFoundError("Document not found")
+
+        removed = await self.repo.remove_party(document_id, party_user_id)
+        if not removed:
+            raise NotFoundError("Party not found on this document")
+        await self.session.commit()
+        log.info(
+            "document.party.remove",
+            document_id=str(document_id),
+            owner_id=str(user_id),
+            party_id=str(party_user_id),
+        )
+
+        return RemovePartyResponse(
+            document_id=document_id,
+            user_id=party_user_id,
+            message="Party removed",
+    )
+
+
 
     # ========== helpers =============
-
-    async def _delete_file_if_exists(self, storage_path: Path) -> None:
-        """Best-effort local cleanup used for DB-write failures."""
-
-        def _delete() -> None:
-            if storage_path.exists():
-                storage_path.unlink()
-
-        await asyncio.to_thread(_delete)
 
     def _validate_file(self, file: UploadFile, content):
         """Helper for file validation"""
@@ -150,10 +389,10 @@ class DocumentService:
             raise BadRequestError("File is empty", 400)
 
         # 2.2 not supported types
-        if file.content_type not in ALLOWED_CONTENT_TYPES:
+        if file.content_type != "application/pdf":
             raise BadRequestError(
                 f"Unsupported file type '{file.content_type}'. "
-                f"Allowed: {', '.join(sorted(ALLOWED_CONTENT_TYPES))}",
+                f"Allowed: pdf",
                 400
             )
 
@@ -164,14 +403,36 @@ class DocumentService:
                 400
             )
 
-    def _build_storage_path(self, user_id: uuid.UUID, filename: str | None) -> Path:
-        user_upload_dir = UPLOAD_DIR / str(user_id)
-        file_ext = Path(filename or "").suffix
-        stored_name = f"{uuid.uuid4()}{file_ext}"
-        return user_upload_dir / stored_name
+    def _build_storage_path(
+            self, 
+            file_bytes: bytes,
+            user_id: uuid.UUID, 
+            folder: str, 
+            file_name: str | None,
+            content_type: str = "application/pdf"
+    ) -> Path:
+        try:
+            document_url = get_storage_client().upload_docs(
+                file_bytes=file_bytes,
+                user_id=user_id, 
+                folder=folder,
+                file_name=f"{file_name}.",
+                content_type=content_type,
+            )
 
-    async def _write_file(self, storage_path: Path, content: bytes) -> None:
-        def _write() -> None:
-            storage_path.parent.mkdir(parents=True, exist_ok=True)
-            storage_path.write_bytes(content)
-        await asyncio.to_thread(_write)
+            return document_url
+
+        except Exception as e:
+            log.error(
+                "gallery.storage.upload_failed",
+                user_id=str(user_id),
+                file_name=file_name,
+                error=str(e)
+            )
+
+
+    # async def _write_file(self, storage_path: Path, content: bytes) -> None:
+    #     def _write() -> None:
+    #         storage_path.parent.mkdir(parents=True, exist_ok=True)
+    #         storage_path.write_bytes(content)
+    #     await asyncio.to_thread(_write)

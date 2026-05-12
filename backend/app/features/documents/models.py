@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import String, ForeignKey
+from sqlalchemy import Boolean, String, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from typing import TYPE_CHECKING
 import uuid
@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from app.features.extraction.models import DocumentExtraction
     from app.features.insights.models import DocumentInsight
     from app.features.chunks import DocumentChunk
+    from app.features.blockchain.models import OnChainRecord
 
 
 class Document(Base, TimestampMixin):
@@ -31,7 +32,14 @@ class Document(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     document_hash: Mapped[str] = mapped_column(String(500), nullable=False)
     content_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    previous_document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    is_latest: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # relationship
     user: Mapped["User"] = relationship(back_populates="documents")
     extractions: Mapped[list["DocumentExtraction"]] = relationship(
         back_populates="document",
@@ -45,3 +53,61 @@ class Document(Base, TimestampMixin):
         back_populates="document",
         cascade="all, delete-orphan",
     )
+    # Inside class Document, add:
+    on_chain_record: Mapped["OnChainRecord | None"] = relationship(
+        back_populates="document",
+        uselist=False,
+    )
+    parties: Mapped[list["DocumentParty"]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan"
+    )
+    previous_document: Mapped["Document | None"] = relationship(
+        "Document",
+        remote_side=[id],
+        foreign_keys=[previous_document_id],
+        back_populates="next_document",
+        uselist=False,
+    )
+    next_document: Mapped["Document | None"] = relationship(
+        "Document",
+        remote_side=[previous_document_id],
+        foreign_keys=[previous_document_id],
+        back_populates="previous_document",
+        uselist=False,
+    )
+
+# ========
+
+class DocumentParty(Base, TimestampMixin):
+    __tablename__ = "document_parties"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(50), default="viewer")
+
+
+    # relasyon haha
+    document: Mapped["Document"] = relationship(
+        back_populates="parties"
+    )
+    user: Mapped["User"] = relationship(back_populates="parties")
+
+    __table_args__ = (
+        UniqueConstraint("document_id", "user_id", name="uq_document_party"),
+    )
+
