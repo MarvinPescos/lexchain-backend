@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.infrastructure.database import UserScopeRepository
 from app.infrastructure.observability.logging_setup import log
 from app.features.users.models import User
+from app.shared.errors.exceptions import NotFoundError
 
 # TODO Switch to based or make a custom repo for it
 class UserRepository(UserScopeRepository[User]):
@@ -22,6 +23,15 @@ class UserRepository(UserScopeRepository[User]):
             select(User).
             where(User.supabase_user_id == supabase_user_id)
         )
+        return result.scalar_one_or_none()
+
+    async def get_by_email(self, email: str) -> User:
+        result = await self.session.execute(
+            select(User).
+            where(User.email == email)
+        )
+        if not result:
+            raise NotFoundError("No user in this email")
         return result.scalar_one_or_none()
 
     async def sync_from_supabase(

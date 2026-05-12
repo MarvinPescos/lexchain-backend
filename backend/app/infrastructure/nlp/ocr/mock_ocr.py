@@ -2,7 +2,7 @@ import asyncio
 from .base import ExtractionResult
 
 class MockOCRProvider:
-    async def extract(self, file_path: str) -> ExtractionResult:
+    async def extract(self, file_data: bytes) -> ExtractionResult:
         await asyncio.sleep(2)  # simulate work
 
         text = """
@@ -17,7 +17,7 @@ class MockOCRProvider:
 
 
         return ExtractionResult(
-            text=f"{text} {file_path}",
+            text=text,
             page_count=1,
             meta={"engine": "mock"},
         )

@@ -7,7 +7,8 @@ import uuid
 from app.infrastructure.database import Base, TimestampMixin
 
 if (TYPE_CHECKING):
-    from app.features.documents.models import Document
+    from app.features.documents.models import Document, DocumentParty
+
 
 class User(Base, TimestampMixin):
     __tablename__ = "users"
@@ -31,6 +32,11 @@ class User(Base, TimestampMixin):
         back_populates="user",
         cascade="all, delete-orphan"
     )
+    parties: Mapped[list["DocumentParty"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+
  
     def __repr__(self):
         return f"<User {self.email}>"

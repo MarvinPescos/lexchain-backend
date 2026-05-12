@@ -1,9 +1,10 @@
 import uuid
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.observability.logging_setup import log
 from app.infrastructure.database import AsyncSessionLocal
-from app.infrastructure.nlp.ocr.base import OCRProvider
+from app.infrastructure.nlp.ocr import build_ocr
 from app.infrastructure.nlp.analysis.base import AnalysisProvider
 from app.infrastructure.nlp.chunking.base import Chunker
 from app.infrastructure.nlp.embeddings.base import Embedder
@@ -19,11 +20,10 @@ STATUS_FAILED = "FAILED"
 
 async def process_document_job(
     document_id: uuid.UUID,
-    ocr: OCRProvider,
+    storage_url: str,
     analyzer: AnalysisProvider,
     chunker: Chunker,
     embedder: Embedder,
-
 ) -> None:
     async with AsyncSessionLocal() as session:
         doc_repo = DocumentRepository(session)
@@ -39,13 +39,24 @@ async def process_document_job(
         stable_document_id_str = str(stable_document_id)
 
         try:
+            # Download the file from Supabase
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(storage_url)
+                resp.raise_for_status()
+                file_data = resp.content
+
             await _mark_processing(session, doc_repo, doc)
+
+            # Build OCR provider from downloaded bytes
+            ocr = build_ocr(file_data)
+
         #1
             ocr_result, extraction = await _run_ocr_and_store_extraction(
                 session,
                 ocr,
                 extraction_repo,
                 doc,
+                file_data,
             )
         #2
             analysis_result = await _run_analysis_and_store_insight(
@@ -105,11 +116,12 @@ async def _mark_processing(
 
 async def _run_ocr_and_store_extraction(
     session: AsyncSession,
-    ocr: OCRProvider,
+    ocr,
     extraction_repo: DocumentExtractionRepository,
     doc,
+    file_data: bytes,
 ):
-    ocr_result = await ocr.extract(doc.storage_url)
+    ocr_result = await ocr.extract(file_data)
     extraction = await extraction_repo.create(
         document_id=doc.id,
         engine=(ocr_result.meta or {}).get("engine", "unknown"),

@@ -4,7 +4,6 @@
 
 
 from app.infrastructure.observability.logging_setup import log
-from app.infrastructure.nlp.ocr import build_ocr
 from app.infrastructure.nlp.analysis import LLMAnalysisProvider
 from app.infrastructure.nlp.chunking import SpacySentenceChunker
 from app.infrastructure.nlp.embeddings import build_embedder
@@ -33,7 +32,7 @@ class LoggingDocumentQueue:
         asyncio.create_task(
             process_document_job(
                 document_id=document_id,
-                ocr=build_ocr(storage_url),
+                storage_url=storage_url,
                 analyzer=LLMAnalysisProvider(),
                 chunker=SpacySentenceChunker(800, 100),
                 embedder=build_embedder(),

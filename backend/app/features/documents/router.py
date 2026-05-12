@@ -6,7 +6,13 @@ from app.infrastructure.security.dependencies import AuthenticatedUser, require_
 
 from .service import DocumentService
 from .dependencies import get_document_service
-from .schemas import DocumentUploadAcceptedResponse, DocumentUploadResponse
+from .schemas import (
+    DocumentUploadAcceptedResponse, DocumentResponse, DocumentUploadResponse,
+    RenameDocumentRequest,
+    AddPartyRequest, DocumentPartyResponse,           
+    DocumentPartyListResponse, RemovePartyResponse,   
+    VersionHistoryResponse
+)
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -38,7 +44,7 @@ async def get_all_user_documents(
 
 @router.get(
     "/{document_id}",
-    response_model=DocumentUploadResponse,
+    response_model=DocumentResponse,
     status_code=status.HTTP_200_OK,
     summary="Get a document",
     description="Return a single document belonging to the authenticated user.",
@@ -53,7 +59,7 @@ async def get_user_document(
     document_id: uuid.UUID,
     current_user: AuthenticatedUser = Depends(require_auth),
     service: DocumentService = Depends(get_document_service),
-) -> DocumentUploadResponse:
+) -> DocumentResponse:
     return await service.get_document(current_user.user_id, document_id)
 
 
@@ -77,8 +83,161 @@ async def get_user_document(
 )
 async def upload_document(
     request: Request,
+    file_name: str,
     file: UploadFile = File(...),
     current_user: AuthenticatedUser = Depends(require_auth),
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentUploadAcceptedResponse:
-    return await service.upload_document(current_user.user_id, file)
+    return await service.upload_document(current_user.user_id, file, file_name)
+
+
+@router.patch(
+    "/{document_id}/",
+    response_model=DocumentUploadResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Rename a document",
+    description="Update the display name of a document.",
+    responses={
+        200: {"description": "Document renamed"},
+        401: {"description": "Not authenticated"},
+        404: {"description": "Document not found"},
+    }
+)
+async def rename_document(
+    document_id: uuid.UUID,
+    body: RenameDocumentRequest,
+    current_user: AuthenticatedUser = Depends(require_auth),
+    service: DocumentService = Depends(get_document_service),
+) -> DocumentUploadResponse:
+    return await service.update_file_name(
+        current_user.user_id, document_id, body.file_name
+    )
+
+# Versioning
+
+@router.post(
+    "/{document_id}/update",
+    response_model=DocumentUploadAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Update a document (new version)",
+    description="""
+    Upload a new file as the next version of an existing document.
+    - Supersedes the current version (marked as not latest).
+    - The new file goes through the full processing pipeline (OCR → LLM → chunks).
+    - Previous versions remain accessible via the version history endpoint.
+    """,
+    responses={
+        202: {"description": "Update accepted for processing"},
+        400: {"description": "Empty file, unsupported type, or file too large"},
+        401: {"description": "Not authenticated"},
+        404: {"description": "Document not found"},
+    }
+)
+async def update_document(
+    request: Request,
+    document_id: uuid.UUID,
+    file_name: str,
+    file: UploadFile = File(...),
+    current_user: AuthenticatedUser = Depends(require_auth),
+    service: DocumentService = Depends(get_document_service),
+) -> DocumentUploadAcceptedResponse:
+    return await service.update_document(
+        uuid.UUID(current_user.user_id), document_id, file, file_name
+    )
+@router.get(
+    "/{document_id}/versions",
+    response_model=VersionHistoryResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get version history",
+    description="Return the full version chain for a document (newest → oldest).",
+    responses={
+        200: {"description": "Version history"},
+        401: {"description": "Not authenticated"},
+        404: {"description": "Document not found"},
+    }
+)
+async def get_version_history(
+    request: Request,
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_auth),
+    service: DocumentService = Depends(get_document_service),
+) -> VersionHistoryResponse:
+    return await service.get_version_history(
+        uuid.UUID(current_user.user_id), document_id
+    )
+
+
+# Parties
+
+@router.get(
+    "/{document_id}/parties",
+    response_model=DocumentPartyListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List document parties",
+    description="Return all whitelisted parties for a document.",
+    responses={
+        200: {"description": "List of parties"},
+        401: {"description": "Not authenticated"},
+        404: {"description": "Document not found"},
+    }
+)
+async def get_document_parties(
+    request: Request,
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_auth),
+    service: DocumentService = Depends(get_document_service),
+) -> DocumentPartyListResponse:
+    return await service.get_parties(
+        uuid.UUID(current_user.user_id), document_id
+    )
+@router.post(
+    "/{document_id}/parties",
+    response_model=DocumentPartyResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a party to a document",
+    description="Whitelist a user to access this document.",
+    responses={
+        201: {"description": "Party added"},
+        400: {"description": "Already a party"},
+        401: {"description": "Not authenticated"},
+        404: {"description": "Document not found"},
+    }
+)
+async def add_document_party(
+    request: Request,
+    document_id: uuid.UUID,
+    body: AddPartyRequest,
+    current_user: AuthenticatedUser = Depends(require_auth),
+    service: DocumentService = Depends(get_document_service),
+) -> DocumentPartyResponse:
+    party = await service.add_party(
+        uuid.UUID(current_user.user_id), document_id, body.email, body.role
+    )
+    return DocumentPartyResponse(
+        id=party.id,
+        user_id=party.user_id,
+        role=party.role,
+        created_at=party.created_at,
+    )
+@router.delete(
+    "/{document_id}/parties/{party_user_id}",
+    response_model=RemovePartyResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Remove a party from a document",
+    description="Revoke a user's access to this document.",
+    responses={
+        200: {"description": "Party removed"},
+        401: {"description": "Not authenticated"},
+        404: {"description": "Document or party not found"},
+    }
+)
+async def remove_document_party(
+    request: Request,
+    document_id: uuid.UUID,
+    party_user_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_auth),
+    service: DocumentService = Depends(get_document_service),
+) -> RemovePartyResponse:
+    return await service.remove_party(
+        uuid.UUID(current_user.user_id), document_id, party_user_id
+    )
