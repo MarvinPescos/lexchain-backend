@@ -1,0 +1,55 @@
+# Data Validation
+pydantic
+pydantic-settings
+email-validator
+python-multipart
+
+#Test
+pytest-asyncio>=0.24.0
+
+# Web Framework
+fastapi
+uvicorn
+
+# Database
+sqlalchemy[asyncio]
+asyncpg           
+alembic
+
+# Rate Limiting & Caching
+slowapi
+redis
+fastapi-cache2[redis]
+
+# Observability (Logging)
+structlog
+
+# Supabase
+supabase==2.11.0
+pyjwt[crypto]
+cryptography
+
+# Slugging
+python-slugify
+
+# Image Processing
+Pillow
+
+# json validation
+jsonschema
+
+# llm
+groq
+
+# nlp
+spacy>=3.7,<4.0
+sentence-transformers
+pgvector
+
+# OCR
+pypdf               # born-digital PDF text extraction
+pytesseract         # scanned PDFs / images (requires tesseract binary)
+pdf2image           # rasterize PDFs for tesseract (requires poppler)
+
+# web3 provider
+web3
