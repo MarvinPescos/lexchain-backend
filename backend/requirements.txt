@@ -13,7 +13,7 @@ uvicorn
 
 # Database
 sqlalchemy[asyncio]
-asyncpg           
+asyncpg
 alembic
 
 # Rate Limiting & Caching
@@ -40,6 +40,7 @@ jsonschema
 
 # llm
 groq
+openai
 
 # nlp
 spacy>=3.7,<4.0
@@ -53,3 +54,8 @@ pdf2image           # rasterize PDFs for tesseract (requires poppler)
 
 # web3 provider
 web3
+
+# email provider
+resend
+
+celery[redis]
