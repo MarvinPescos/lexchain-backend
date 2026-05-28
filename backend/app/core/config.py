@@ -60,6 +60,8 @@ class Settings(BaseSettings):
         default="noreply@lexchain.app", description="Sender address"
     )
 
+    CELERY_BROKER_URL: str = Field(..., description="Broker URL")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
