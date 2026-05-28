@@ -15,6 +15,7 @@ services:
     environment:
       DB_URL: postgresql+asyncpg://${DB_USER}:${DB_PASS}@db:${DB_PORT}/${DB_NAME}
       REDIS_URL: redis://redis:6379
+      CELERY_BROKER_URL: redis://redis:6379/0
     depends_on:
       db:
         condition: service_healthy
@@ -35,6 +36,38 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    networks:
+      - app
+
+  celery-notifications:
+    build: .
+    container_name: lexchain-celery-notifications
+    command: celery -A app.celery_app worker -Q notifications -c 4 --loglevel=info
+    volumes:
+      - .:/app
+    env_file: .env
+    environment:
+      DB_URL: postgresql+asyncpg://${DB_USER}:${DB_PASS}@db:${DB_PORT}/${DB_NAME}
+      CELERY_BROKER_URL: redis://redis:6379/0
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks:
+      - app
+
+  celery-documents:
+    build: .
+    container_name: lexchain-celery-documents
+    command: celery -A app.celery_app worker -Q documents -c 1 --loglevel=info
+    volumes:
+      - .:/app
+    env_file: .env
+    environment:
+      DB_URL: postgresql+asyncpg://${DB_USER}:${DB_PASS}@db:${DB_PORT}/${DB_NAME}
+      CELERY_BROKER_URL: redis://redis:6379/0
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
     networks:
       - app
 
