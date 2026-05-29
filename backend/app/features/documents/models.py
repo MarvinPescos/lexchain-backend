@@ -30,7 +30,9 @@ class Document(Base, TimestampMixin):
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     storage_url: Mapped[str] = mapped_column(String(500), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
+    on_chain: Mapped[bool] = mapped_column(Boolean, default=False)
     document_hash: Mapped[str] = mapped_column(String(500), nullable=False)
+    content_hash: Mapped[str | None] = mapped_column(String(500), nullable=True)
     content_type: Mapped[str] = mapped_column(String(50), nullable=False)
     previous_document_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -39,7 +41,7 @@ class Document(Base, TimestampMixin):
     )
     is_latest: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    # relationship
+    # === relationship ===
     user: Mapped["User"] = relationship(back_populates="documents")
     extractions: Mapped[list["DocumentExtraction"]] = relationship(
         back_populates="document",
@@ -110,4 +112,3 @@ class DocumentParty(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("document_id", "user_id", name="uq_document_party"),
     )
-
