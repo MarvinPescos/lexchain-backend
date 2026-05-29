@@ -1,16 +1,14 @@
 """
-    This is for DEV only. No-op first
+This is for DEV only. No-op first
 """
 
+import asyncio
+import uuid
 
-from app.infrastructure.observability.logging_setup import log
 from app.infrastructure.nlp.analysis import LLMAnalysisProvider
 from app.infrastructure.nlp.chunking import SpacySentenceChunker
 from app.infrastructure.nlp.embeddings import build_embedder
-from app.workers import process_document_job
-
-import uuid
-import asyncio
+from app.infrastructure.observability.logging_setup import log
 
 
 class LoggingDocumentQueue:
@@ -28,6 +26,7 @@ class LoggingDocumentQueue:
         content_type: str,
         document_hash: str,
     ) -> None:
+        from app.workers.process_documents import process_document_job
 
         asyncio.create_task(
             process_document_job(
