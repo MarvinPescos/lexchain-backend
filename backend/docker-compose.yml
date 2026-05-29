@@ -1,0 +1,97 @@
+services:
+  backend:
+    build: .
+    image: lexchain:latest
+    container_name: lexChain-backend
+    ports:
+      - "8001:8000"
+    volumes:
+      - .:/app
+      - ../blockchain:/app/blockchain:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file: .env
+    environment:
+      DB_URL: postgresql+asyncpg://${DB_USER}:${DB_PASS}@db:${DB_PORT}/${DB_NAME}
+      REDIS_URL: redis://redis:6379
+      CELERY_BROKER_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - app
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - app
+
+  celery-notifications:
+    build: .
+    container_name: lexchain-celery-notifications
+    command: celery -A app.celery_app worker -Q notifications -c 4 --loglevel=info
+    volumes:
+      - .:/app
+    env_file: .env
+    environment:
+      DB_URL: postgresql+asyncpg://${DB_USER}:${DB_PASS}@db:${DB_PORT}/${DB_NAME}
+      CELERY_BROKER_URL: redis://redis:6379/0
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks:
+      - app
+
+  celery-documents:
+    build: .
+    container_name: lexchain-celery-documents
+    command: celery -A app.celery_app worker -Q documents -c 1 --loglevel=info
+    volumes:
+      - .:/app
+    env_file: .env
+    environment:
+      DB_URL: postgresql+asyncpg://${DB_USER}:${DB_PASS}@db:${DB_PORT}/${DB_NAME}
+      CELERY_BROKER_URL: redis://redis:6379/0
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks:
+      - app
+
+  db:
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+    ports:
+      - "5436:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  app:

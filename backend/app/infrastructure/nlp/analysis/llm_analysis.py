@@ -3,14 +3,15 @@
 import json
 
 from app.infrastructure.nlp.llm.base import LLMMessage
-from app.infrastructure.nlp.llm.groq_llm import GroqLLMProvider
+
+# from app.infrastructure.nlp.llm.groq_llm import GroqLLMProvider
+from app.infrastructure.nlp.llm.nvidia_llm import NvidiaLLMProvider
 from app.infrastructure.observability.logging_setup import log
 
 from .base import AnalysisResult
 
-
 # ── The system prompt ────────────────────────────────────────────────
-# This is where the "magic" happens. No matter what kind of document
+# Unstructured.
 # the user uploads, the LLM is instructed to return the SAME structure.
 
 SYSTEM_PROMPT = """You are a document analysis and information extraction assistant.
@@ -85,15 +86,15 @@ If a field has no relevant data, use an empty list [] for arrays or null for sum
 
 class LLMAnalysisProvider:
     """
-    Real analysis provider powered by Groq LLM.
+    Real analysis provider powered by NVIDIA LLM.
 
     Accepts raw document text (from the OCR step), sends it to the LLM
     with a structured extraction prompt, and returns an AnalysisResult
     that matches the existing protocol and database schema.
     """
 
-    def __init__(self, model: str = "llama-3.1-8b-instant") -> None:
-        self._llm = GroqLLMProvider(model=model)
+    def __init__(self, model: str = "meta/llama-3.1-70b-instruct") -> None:
+        self._llm = NvidiaLLMProvider(model=model)
 
     async def analyze(self, text: str) -> AnalysisResult:
         # ── Truncate to avoid token limits ──────────────────────────
@@ -116,8 +117,8 @@ class LLMAnalysisProvider:
 
         result = await self._llm.generate(
             messages=messages,
-            temperature=0.1,   # low temperature = more deterministic
-            max_tokens=1024,   # enough for the structured output
+            temperature=0.1,  # low temperature = more deterministic
+            max_tokens=1024,  # enough for the structured output
         )
 
         return self._parse(result.answer, result.model)
@@ -129,6 +130,7 @@ class LLMAnalysisProvider:
         """
         try:
             data = json.loads(raw_answer)
+            confidence = self._compute_confidence(data, raw_answer)
         except json.JSONDecodeError:
             log.error(
                 "analysis.json_parse_failed",
@@ -140,7 +142,7 @@ class LLMAnalysisProvider:
                 entities=[],
                 risk_flags=[],
                 confidence=0.0,
-                meta={"engine": "groq", "model": model, "error": "json_parse_failed"},
+                meta={"engine": "nvidia", "model": model, "error": "json_parse_failed"},
             )
 
         return AnalysisResult(
@@ -148,9 +150,27 @@ class LLMAnalysisProvider:
             labels=data.get("labels", []),
             entities=data.get("entities", []),
             risk_flags=data.get("risk_flags", []),
-            confidence=0.85,  # fixed for now — LLM doesn't self-score
+            confidence=confidence,
             meta={
-                "engine": "groq",
+                "engine": "nvidia",
                 "engine_version": model,
             },
         )
+
+    # Signal-Based Heuristic
+    def _compute_confidence(self, data: dict, text: str) -> float:
+        score = 0.1
+
+        if not data.get("summary"):
+            score -= 0.3
+
+        if not data.get("entities"):
+            score -= 0.2
+
+        if len(text) > 24000:
+            score -= 0.1
+
+        if len(text.strip()) < 200:
+            score -= 0.2
+
+        return round(max(0.0, score), 2)

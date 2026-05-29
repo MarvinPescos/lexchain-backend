@@ -1,22 +1,24 @@
 import uuid
+
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.observability.logging_setup import log
-from app.infrastructure.database import AsyncSessionLocal
-from app.infrastructure.nlp.ocr import build_ocr
-from app.infrastructure.nlp.analysis.base import AnalysisProvider
-from app.infrastructure.nlp.chunking.base import Chunker
-from app.infrastructure.nlp.embeddings.base import Embedder
-
+from app.celery_tasks import handle_document_processed
+from app.features.chunks.repository import DocumentChunkRepository
 from app.features.documents.repository import DocumentRepository
 from app.features.extraction.repository import DocumentExtractionRepository
 from app.features.insights.repository import DocumentInsightRepository
-from app.features.chunks.repository import DocumentChunkRepository
+from app.infrastructure.database import AsyncSessionLocal
+from app.infrastructure.nlp.analysis.base import AnalysisProvider
+from app.infrastructure.nlp.chunking.base import Chunker
+from app.infrastructure.nlp.embeddings.base import Embedder
+from app.infrastructure.nlp.ocr import build_ocr
+from app.infrastructure.observability.logging_setup import log
 
 STATUS_PROCESSING = "PROCESSING"
 STATUS_COMPLETED = "COMPLETED"
 STATUS_FAILED = "FAILED"
+
 
 async def process_document_job(
     document_id: uuid.UUID,
@@ -50,7 +52,7 @@ async def process_document_job(
             # Build OCR provider from downloaded bytes
             ocr = build_ocr(file_data)
 
-        #1
+            # 1
             ocr_result, extraction = await _run_ocr_and_store_extraction(
                 session,
                 ocr,
@@ -58,7 +60,7 @@ async def process_document_job(
                 doc,
                 file_data,
             )
-        #2
+            # 2
             analysis_result = await _run_analysis_and_store_insight(
                 analyzer,
                 insight_repo,
@@ -66,7 +68,7 @@ async def process_document_job(
                 extraction,
                 ocr_result.text,
             )
-        #3
+            # 3
             chunk_result, stored_chunks = await _run_chunking_and_store_chunks(
                 session,
                 chunker,
@@ -75,7 +77,7 @@ async def process_document_job(
                 extraction,
                 ocr_result.text,
             )
-        # 4. Embeddings
+            # 4. Embeddings
             embeddings_dim = await _run_embeddings(
                 session,
                 embedder,
@@ -85,6 +87,14 @@ async def process_document_job(
             )
 
             await _mark_completed(session, doc_repo, doc)
+
+            handle_document_processed.delay(
+                user_id=str(doc.user_id),
+                document_title=doc.file_name,
+                document_id=str(stable_document_id),
+                status="completed",
+            )
+
             log.info(
                 "worker.document.completed",
                 document_id=stable_document_id_str,
@@ -103,7 +113,16 @@ async def process_document_job(
             )
             await _mark_failed(stable_document_id)
 
+            handle_document_processed.delay(
+                user_id=str(doc.user_id),
+                document_title=doc.file_name,
+                document_id=str(stable_document_id),
+                status="failed",
+            )
+
+
 # Helpers
+
 
 async def _mark_processing(
     session: AsyncSession,
@@ -121,6 +140,8 @@ async def _run_ocr_and_store_extraction(
     doc,
     file_data: bytes,
 ):
+    import hashlib
+
     ocr_result = await ocr.extract(file_data)
     extraction = await extraction_repo.create(
         document_id=doc.id,
@@ -131,6 +152,10 @@ async def _run_ocr_and_store_extraction(
         confidence_avg=(ocr_result.meta or {}).get("confidence_avg"),
         meta=ocr_result.meta or {},
     )
+
+    text_hash = hashlib.sha256(ocr_result.text.encode()).hexdigest()
+    doc.content_hash = text_hash
+
     await session.commit()
     return ocr_result, extraction
 
@@ -150,12 +175,17 @@ async def _run_analysis_and_store_insight(
         engine_version=(analysis_result.meta or {}).get("engine_version"),
         summary=analysis_result.summary,
         labels={"items": analysis_result.labels} if analysis_result.labels else None,
-        entities={"items": analysis_result.entities} if analysis_result.entities else None,
-        risk_flags={"items": analysis_result.risk_flags} if analysis_result.risk_flags else None,
+        entities={"items": analysis_result.entities}
+        if analysis_result.entities
+        else None,
+        risk_flags={"items": analysis_result.risk_flags}
+        if analysis_result.risk_flags
+        else None,
         confidence=analysis_result.confidence,
         meta=analysis_result.meta,
     )
     return analysis_result
+
 
 async def _run_chunking_and_store_chunks(
     session: AsyncSession,
@@ -204,8 +234,8 @@ async def _run_embeddings(
     session,
     embedder: Embedder,
     chunk_repo: DocumentChunkRepository,
-    chunks_created,          # list[Chunk] with text
-    stored_chunks,           # list[DocumentChunk] with id
+    chunks_created,  # list[Chunk] with text
+    stored_chunks,  # list[DocumentChunk] with id
 ) -> None:
     if not stored_chunks:
         return
@@ -241,4 +271,6 @@ async def _mark_failed(document_id: uuid.UUID) -> None:
                 await fail_repo.update(fresh, status=STATUS_FAILED)
                 await fail_session.commit()
     except Exception:
-        log.error("worker.document.failed.status_update_failed", document_id=str(document_id))
+        log.error(
+            "worker.document.failed.status_update_failed", document_id=str(document_id)
+        )

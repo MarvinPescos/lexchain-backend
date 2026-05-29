@@ -1,17 +1,16 @@
-from fastapi import APIRouter, Depends, status
 import uuid
 
 from app.infrastructure.security.dependencies import AuthenticatedUser, require_auth
+from fastapi import APIRouter, Depends, status
 
-from .service import RetrievalService, RAGService
-from .dependencies import get_retrieval_service, get_rag_service
+from .dependencies import get_rag_service, get_retrieval_service
 from .schemas import (
-    SearchRequest,
-    SearchResponse,
     AskRequest,
     GlobalSearchResponse,
+    SearchRequest,
+    SearchResponse,
 )
-
+from .service import RAGService, RetrievalService
 
 router = APIRouter(tags=["Retrieval"])
 
