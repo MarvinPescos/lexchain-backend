@@ -3,7 +3,6 @@ import re
 
 from .base import Chunk, ChunkResult
 
-
 # NOTE: Mock sentence-aware chunker; replace with semantic/token chunkers later.
 
 
@@ -50,9 +49,7 @@ class SentenceChunker:
                 current_chunk.append(sentence)
                 current_word_count += sentence_length
             else:
-                overlap_part = (
-                    current_chunk[-self.overlap :] if current_chunk else []
-                )
+                overlap_part = current_chunk[-self.overlap :] if current_chunk else []
                 overlap_word_count = sum(len(s.split()) for s in overlap_part)
 
                 flush_current()

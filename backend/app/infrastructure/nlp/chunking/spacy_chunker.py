@@ -1,4 +1,7 @@
+import importlib.metadata
+
 import spacy
+
 from .base import Chunk, ChunkResult
 
 # Load the model once at module level — small English pipeline is enough
@@ -16,11 +19,12 @@ class SpacySentenceChunker:
 
     def __init__(self, max_words: int = 800, overlap: int = 1) -> None:
         self.max_words = max_words
-        self.overlap = overlap      # number of sentences to carry over
+        self.overlap = overlap  # number of sentences to carry over
 
     async def split(self, text: str) -> ChunkResult:
         # spaCy is synchronous, but fast for sentence segmentation
         doc = nlp(text)
+        # removes empty string in the list.
         sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
 
         current_chunk: list[str] = []
@@ -50,9 +54,7 @@ class SpacySentenceChunker:
                 current_chunk.append(sentence)
                 current_word_count += sentence_length
             else:
-                overlap_part = (
-                    current_chunk[-self.overlap :] if current_chunk else []
-                )
+                overlap_part = current_chunk[-self.overlap :] if current_chunk else []
                 overlap_word_count = sum(len(s.split()) for s in overlap_part)
 
                 flush_current()
@@ -69,7 +71,7 @@ class SpacySentenceChunker:
                 "max_words": self.max_words,
                 "overlap": self.overlap,
                 "engine": "spacy",
-                "engine_version": spacy.__version__,
+                "engine_version": importlib.metadata.version("spacy"),
                 "model": "en_core_web_sm",
                 "chunk_count": len(chunks),
             },
