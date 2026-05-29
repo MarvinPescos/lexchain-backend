@@ -1,8 +1,10 @@
 import asyncio
 import io
+
 from pypdf import PdfReader
 
 from .base import ExtractionResult
+
 
 class PyPdfOCRProvider:
     """Text extraction for born-digital PDFs (no image OCR)."""
@@ -17,7 +19,5 @@ class PyPdfOCRProvider:
         return ExtractionResult(
             text=text,
             page_count=len(reader.pages),
-            meta={
-                "engine": "pypdf", "engine_version" : "real"
-            },
+            meta={"engine": "pypdf", "engine_version": "real"},
         )
