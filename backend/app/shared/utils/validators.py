@@ -47,12 +47,12 @@ def validate_phone_number(phone_number: str | None) -> str | None:
     - If provided, must be between 7 and 15 digits (standard international length)
     """
 
-    if not phone_number or phone_number.strip():
+    if not phone_number or not phone_number.strip():
         return None
     
-    phone_number.strip()
+    phone_number = phone_number.strip()
 
-    if not re.match(fr"^\+?[0-9]{7,15}$", phone_number.replaced(" ", "").replace("-", "")):
+    if not re.match(r"^\+?[0-9]{7,15}$", phone_number.replace(" ", "").replace("-", "")):
         raise ValueError("Invalid phone number format. Use numeric format (e.g., +639123456789)")
 
     return phone_number
