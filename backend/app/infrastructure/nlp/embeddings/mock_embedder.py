@@ -27,5 +27,5 @@ class MockEmbedder:
             meta={"engine": "mock", "engine_version": "0.1"},
         )
 
-    async def embed_batch(self, texts: list[str]) -> list[EmbeddingResult]:
-        return [await self.embed(t) for t in texts]
+    async def embed_batch(self, text: list[str]) -> list[EmbeddingResult]:
+        return [await self.embed(t) for t in text]

@@ -1,4 +1,5 @@
 from app.core import settings
+
 from .base import Embedder
 from .mock_embedder import MockEmbedder
 from .sbert_embedder import SBERTEmbedder
