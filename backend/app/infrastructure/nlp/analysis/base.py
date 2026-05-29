@@ -1,4 +1,5 @@
 from typing import Protocol
+
 from pydantic import BaseModel
 
 
@@ -12,5 +13,4 @@ class AnalysisResult(BaseModel):
 
 
 class AnalysisProvider(Protocol):
-    async def analyze(self, text: str) -> AnalysisResult:
-        ...
+    async def analyze(self, text: str) -> AnalysisResult: ...
