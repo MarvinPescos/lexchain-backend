@@ -1,17 +1,14 @@
-import math
 import uuid
 
+from app.features.chunks.repository import DocumentChunkRepository
+from app.features.documents.repository import DocumentRepository
+from app.infrastructure.nlp.embeddings import Embedder
+from app.infrastructure.nlp.llm import LLMMessage, LLMProvider
+from app.infrastructure.observability.logging_setup import log
+from app.shared.errors.exceptions import NotFoundError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.nlp.embeddings import Embedder
-from app.infrastructure.observability.logging_setup import log
-from app.infrastructure.nlp.llm import LLMProvider, LLMMessage
-from app.shared.errors.exceptions import NotFoundError
-
-from app.features.documents.repository import DocumentRepository
-from app.features.chunks.repository import DocumentChunkRepository
-
-from .schemas import GlobalSearchHit, GlobalSearchResponse,SearchHit, SearchResponse
+from .schemas import GlobalSearchHit, GlobalSearchResponse, SearchHit, SearchResponse
 
 
 class RetrievalService:
@@ -22,18 +19,17 @@ class RetrievalService:
         self.chunk_repo = DocumentChunkRepository(session)
 
     async def search_document(
-        self,
-        user_id: uuid.UUID,
-        document_id: uuid.UUID,
-        query: str,
-        top_k: int = 5
+        self, user_id: uuid.UUID, document_id: uuid.UUID, query: str, top_k: int = 5
     ) -> SearchResponse:
 
         doc = await self.doc_repo.get_one(user_id, document_id)
-        
+
         if not doc:
-            raise NotFoundError("Document not found")
-        
+            is_party = await self.doc_repo.is_party(user_id, document_id)
+            if not is_party:
+                raise NotFoundError("Document not found")
+            doc = await self.doc_repo.get_by_id(document_id)
+
         q_embed = await self.embedder.embed(query)
         top = await self.chunk_repo.search_document(document_id, q_embed.vector, top_k)
 
@@ -56,16 +52,16 @@ class RetrievalService:
                     text=c.text,
                 )
                 for c, score in top
-            ]
+            ],
         )
 
-    
+    # Semantic search
     async def search_all(
-        self, 
+        self,
         user_id: uuid.UUID,
-        query: str, # basta something naa sa docs
-        top_k: int = 3
-    ) -> GlobalSearchResponse: 
+        query: str,  # basta something naa sa docs
+        top_k: int = 3,
+    ) -> GlobalSearchResponse:
 
         q_embed = await self.embedder.embed(query)
         top = await self.chunk_repo.search_user(user_id, q_embed.vector, top_k)
@@ -74,7 +70,7 @@ class RetrievalService:
             "retrieval.search.global",
             user_id=str(user_id),
             query_len=len(query),
-            returned=len(top)
+            returned=len(top),
         )
 
         return GlobalSearchResponse(
@@ -90,6 +86,7 @@ class RetrievalService:
             ],
         )
 
+
 class RAGService:
     def __init__(self, retrieval: RetrievalService, llm: LLMProvider) -> None:
         self.retrieval = retrieval
@@ -102,10 +99,15 @@ class RAGService:
         question: str,
         top_k: int = 2,
     ):
-        hits = await self.retrieval.search_document(user_id, document_id, question, top_k)
-        context = "\n\n".join(f"[chunk {h.chunk_index}]\n{h.text}" for h in hits.results)
-        return await self._answer(question, context, hits.results, scoped_to_document=True)
-
+        hits = await self.retrieval.search_document(
+            user_id, document_id, question, top_k
+        )
+        context = "\n\n".join(
+            f"[chunk {h.chunk_index}]\n{h.text}" for h in hits.results
+        )
+        return await self._answer(
+            question, context, hits.results, scoped_to_document=True
+        )
 
     # async def ask_all(
     #     self,
@@ -120,25 +122,26 @@ class RAGService:
     #     )
     #     return await self._answer(question, context, hits.results, scoped_to_document=False)
 
-        
     async def _answer(self, question, context, hits, scoped_to_document: bool):
         scope_note = (
             "You are a legal document assistant. Answer ONLY using the provided context."
             if scoped_to_document
-            else "You are a legal document assistant answering across the user's entire document library. "
-                 "Answer ONLY using the provided context."
+            else "You are a legal document assistant answering across the user's entire document library. Answer ONLY using the provided context."
         )
         system_prompt = (
-            f"{scope_note} "
-            "If the answer is not in the context, say 'I cannot find this in your documents.' "
-            "Cite the context blocks inline like [chunk 3] or [doc <id> | chunk 3]."
+            f"{scope_note}\n\n"
+            "Be a helpful, intelligent conversational assistant. "
+            "If the user asks a factual question, rely strictly on the Context. If the answer is completely missing, say 'I cannot find this in your documents.' "
+            "If the user is just chatting, asking for overviews, or making general requests, engage politely and use the Context to help them."
         )
+
+        messages = [LLMMessage(role="system", content=system_prompt)]
+
         user_prompt = f"Context:\n{context}\n\nQuestion: {question}"
+        messages.append(LLMMessage(role="user", content=user_prompt))
+
         result = await self.llm.generate(
-            messages=[
-                LLMMessage(role="system", content=system_prompt),
-                LLMMessage(role="user", content=user_prompt),
-            ],
+            messages=messages,
             temperature=0.2,
             max_tokens=512,
         )
@@ -150,35 +153,13 @@ class RAGService:
                 {
                     "chunk_id": h.chunk_id,
                     "chunk_index": h.chunk_index,
-                    **({"document_id": h.document_id} if hasattr(h, "document_id") else {}),
+                    **(
+                        {"document_id": h.document_id}
+                        if hasattr(h, "document_id")
+                        else {}
+                    ),
                     "score": h.score,
                 }
                 for h in hits
             ],
         }
-
-
-# Helpers
-
-# No need if pgvector is live
-def _rank(chunks, query_vector):
-    scored: list[tuple[float, object]] = []
-    for c in chunks:
-        if not c.embeddings:
-            continue
-        vec = c.embedding.get("vector")
-        if not vec:
-            continue
-        scored.append((_cosine(query_vector, vec), c))
-    scored.sort(key=lambda s:s[0], reverse=True)
-    return scored
-
-
-def _cosine(a: list[float], b: list[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(x * x for x in b))
-    return dot / (na * nb) if na and nb else 0.0
