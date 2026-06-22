@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 from app.features.chunks.repository import DocumentChunkRepository
@@ -6,6 +7,7 @@ from app.infrastructure.nlp.embeddings import Embedder
 from app.infrastructure.nlp.llm import LLMMessage, LLMProvider
 from app.infrastructure.observability.logging_setup import log
 from app.shared.errors.exceptions import NotFoundError
+from langfuse import get_client, observe, propagate_attributes
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .schemas import GlobalSearchHit, GlobalSearchResponse, SearchHit, SearchResponse
@@ -92,6 +94,7 @@ class RAGService:
         self.retrieval = retrieval
         self.llm = llm
 
+    @observe(name="RAG_Question_Answer")
     async def ask_document(
         self,
         user_id: uuid.UUID,
@@ -99,15 +102,28 @@ class RAGService:
         question: str,
         top_k: int = 2,
     ):
-        hits = await self.retrieval.search_document(
-            user_id, document_id, question, top_k
-        )
-        context = "\n\n".join(
-            f"[chunk {h.chunk_index}]\n{h.text}" for h in hits.results
-        )
-        return await self._answer(
-            question, context, hits.results, scoped_to_document=True
-        )
+        langfuse = get_client()
+
+        with propagate_attributes(
+            user_id=str(user_id),
+            metadata={"document_id": str(document_id)},
+        ):
+            # Set the question as the input on the current span
+            langfuse.update_current_span(input=question)
+
+            hits = await self.retrieval.search_document(
+                user_id, document_id, question, top_k
+            )
+            context = "\n\n".join(
+                f"[chunk {h.chunk_index}]\n{h.text}" for h in hits.results
+            )
+
+            result = await self._answer(
+                question, context, hits.results, scoped_to_document=True
+            )
+
+        await asyncio.to_thread(langfuse.flush)
+        return result
 
     # async def ask_all(
     #     self,

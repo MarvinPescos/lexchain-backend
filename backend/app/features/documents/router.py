@@ -83,11 +83,12 @@ async def get_user_document(
 async def upload_document(
     request: Request,
     file_name: str,
+    book_id: uuid.UUID,
     file: UploadFile = File(...),
     current_user: AuthenticatedUser = Depends(require_lawyer),
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentUploadAcceptedResponse:
-    return await service.upload_document(current_user.user_id, file, file_name)
+    return await service.upload_document(current_user.user_id, file, file_name, book_id)
 
 
 # ── Rename ──────────────────────────────────────────────────────────

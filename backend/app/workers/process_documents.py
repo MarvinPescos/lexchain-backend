@@ -1,6 +1,7 @@
 import uuid
 
 import httpx
+from langfuse import get_client, propagate_attributes
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.celery_tasks import handle_document_processed
@@ -18,6 +19,9 @@ from app.infrastructure.observability.logging_setup import log
 STATUS_PROCESSING = "PROCESSING"
 STATUS_COMPLETED = "COMPLETED"
 STATUS_FAILED = "FAILED"
+
+
+langfuse = get_client()
 
 
 async def process_document_job(
@@ -39,86 +43,100 @@ async def process_document_job(
             return
         stable_document_id = document_id
         stable_document_id_str = str(stable_document_id)
+        doc_user_id = doc.user_id
+        doc_file_name = doc.file_name
 
-        try:
-            # Download the file from Supabase
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(storage_url)
-                resp.raise_for_status()
-                file_data = resp.content
+        with langfuse.start_as_current_observation(
+            as_type="span",
+            name="document_ingestion",
+            input={"document_id": str(document_id)},
+        ) as root_span:
+            with propagate_attributes(
+                user_id=str(doc_user_id),
+                metadata={"filename": doc_file_name},
+            ):
+                try:
+                    # Download the file from Supabase
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.get(storage_url)
+                        resp.raise_for_status()
+                        file_data = resp.content
 
-            await _mark_processing(session, doc_repo, doc)
+                    await _mark_processing(session, doc_repo, doc)
 
-            # Build OCR provider from downloaded bytes
-            ocr = build_ocr(file_data)
+                    # Build OCR provider from downloaded bytes
+                    ocr = build_ocr(file_data)
 
-            # 1
-            ocr_result, extraction = await _run_ocr_and_store_extraction(
-                session,
-                ocr,
-                extraction_repo,
-                doc,
-                file_data,
-            )
-            # 2
-            analysis_result = await _run_analysis_and_store_insight(
-                analyzer,
-                insight_repo,
-                doc,
-                extraction,
-                ocr_result.text,
-            )
-            # 3
-            chunk_result, stored_chunks = await _run_chunking_and_store_chunks(
-                session,
-                chunker,
-                chunk_repo,
-                doc,
-                extraction,
-                ocr_result.text,
-            )
-            # 4. Embeddings
-            embeddings_dim = await _run_embeddings(
-                session,
-                embedder,
-                chunk_repo,
-                chunks_created=chunk_result.chunks,
-                stored_chunks=stored_chunks,  # returned from _run_chunking_and_store_chunks
-            )
+                    # 1
+                    ocr_result, extraction = await _run_ocr_and_store_extraction(
+                        session, ocr, extraction_repo, doc, file_data
+                    )
+                    # 2
+                    analysis_result = await _run_analysis_and_store_insight(
+                        analyzer, insight_repo, doc, extraction, ocr_result.text
+                    )
+                    # 3
+                    chunk_result, stored_chunks = await _run_chunking_and_store_chunks(
+                        session,
+                        chunker,
+                        chunk_repo,
+                        doc,
+                        extraction,
+                        ocr_result.text,
+                    )
+                    # 4. Embeddings
+                    embeddings_dim = await _run_embeddings(
+                        session,
+                        embedder,
+                        chunk_repo,
+                        chunks_created=chunk_result.chunks,
+                        stored_chunks=stored_chunks,
+                    )
 
-            await _mark_completed(session, doc_repo, doc)
+                    await _mark_completed(session, doc_repo, doc)
 
-            handle_document_processed.delay(
-                user_id=str(doc.user_id),
-                document_title=doc.file_name,
-                document_id=str(stable_document_id),
-                status="completed",
-            )
+                    handle_document_processed.delay(
+                        user_id=str(doc_user_id),
+                        document_title=doc_file_name,
+                        document_id=str(stable_document_id),
+                        status="completed",
+                    )
 
-            log.info(
-                "worker.document.completed",
-                document_id=stable_document_id_str,
-                pages=ocr_result.page_count,
-                chunks=len(chunk_result.chunks),
-                labels=analysis_result.labels,
-                embeddings_dim=embeddings_dim,
-            )
+                    log.info(
+                        "worker.document.completed",
+                        document_id=stable_document_id_str,
+                        pages=ocr_result.page_count,
+                        chunks=len(chunk_result.chunks),
+                        labels=analysis_result.labels,
+                        embeddings_dim=embeddings_dim,
+                    )
 
-        except Exception as e:
-            await session.rollback()
-            log.error(
-                "worker.document.failed",
-                document_id=stable_document_id_str,
-                error=str(e),
-            )
-            await _mark_failed(stable_document_id)
+                    root_span.update(
+                        output={
+                            "status": "completed",
+                            "chunks": len(chunk_result.chunks),
+                        }
+                    )
 
-            handle_document_processed.delay(
-                user_id=str(doc.user_id),
-                document_title=doc.file_name,
-                document_id=str(stable_document_id),
-                status="failed",
-            )
+                except Exception as e:
+                    root_span.update(output={"status": "failed", "error": str(e)})
+                    await session.rollback()
+                    log.error(
+                        "worker.document.failed",
+                        document_id=stable_document_id_str,
+                        error=str(e),
+                    )
+                    await _mark_failed(stable_document_id)
+
+                    handle_document_processed.delay(
+                        user_id=str(doc_user_id),
+                        document_title=doc_file_name,
+                        document_id=str(stable_document_id),
+                        status="failed",
+                    )
+
+        # Flush outside the with block — span is fully closed before sending
+        langfuse.flush()
 
 
 # Helpers
@@ -142,7 +160,22 @@ async def _run_ocr_and_store_extraction(
 ):
     import hashlib
 
-    ocr_result = await ocr.extract(file_data)
+    with langfuse.start_as_current_observation(
+        as_type="span",
+        name="ocr_extraction",
+        input={"file_size_bytes": len(file_data)},
+    ) as span:
+        ocr_result = await ocr.extract(file_data)
+        span.update(
+            output={
+                "page_count": ocr_result.page_count,
+                "text_length": len(ocr_result.text),
+                "engine": (ocr_result.meta or {}).get("engine"),
+                "text_preview": ocr_result.text[:300],
+            }
+        )
+    # span auto-closes on exit
+
     extraction = await extraction_repo.create(
         document_id=doc.id,
         engine=(ocr_result.meta or {}).get("engine", "unknown"),
@@ -167,7 +200,24 @@ async def _run_analysis_and_store_insight(
     extraction,
     text: str,
 ):
-    analysis_result = await analyzer.analyze(text)
+    with langfuse.start_as_current_observation(
+        as_type="generation",
+        name="analysis_llm",
+        model="meta/llama-3.1-70b-instruct",
+        input=text[:24_000],
+    ) as generation:
+        analysis_result = await analyzer.analyze(text)
+        generation.update(
+            output={
+                "summary": analysis_result.summary,
+                "labels": analysis_result.labels,
+                "entity_count": len(analysis_result.entities or []),
+                "risk_flag_count": len(analysis_result.risk_flags or []),
+                "confidence": analysis_result.confidence,
+            }
+        )
+    # generation auto-closes on exit
+
     await insight_repo.create(
         document_id=doc.id,
         extraction_id=extraction.id,
@@ -195,7 +245,22 @@ async def _run_chunking_and_store_chunks(
     extraction,
     text: str,
 ):
-    chunk_result = await chunker.split(text)
+    with langfuse.start_as_current_observation(
+        as_type="span",
+        name="chunking",
+        input={"text_length": len(text)},
+    ) as span:
+        chunk_result = await chunker.split(text)
+        span.update(
+            output={
+                "chunk_count": len(chunk_result.chunks),
+                "strategy": chunk_result.strategy,
+                "first_chunk_preview": chunk_result.chunks[0].text[:200]
+                if chunk_result.chunks
+                else None,
+            }
+        )
+    # span auto-closes on exit
 
     # NOTE: fix typo in ChunkResult: use .strategy everywhere (your base has `stategy`)
     strategy = getattr(chunk_result, "strategy", None) or getattr(
@@ -237,19 +302,34 @@ async def _run_embeddings(
     chunks_created,  # list[Chunk] with text
     stored_chunks,  # list[DocumentChunk] with id
 ) -> None:
-    if not stored_chunks:
-        return
+    with langfuse.start_as_current_observation(
+        as_type="span",
+        name="embedding",
+        input={"chunk_count": len(chunks_created)},
+    ) as span:
+        if not stored_chunks:
+            span.update(output={"skipped": True})
+            return None
 
-    texts = [c.text for c in chunks_created]
-    results = await embedder.embed_batch(texts)
+        texts = [c.text for c in chunks_created]
+        results = await embedder.embed_batch(texts)
 
-    for chunk, result in zip(stored_chunks, results):
-        await chunk_repo.set_embedding(
-            chunk.id,
-            vector=result.vector,
-            meta=result.meta,
+        for chunk, result in zip(stored_chunks, results):
+            await chunk_repo.set_embedding(
+                chunk.id,
+                vector=result.vector,
+                meta=result.meta,
+            )
+        await session.commit()
+
+        span.update(
+            output={
+                "dim": results[0].dim if results else None,
+                "model": "all-MiniLm-L6-v2",
+            }
         )
-    await session.commit()
+    # span auto-closes on exit
+
     return results[0].dim if results else None
 
 

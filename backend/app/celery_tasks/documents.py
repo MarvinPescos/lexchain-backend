@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 
+import app.all_models  # noqa: F401 — registers all SQLAlchemy models for the worker process
 from app.celery_app import celery_app
 from app.workers.process_documents import process_document_job
 
