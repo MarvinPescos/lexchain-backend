@@ -18,6 +18,7 @@ class MockOCRProvider:
 
         return ExtractionResult(
             text=text,
+            ingestion_text=text,
             page_count=1,
             meta={"engine": "mock"},
         )

@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 class ExtractionResult(BaseModel):
     text: str
+    ingestion_text: str
     page_count: int
     meta: dict | None = None
 

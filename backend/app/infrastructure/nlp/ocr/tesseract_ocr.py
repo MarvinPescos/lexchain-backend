@@ -19,11 +19,12 @@ class TesseractOCRProvider:
     def _extract_sync(self, file_data: bytes) -> ExtractionResult:
         images = convert_from_bytes(file_data, dpi=self.dpi)
         page_texts = [
-            pytesseract.image_to_string(img, lang=self.lang) for img in images
+            str(pytesseract.image_to_string(img, lang=self.lang)) for img in images
         ]
         text = "\n\n".join(page_texts).strip()
         return ExtractionResult(
             text=text,
+            ingestion_text=text,
             page_count=len(images),
             meta={
                 "engine": "tesseract",

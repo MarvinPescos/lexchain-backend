@@ -18,6 +18,7 @@ class PyPdfOCRProvider:
         text = "\n\n".join(pages).strip()
         return ExtractionResult(
             text=text,
+            ingestion_text=text,
             page_count=len(reader.pages),
             meta={"engine": "pypdf", "engine_version": "real"},
         )
