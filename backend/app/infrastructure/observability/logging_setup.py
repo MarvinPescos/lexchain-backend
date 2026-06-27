@@ -23,7 +23,7 @@ def configure_logger():
         processors=[
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S"),
-            structlog.dev.ConsoleRenderer(),
+            structlog.dev.ConsoleRenderer(exception_formatter=structlog.dev.plain_traceback),
         ],
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),

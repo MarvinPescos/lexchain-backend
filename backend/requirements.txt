@@ -59,3 +59,9 @@ web3
 resend
 
 celery[redis]
+
+# observability
+langfuse>=4.0.0
+
+# response format
+markdownify

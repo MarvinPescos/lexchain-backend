@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from app.features.insights.models import DocumentInsight
     from app.features.chunks import DocumentChunk
     from app.features.blockchain.models import OnChainRecord
+    from app.features.books import Book
 
 
 class Document(Base, TimestampMixin):
@@ -39,10 +40,16 @@ class Document(Base, TimestampMixin):
         ForeignKey("documents.id", ondelete="SET NULL"),
         nullable=True,
     )
+    book_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("books.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     is_latest: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # === relationship ===
     user: Mapped["User"] = relationship(back_populates="documents")
+    book: Mapped["Book"] = relationship(back_populates="documents")
     extractions: Mapped[list["DocumentExtraction"]] = relationship(
         back_populates="document",
         cascade="all, delete-orphan",

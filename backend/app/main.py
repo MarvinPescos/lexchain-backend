@@ -1,11 +1,14 @@
+import asyncio
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from langfuse import get_client
 
 import app.all_models  # Ensure all SQLAlchemy models are registered at startup
-
 from app.features.admin import router as admin_router
 from app.features.auth import router as auth_router
 from app.features.blockchain import router as blockchain_router
+from app.features.books import router as book_router
 from app.features.documents import router as document_router
 from app.features.notifications import router as notification_router
 from app.features.public import router as public_router
@@ -14,6 +17,13 @@ from app.features.users import router as user_router
 from app.shared.errors.exceptions import BaseAppException
 
 app = FastAPI()
+
+
+@app.middleware("http")
+async def langfuse_flush_middleware(request: Request, call_next):
+    response = await call_next(request)  # full request runs, @observe closes span
+    await asyncio.to_thread(get_client().flush)  # flush AFTER span is fully closed
+    return response
 
 
 @app.exception_handler(BaseAppException)
@@ -29,3 +39,4 @@ app.include_router(blockchain_router)
 app.include_router(admin_router)
 app.include_router(public_router)
 app.include_router(notification_router)
+app.include_router(book_router)

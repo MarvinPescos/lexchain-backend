@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 if TYPE_CHECKING:
     from app.features.documents.models import Document, DocumentParty
     from app.features.notifications.models import Notification
+    from app.features.books import Book
 
 
 class User(Base, TimestampMixin):
@@ -41,6 +42,9 @@ class User(Base, TimestampMixin):
         back_populates="user", cascade="all, delete-orphan"
     )
     notifications: Mapped[list["Notification"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    books: Mapped[list["Book"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 

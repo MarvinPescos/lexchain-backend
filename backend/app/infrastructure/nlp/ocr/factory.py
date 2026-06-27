@@ -8,9 +8,14 @@ from .base import OCRProvider
 
 
 def build_ocr(file_data: bytes) -> OCRProvider:
+
+    if not settings.OCR_ENGINE == "mineru":
+        from .mineru_ocr import MinerUOCRProvider
+        return MinerUOCRProvider()
+
+
     if not settings.USE_REAL_OCR:
         from .mock_ocr import MockOCRProvider
-
         return MockOCRProvider()
 
     if settings.OCR_ENGINE == "pypdf":

@@ -82,7 +82,7 @@ class DocumentService:
     # === Write ===
 
     async def upload_document(
-        self, user_id: uuid.UUID, file: UploadFile, file_name: str
+        self, user_id: uuid.UUID, file: UploadFile, file_name: str, book_id: uuid.UUID
     ) -> DocumentUploadAcceptedResponse:
         """Validate, store locally, persist metadata, and enqueue processing."""
 
@@ -108,6 +108,7 @@ class DocumentService:
         try:
             document = await self.repo.create(
                 user_id=user_id,
+                book_id=book_id,
                 file_name=file_name if file_name else file.file_name,
                 content_type=file.content_type,
                 storage_url=str(storage_path),
@@ -119,7 +120,7 @@ class DocumentService:
         except Exception:
             await self.session.rollback()
             await get_storage_client().delete_docs(
-                folder="Docs", file_name=document.file_name, user_id=user_id
+                folder="Docs", file_name=file_name, user_id=user_id
             )
             raise
 
@@ -209,7 +210,7 @@ class DocumentService:
         except Exception:
             await self.session.rollback()
             await get_storage_client().delete_docs(
-                folder="Docs", file_name=new_doc.file_name, user_id=user_id
+                folder="Docs", file_name=file_name, user_id=user_id
             )
             raise
         try:
