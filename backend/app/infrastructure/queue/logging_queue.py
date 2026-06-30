@@ -6,7 +6,7 @@ import asyncio
 import uuid
 
 from app.infrastructure.nlp.analysis import LLMAnalysisProvider
-from app.infrastructure.nlp.chunking import SpacySentenceChunker
+from app.infrastructure.nlp.chunking import build_chunker
 from app.infrastructure.nlp.embeddings import build_embedder
 from app.infrastructure.observability.logging_setup import log
 
@@ -33,7 +33,7 @@ class LoggingDocumentQueue:
                 document_id=document_id,
                 storage_url=storage_url,
                 analyzer=LLMAnalysisProvider(),
-                chunker=SpacySentenceChunker(800, 100),
+                chunker=build_chunker(),
                 embedder=build_embedder(),
             )
         )
