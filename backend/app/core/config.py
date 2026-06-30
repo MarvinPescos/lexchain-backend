@@ -51,11 +51,19 @@ class Settings(BaseSettings):
     USE_REAL_OCR: bool = Field(default=False, description="Use real OCR providers")
     OCR_ENGINE: str = Field(default="pypdf", description="pypdf | tesseract")
 
+    CHUNKER_ENGINE: str = Field(..., description="Engine would be used in chunking")
+
     # MinerU
     MINERU_MODE: str = Field(default="api", description="MinerU mode: api")
-    MINERU_API_URL: str = Field(default="http://localhost:8888", description="MinerU API URL")
-    MINERU_BACKEND: str = Field(default="pipeline", description="MinerU backend: pipeline | vlm-engine")
-    MINERU_TIMEOUT: int = Field(default=120, description="MinerU API timeout in seconds")
+    MINERU_API_URL: str = Field(
+        default="http://localhost:8888", description="MinerU API URL"
+    )
+    MINERU_BACKEND: str = Field(
+        default="pipeline", description="MinerU backend: pipeline | vlm-engine"
+    )
+    MINERU_TIMEOUT: int = Field(
+        default=120, description="MinerU API timeout in seconds"
+    )
 
     WEB_RPC_URL: str = Field(..., description="")
     CONTRACT_ADDRESS: str = Field(..., description="")
