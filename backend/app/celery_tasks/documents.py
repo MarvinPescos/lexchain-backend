@@ -15,7 +15,7 @@ from app.workers.process_documents import process_document_job
 )
 def process_document_task(self, document_id: uuid.UUID, storage_url: str):
     from app.infrastructure.nlp.analysis import LLMAnalysisProvider
-    from app.infrastructure.nlp.chunking import SpacySentenceChunker
+    from app.infrastructure.nlp.chunking import build_chunker
     from app.infrastructure.nlp.embeddings import build_embedder
 
     try:
@@ -24,7 +24,7 @@ def process_document_task(self, document_id: uuid.UUID, storage_url: str):
                 document_id=document_id,
                 storage_url=storage_url,
                 analyzer=LLMAnalysisProvider(),
-                chunker=SpacySentenceChunker(800, 100),
+                chunker=build_chunker(),
                 embedder=build_embedder(),
             )
         )
