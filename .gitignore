@@ -151,3 +151,6 @@ Thumbs.db
 *.swo
 
 docs
+CLAUDE.md
+pyrefly.toml
+/pic
