@@ -73,7 +73,11 @@ async def process_document_job(
                     )
                     # 2
                     analysis_result = await _run_analysis_and_store_insight(
-                        analyzer, insight_repo, doc, extraction, ocr_result.text
+                        analyzer,
+                        insight_repo,
+                        doc,
+                        extraction,
+                        ocr_result.ingestion_text,
                     )
                     # 3
                     chunk_result, stored_chunks = await _run_chunking_and_store_chunks(
@@ -82,7 +86,7 @@ async def process_document_job(
                         chunk_repo,
                         doc,
                         extraction,
-                        ocr_result.text,
+                        ocr_result.ingestion_text,
                     )
                     # 4. Embeddings
                     embeddings_dim = await _run_embeddings(

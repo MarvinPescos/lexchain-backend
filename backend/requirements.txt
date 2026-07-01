@@ -44,6 +44,7 @@ openai
 
 # nlp
 spacy>=3.7,<4.0
+langchain-text-splitters
 sentence-transformers
 pgvector
 
@@ -65,3 +66,4 @@ langfuse>=4.0.0
 
 # response format
 markdownify
+beautifulsoup4
