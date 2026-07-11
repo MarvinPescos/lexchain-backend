@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List
 
 from app.features.insights import DocumentInsightRepository
+from app.features.extraction import DocumentExtractionRepository
 from app.infrastructure.clients.supabase_storage import get_storage_client
 from app.infrastructure.observability.logging_setup import log
 from app.infrastructure.queue import DocumentQueue
@@ -37,6 +38,7 @@ class DocumentService:
         self.queue = queue
         self.repo = DocumentRepository(session)
         self.insight_repo = DocumentInsightRepository(session)
+        self.extraction_repo = DocumentExtractionRepository(session)
 
     # === Read ===
 
@@ -249,32 +251,32 @@ class DocumentService:
             message="Document update accepted for processing",
         )
 
-    async def get_version_history(
-        self, user_id: uuid.UUID, document_id: uuid.UUID
-    ) -> VersionHistoryResponse:
-        """Walk the linked list to return all versions of a document."""
-        doc = await self.repo.get_one(user_id, document_id)
-        is_party = await self.repo.is_party(user_id, document_id)
-        if not doc and not is_party:
-            raise NotFoundError("Document not found")
-        chain = await self.repo.get_version_history(document_id)
-        versions = [
-            VersionHistoryItem(
-                document_id=v.id,
-                file_name=v.file_name,
-                document_hash=v.document_hash,
-                status=v.status,
-                tx_hash=v.on_chain_record.tx_hash if v.on_chain_record else None,
-                is_latest=v.is_latest,
-                created_at=v.created_at,
-            )
-            for v in chain
-        ]
-        return VersionHistoryResponse(
-            current_document_id=document_id,
-            versions=versions,
-            total_version=len(versions),
-        )
+    # async def get_version_history(
+    #     self, user_id: uuid.UUID, document_id: uuid.UUID
+    # ) -> VersionHistoryResponse:
+    #     """Walk the linked list to return all versions of a document."""
+    #     doc = await self.repo.get_one(user_id, document_id)
+    #     is_party = await self.repo.is_party(user_id, document_id)
+    #     if not doc and not is_party:
+    #         raise NotFoundError("Document not found")
+    #     chain = await self.repo.get_version_history(document_id)
+    #     versions = [
+    #         VersionHistoryItem(
+    #             document_id=v.id,
+    #             file_name=v.file_name,
+    #             document_hash=v.document_hash,
+    #             status=v.status,
+    #             tx_hash=v.on_chain_record.tx_hash if v.on_chain_record else None,
+    #             is_latest=v.is_latest,
+    #             created_at=v.created_at,
+    #         )
+    #         for v in chain
+    #     ]
+    #     return VersionHistoryResponse(
+    #         current_document_id=document_id,
+    #         versions=versions,
+    #         total_version=len(versions),
+    #     )
 
     async def update_file_name(
         self, user_id: uuid.UUID, document_id: uuid.UUID, new_file_name: str
@@ -408,6 +410,11 @@ class DocumentService:
             user_id=party_user_id,
             message="Party removed",
         )
+
+    async def finalize_document(self, user_id: uuid.UUID, document_id: uuid.UUID, text: str):
+        """Finalize the document (create a snapshot, anchor on blockchain, set finalized fields)"""
+
+
 
     # ========== helpers =============
 
