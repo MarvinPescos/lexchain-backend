@@ -2,9 +2,13 @@ import hashlib
 import uuid
 from pathlib import Path
 from typing import List
+from datetime import datetime, timezone
 
 from app.features.insights import DocumentInsightRepository
 from app.features.extraction import DocumentExtractionRepository
+from app.features.snapshot import DocumentSnapshotService
+from app.features.blockchain import BlockchainService
+from app.infrastructure.blockchain import BlockchainProvider
 from app.infrastructure.clients.supabase_storage import get_storage_client
 from app.infrastructure.observability.logging_setup import log
 from app.infrastructure.queue import DocumentQueue
@@ -33,10 +37,12 @@ STATUS_QUEUED = "QUEUED"
 class DocumentService:
     """Service layer for document management."""
 
-    def __init__(self, session: AsyncSession, queue: DocumentQueue) -> None:
+    def __init__(self, session: AsyncSession, queue: DocumentQueue, provider: BlockchainProvider) -> None:
         self.session = session
         self.queue = queue
         self.repo = DocumentRepository(session)
+        self.snapshot_service = DocumentSnapshotService(session)
+        self.blockchain_service = BlockchainService(session, provider)
         self.insight_repo = DocumentInsightRepository(session)
         self.extraction_repo = DocumentExtractionRepository(session)
 
@@ -411,9 +417,56 @@ class DocumentService:
             message="Party removed",
         )
 
-    async def finalize_document(self, user_id: uuid.UUID, document_id: uuid.UUID, text: str):
+    async def finalize_document(self, user_id: uuid.UUID, document_id: uuid.UUID):
         """Finalize the document (create a snapshot, anchor on blockchain, set finalized fields)"""
 
+        document = await self.repo.get_one(user_id, document_id)
+        if not document:
+            raise NotFoundError("Document not found")
+
+        if document.lifecycle == "FINALIZED":
+            raise BadRequestError("Document is already finalized")
+
+        if document.status != "COMPLETED":
+            raise BadRequestError("Document must be fully processed before finalizing")
+
+
+        extraction = await self.extraction_repo.get_by_document_id(document_id)
+        if not extraction:
+            raise NotFoundError("Document extraction not found")
+
+        # Creating snapshot
+        snapshot = await self.snapshot_service.create_snapshot(document_id, extraction.text)
+
+        # Anchor on blockchain
+        record = await self.blockchain_service.record_document(document, snapshot.text_hash)
+
+        await self.repo.update(document,
+            finalized_by=user_id,
+            finalized_at = datetime.now(timezone.utc),
+            lifecycle = "FINALIZED"
+        )
+
+        await self.session.commit()
+
+        from app.celery_tasks import handle_document_recorded
+
+        handle_document_recorded.delay(
+            user_id=str(user_id),
+            document_title=document.file_name,
+            document_id=str(document_id),
+            tx_hash=record.tx_hash,
+        )
+
+        log.info(
+            "document.finalize",
+            user_id=str(user_id),
+            document_id=str(document_id),
+            tx_hash=record.tx_hash,
+            text_hash=snapshot.text_hash,
+        )
+
+        return record
 
 
     # ========== helpers =============
