@@ -10,9 +10,14 @@ class CeleryDocumentQueue:
         content_type: str,
         document_hash: str,
     ) -> None:
-        from app.celery_tasks.documents import process_document_task
+        from app.celery_tasks.documents import extract_document_task
 
-        process_document_task.delay(
+        extract_document_task.delay(
             document_id=str(document_id),
             storage_url=storage_url,
         )
+
+    async def enqueue_enrich_document(self, document_id: uuid.UUID) -> None:
+        from app.celery_tasks.documents import enrich_document_task
+
+        enrich_document_task.delay(document_id=str(document_id))

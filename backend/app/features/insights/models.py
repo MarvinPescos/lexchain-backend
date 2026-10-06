@@ -8,7 +8,7 @@ from app.infrastructure.database import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from app.features.documents.models import Document
-    from app.features.extraction.models import DocumentExtraction
+    from app.features.documents.extraction.models import DocumentExtraction
 
 class DocumentInsight(Base, TimestampMixin):
     __tablename__ = "document_insight"

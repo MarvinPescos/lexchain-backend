@@ -3,26 +3,46 @@ import uuid
 
 import app.all_models  # noqa: F401 — registers all SQLAlchemy models for the worker process
 from app.celery_app import celery_app
-from app.workers.process_documents import process_document_job
+from app.workers.process_documents import enrich_document_job, extract_document_job
 
 
 @celery_app.task(
-    name="document.process",
+    name="document.extract",
     bind=True,
     max_retries=3,
     default_retry_delay=60,
     acks_late=True,
 )
-def process_document_task(self, document_id: uuid.UUID, storage_url: str):
+def extract_document_task(self, document_id: uuid.UUID, storage_url: str):
+    """Phase 1 — OCR only. Leaves the document awaiting issuer review."""
+    try:
+        asyncio.run(
+            extract_document_job(
+                document_id=document_id,
+                storage_url=storage_url,
+            )
+        )
+    except Exception as exc:
+        raise self.retry(exc=exc)
+
+
+@celery_app.task(
+    name="document.enrich",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+    acks_late=True,
+)
+def enrich_document_task(self, document_id: uuid.UUID):
+    """Phase 2 — chunk, embed and analyze the text the issuer approved."""
     from app.infrastructure.nlp.analysis import LLMAnalysisProvider
     from app.infrastructure.nlp.chunking import build_chunker
     from app.infrastructure.nlp.embeddings import build_embedder
 
     try:
         asyncio.run(
-            process_document_job(
+            enrich_document_job(
                 document_id=document_id,
-                storage_url=storage_url,
                 analyzer=LLMAnalysisProvider(),
                 chunker=build_chunker(),
                 embedder=build_embedder(),

@@ -23,7 +23,9 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     task_default_queue="default",
     task_routes={
-        "document.process": {"queue": "documents"},
+        # Wildcard so renaming or adding a document task cannot silently strand
+        # it in the default queue, which no worker consumes.
+        "document.*": {"queue": "documents"},
         "notifications.*": {"queue": "notifications"},
     },
 )

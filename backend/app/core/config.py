@@ -89,6 +89,22 @@ class Settings(BaseSettings):
         default=120, description="MinerU API timeout in seconds"
     )
 
+    # Backup / recovery
+    BACKUP_ENABLED: bool = Field(
+        default=True, description="Archive finalized documents so they can be restored"
+    )
+    BACKUP_PROVIDER: str = Field(
+        default="supabase",
+        description=(
+            "Archive destination. 'supabase' is an interim same-project bucket — "
+            "it survives accidental deletion but not a compromised account. "
+            "Replace with an object-locked bucket in a separate account."
+        ),
+    )
+    BACKUP_BUCKET: str = Field(
+        default="DocumentBackups", description="Bucket holding archived originals"
+    )
+
     WEB_RPC_URL: str = Field(..., description="")
     CONTRACT_ADDRESS: str = Field(..., description="")
     CONTRACT_OWNER_PRIVATE_KEY: str = Field(..., description="")

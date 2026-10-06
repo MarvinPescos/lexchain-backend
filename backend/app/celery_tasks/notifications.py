@@ -58,17 +58,31 @@ def handle_document_recorded(
 def handle_document_processed(
     user_id: uuid.UUID, document_title: str, document_id: str, status: str
 ):
-    success = status == "completed"
+    # Three outcomes now: OCR finished and needs the issuer, enrichment finished,
+    # or something failed. Anything not explicitly a success must not be reported
+    # as a failure, or the issuer is told a document broke when it is simply
+    # waiting on them.
+    if status == "awaiting_review":
+        notification_type = NotificationType.DOCUMENT_PROCESSED
+        title = "Document ready for review"
+        body = f"'{document_title}' has been extracted and needs your review."
+    elif status == "completed":
+        notification_type = NotificationType.DOCUMENT_PROCESSED
+        title = "Document processed"
+        body = f"'{document_title}' is ready."
+    else:
+        notification_type = NotificationType.DOCUMENT_FAILED
+        title = "Document processing failed"
+        body = f"Processing failed for '{document_title}'."
+
     asyncio.run(
         _create_notification(
             user_id=user_id,
-            type=NotificationType.DOCUMENT_PROCESSED
-            if success
-            else NotificationType.DOCUMENT_FAILED,
-            title="Document processed" if success else "Document processing failed",
-            body=f"'{document_title}' is ready for review."
-            if success
-            else f"Processing failed for '{document_title}'.",
-            metadata={"document_id": document_id},
+            type=notification_type,
+            title=title,
+            body=body,
+            metadata={"document_id": document_id, "status": status},
         )
     )
+
+

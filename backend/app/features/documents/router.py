@@ -1,30 +1,73 @@
-from fastapi import APIRouter, Depends, File, UploadFile, status, Request
-from typing import List
 import uuid
+from typing import List
 
-from app.infrastructure.security.dependencies import AuthenticatedUser, require_auth, require_lawyer
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
 
-from .service import DocumentService
-from .dependencies import get_document_service
-from .schemas import (
-    DocumentUploadAcceptedResponse, DocumentResponse, DocumentUploadResponse,
-    RenameDocumentRequest,
-    AddPartyRequest, DocumentPartyResponse,
-    DocumentPartyListResponse, RemovePartyResponse,
-    VersionHistoryResponse,
+from app.features.blockchain.schemas import (
+    DocumentVerificationResponse,
+    RecordResponse,
+)
+from app.infrastructure.security.dependencies import (
+    AuthenticatedUser,
+    require_auth,
+    require_lawyer,
 )
 
-router = APIRouter(prefix="/documents", tags=["Documents"])
+from .dependencies import (
+    get_discussion,
+    get_drafting,
+    get_finalization,
+    get_intake,
+    get_queries,
+    get_sharing,
+    get_verification,
+)
+from .extraction.router import router as extraction_router
+from .queries import DocumentQueries
+from .workflow.discussion import DocumentDiscussion
+from .schemas import (
+    AddPartyRequest,
+    CorrectEntryRequest,
+    DocumentHistoryResponse,
+    CreateDraftRequest,
+    OpenDocumentRequest,
+    SignedCopyListResponse,
+    UpdateDocumentRequest,
+    DocumentInvitationActionResponse,
+    DocumentInvitationListResponse,
+    DocumentPartyListResponse,
+    DocumentPartyResponse,
+    DocumentResponse,
+    DraftCommentListResponse,
+    DocumentUploadResponse,
+    RemovePartyResponse,
+)
+from .workflow.drafting import DocumentDrafting
+from .workflow.finalization import DocumentFinalization
+from .workflow.intake import DocumentIntake
+from .workflow.sharing import DocumentSharing
+
+# Swagger groups, in the order a document moves through them. Order and
+# descriptions are set in main.py (`openapi_tags`).
+TAG_DOCUMENTS = "Documents"
+TAG_PREPARATION = "Documents · Preparation (Path 1)"
+TAG_SIGNED_COPY = "Documents · Signed copy & register"
+TAG_FINALIZE = "Documents · Finalize & verify"
+TAG_SHARING = "Documents · Sharing"
+
+router = APIRouter(prefix="/documents")
 
 
 # ── List ────────────────────────────────────────────────────────────
 
+
 @router.get(
     "/",
+    tags=[TAG_DOCUMENTS],
     response_model=List[DocumentUploadResponse],
     status_code=status.HTTP_200_OK,
     summary="List all documents",
-    description="Return all latest document versions belonging to or shared with the authenticated user.",
+    description="Every document belonging to or shared with the authenticated user, optionally filtered by lifecycle.",
     responses={
         200: {"description": "List of documents"},
         401: {"description": "Not authenticated — missing or invalid bearer token"},
@@ -34,22 +77,107 @@ async def get_all_user_documents(
     request: Request,
     limit: int = 50,
     offset: int = 0,
+    lifecycle: str | None = Query(None, description="Filter by lifecycle stage"),
     current_user: AuthenticatedUser = Depends(require_auth),
-    service: DocumentService = Depends(get_document_service),
+    queries: DocumentQueries = Depends(get_queries),
 ) -> List[DocumentUploadResponse]:
-    return await service.get_all_documents(
-        current_user.user_id, limit, offset,
+    return await queries.list_documents(
+        current_user.user_id,
+        limit,
+        offset,
+        lifecycle,
+    )
+
+
+# ── Path 1: open a document ─────────────────────────────────────────
+
+
+@router.post(
+    "/",
+    tags=[TAG_PREPARATION],
+    response_model=DocumentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Open a document (Path 1)",
+    description=(
+        "Open a document record before anything is signed. The working draft "
+        "lives in Google Docs; the record starts PREPARING with no file and no "
+        "register entry."
+    ),
+    responses={
+        201: {"description": "Document opened"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only lawyers may open documents"},
+    },
+)
+async def open_document(
+    body: OpenDocumentRequest,
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    intake: DocumentIntake = Depends(get_intake),
+) -> DocumentResponse:
+    return await intake.open_document(current_user, body.file_name)
+
+
+# ── Path 2: upload an already signed document ───────────────────────
+
+
+@router.post(
+    "/upload",
+    tags=[TAG_SIGNED_COPY],
+    response_model=DocumentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload an already signed document (Path 2)",
+    description=(
+        "Upload a signed/notarized PDF and file it in a register book. The "
+        "document is SIGNED and waits for the lawyer to finalize it — nothing "
+        "is processed yet.\n\n"
+        "`doc_no` / `page_no` are the Doc. No. and Page No. from the notarial "
+        "block. Optional for an OPEN book — the next free entry is used. "
+        "Required for a CLOSED book, where they are copied from the paper register.\n\n"
+        "Refused with 409 `READY_FOR_SIGNATURE_EXISTS` while documents are "
+        "waiting for their signed copy, unless `confirm_new_record=true`."
+    ),
+    responses={
+        201: {"description": "Document filed, SIGNED"},
+        400: {
+            "description": "Empty file, unsupported file type, file exceeds size limit, or register numbers missing/out of range"
+        },
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only lawyers may upload documents"},
+        404: {"description": "Book not found"},
+        409: {
+            "description": "Same file already filed, Doc. No. taken, page full, or documents waiting for a signed copy"
+        },
+    },
+)
+async def upload_document(
+    request: Request,
+    file_name: str,
+    book_id: uuid.UUID,
+    doc_no: int | None = Query(None, ge=1, description="Doc. No. in the register"),
+    page_no: int | None = Query(None, ge=1, description="Page No. in the register"),
+    confirm_new_record: bool = Query(
+        False,
+        description="Confirm this is not the signed copy of a document already open",
+    ),
+    file: UploadFile = File(...),
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    intake: DocumentIntake = Depends(get_intake),
+) -> DocumentResponse:
+    return await intake.upload_signed(
+        current_user, file, file_name, book_id, doc_no, page_no, confirm_new_record
     )
 
 
 # ── Detail ──────────────────────────────────────────────────────────
 
+
 @router.get(
     "/{document_id}",
+    tags=[TAG_DOCUMENTS],
     response_model=DocumentResponse,
     status_code=status.HTTP_200_OK,
     summary="Get a document",
-    description="Return a single document if the user owns it or is a whitelisted party.",
+    description="Return a single document, plus what the requesting user is permitted to do with it, if they own it or are a whitelisted party.",
     responses={
         200: {"description": "Document found"},
         401: {"description": "Not authenticated — missing or invalid bearer token"},
@@ -60,125 +188,368 @@ async def get_user_document(
     request: Request,
     document_id: uuid.UUID,
     current_user: AuthenticatedUser = Depends(require_auth),
-    service: DocumentService = Depends(get_document_service),
+    queries: DocumentQueries = Depends(get_queries),
 ) -> DocumentResponse:
-    return await service.get_document(current_user.user_id, document_id)
-
-
-# ── Upload ──────────────────────────────────────────────────────────
-
-@router.post(
-    "/upload",
-    response_model=DocumentUploadAcceptedResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="Upload a document",
-    description="Upload a PDF document. Only lawyers and admins may upload.",
-    responses={
-        202: {"description": "Document accepted for processing"},
-        400: {"description": "Empty file, unsupported file type, or file exceeds size limit"},
-        401: {"description": "Not authenticated — missing or invalid bearer token"},
-        403: {"description": "Forbidden — only lawyers may upload documents"},
-    },
-)
-async def upload_document(
-    request: Request,
-    file_name: str,
-    book_id: uuid.UUID,
-    file: UploadFile = File(...),
-    current_user: AuthenticatedUser = Depends(require_lawyer),
-    service: DocumentService = Depends(get_document_service),
-) -> DocumentUploadAcceptedResponse:
-    return await service.upload_document(current_user.user_id, file, file_name, book_id)
+    return await queries.get_document(current_user, document_id)
 
 
 # ── Rename ──────────────────────────────────────────────────────────
 
+
 @router.patch(
     "/{document_id}",
-    response_model=DocumentUploadResponse,
+    tags=[TAG_DOCUMENTS],
+    response_model=DocumentResponse,
     status_code=status.HTTP_200_OK,
     summary="Rename a document",
-    description="Update the display name of a document. Only the document owner (lawyer) may rename.",
+    description="Change the display name, until the document is finalized. Owner only.",
     responses={
         200: {"description": "Document renamed"},
-        401: {"description": "Not authenticated — missing or invalid bearer token"},
         403: {"description": "Forbidden — only the document owner may rename"},
         404: {"description": "Document not found"},
+        409: {"description": "Finalized or cancelled"},
     },
 )
 async def rename_document(
     document_id: uuid.UUID,
-    body: RenameDocumentRequest,
+    body: UpdateDocumentRequest,
     current_user: AuthenticatedUser = Depends(require_lawyer),
-    service: DocumentService = Depends(get_document_service),
-) -> DocumentUploadResponse:
-    return await service.update_file_name(
-        current_user.user_id, document_id, body.file_name,
-    )
+    intake: DocumentIntake = Depends(get_intake),
+) -> DocumentResponse:
+    return await intake.rename(current_user, document_id, body.file_name)
 
 
-# ── Update (new version) ────────────────────────────────────────────
+# ── Working draft (Google Docs) ─────────────────────────────────────
+
 
 @router.post(
-    "/{document_id}/update",
-    response_model=DocumentUploadAcceptedResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="Update a document (new version)",
-    description="Upload a new file as the next version of an existing document. Only the document owner may update.",
+    "/{document_id}/draft",
+    tags=[TAG_PREPARATION],
+    response_model=DocumentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create the working draft in Google Docs",
+    description=(
+        "Creates the draft in the lawyer's own Google Drive and shares it with "
+        "every accepted client as a commenter (another lawyer on the document "
+        "as an editor). Open `draft_url` in a new tab afterwards.\n\n"
+        "`source`: `blank` (new empty Doc), `template` (copy of `file_id`) or "
+        "`existing` (use `file_id` itself). `file_id` comes from the Google "
+        "Picker — see `GET /google/picker-token`.\n\n"
+        "Only while PREPARING, and only once per document."
+    ),
     responses={
-        202: {"description": "Update accepted for processing"},
-        400: {"description": "Empty file, unsupported file type, or file exceeds size limit"},
-        401: {"description": "Not authenticated — missing or invalid bearer token"},
-        403: {"description": "Forbidden — only the document owner may update"},
+        201: {"description": "Draft created and shared"},
+        400: {"description": "No file picked, or the picked file is not a Google Doc"},
+        403: {"description": "Forbidden — only the document owner may create the draft"},
         404: {"description": "Document not found"},
+        409: {
+            "description": "Not PREPARING, a draft already exists, or Google is not connected (`GOOGLE_NOT_CONNECTED`)"
+        },
+        502: {"description": "Google Drive is unreachable"},
     },
 )
-async def update_document(
-    request: Request,
+async def create_draft(
     document_id: uuid.UUID,
-    file_name: str,
-    file: UploadFile = File(...),
+    body: CreateDraftRequest,
     current_user: AuthenticatedUser = Depends(require_lawyer),
-    service: DocumentService = Depends(get_document_service),
-) -> DocumentUploadAcceptedResponse:
-    return await service.update_document(
-        current_user.user_id, document_id, file, file_name,
+    drafting: DocumentDrafting = Depends(get_drafting),
+) -> DocumentResponse:
+    return await drafting.create_draft(
+        current_user, document_id, body.source, body.file_id
     )
 
 
-# ── Version history ─────────────────────────────────────────────────
+# ── Draft comments ──────────────────────────────────────────────────
+
 
 @router.get(
-    "/{document_id}/versions",
-    response_model=VersionHistoryResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Get version history",
-    description="Return the full version chain for a document (newest → oldest). Accessible by owner or any party.",
-    responses={
-        200: {"description": "Version history"},
-        401: {"description": "Not authenticated — missing or invalid bearer token"},
-        404: {"description": "Document not found or user has no access"},
-    },
+    "/{document_id}/comments",
+    tags=[TAG_PREPARATION],
+    response_model=DraftCommentListResponse,
+    summary="Comments on the working draft",
+    description=(
+        "The comment threads from the Google Docs draft, as of the last sync. "
+        "Kept after the draft is locked, as the record of how the text was agreed. "
+        "Owner and accepted parties."
+    ),
+    responses={404: {"description": "Document not found"}},
 )
-async def get_version_history(
-    request: Request,
+async def list_draft_comments(
     document_id: uuid.UUID,
     current_user: AuthenticatedUser = Depends(require_auth),
-    service: DocumentService = Depends(get_document_service),
-) -> VersionHistoryResponse:
-    return await service.get_version_history(
-        current_user.user_id, document_id,
+    discussion: DocumentDiscussion = Depends(get_discussion),
+) -> DraftCommentListResponse:
+    return await discussion.list_comments(current_user, document_id)
+
+
+@router.post(
+    "/{document_id}/comments/sync",
+    tags=[TAG_PREPARATION],
+    response_model=DraftCommentListResponse,
+    summary="Pull the latest comments from Google Docs",
+    description=(
+        "Syncs right away instead of waiting for the scheduled sync, and "
+        "notifies the people in each thread about anything new."
+    ),
+    responses={
+        404: {"description": "Document not found"},
+        409: {"description": "The lawyer's Google account is not connected"},
+        502: {"description": "Google Drive is unreachable"},
+    },
+)
+async def sync_draft_comments(
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_auth),
+    discussion: DocumentDiscussion = Depends(get_discussion),
+) -> DraftCommentListResponse:
+    return await discussion.sync_now(current_user, document_id)
+
+
+# ── Lifecycle actions ───────────────────────────────────────────────
+
+
+@router.post(
+    "/{document_id}/ready",
+    tags=[TAG_PREPARATION],
+    response_model=DocumentResponse,
+    summary="Mark ready for signature",
+    description=(
+        "The text is agreed: the Google Docs draft is locked (clients can only "
+        "read it) and it goes to print. Only from PREPARING. Comments are synced "
+        "first, and this is refused with 409 `UNRESOLVED_COMMENTS` while any "
+        "thread on the draft is open."
+    ),
+)
+async def mark_ready(
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    drafting: DocumentDrafting = Depends(get_drafting),
+) -> DocumentResponse:
+    return await drafting.mark_ready(current_user, document_id)
+
+
+@router.post(
+    "/{document_id}/reopen",
+    tags=[TAG_PREPARATION],
+    response_model=DocumentResponse,
+    summary="Back to preparing",
+    description="Send a document that is ready for signature back to PREPARING. Clients can comment on the draft again.",
+)
+async def reopen(
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    drafting: DocumentDrafting = Depends(get_drafting),
+) -> DocumentResponse:
+    return await drafting.reopen(current_user, document_id)
+
+
+@router.post(
+    "/{document_id}/cancel",
+    tags=[TAG_PREPARATION],
+    response_model=DocumentResponse,
+    summary="Cancel a document that was never signed",
+    description="Only from PREPARING or READY_FOR_SIGNATURE. The record is kept.",
+)
+async def cancel(
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    drafting: DocumentDrafting = Depends(get_drafting),
+) -> DocumentResponse:
+    return await drafting.cancel(current_user, document_id)
+
+
+# ── Signed copy ─────────────────────────────────────────────────────
+
+
+@router.post(
+    "/{document_id}/signed-copy",
+    tags=[TAG_SIGNED_COPY],
+    response_model=DocumentResponse,
+    summary="Attach the signed copy (Path 1)",
+    description=(
+        "Attach the signed/notarized PDF to the record it was prepared in and "
+        "file it in a register book. Only from READY_FOR_SIGNATURE."
+    ),
+)
+async def attach_signed_copy(
+    document_id: uuid.UUID,
+    book_id: uuid.UUID,
+    doc_no: int | None = Query(None, ge=1, description="Doc. No. in the register"),
+    page_no: int | None = Query(None, ge=1, description="Page No. in the register"),
+    file: UploadFile = File(...),
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    intake: DocumentIntake = Depends(get_intake),
+) -> DocumentResponse:
+    return await intake.attach_signed_copy(
+        current_user, document_id, file, book_id, doc_no, page_no
+    )
+
+
+@router.put(
+    "/{document_id}/signed-copy",
+    tags=[TAG_SIGNED_COPY],
+    response_model=DocumentResponse,
+    summary="Replace the signed copy",
+    description="Swap in the right signed copy before finalize. A reason is required and the previous copy is kept.",
+)
+async def replace_signed_copy(
+    document_id: uuid.UUID,
+    reason: str = Form(..., min_length=1),
+    file: UploadFile = File(...),
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    intake: DocumentIntake = Depends(get_intake),
+) -> DocumentResponse:
+    return await intake.replace_signed_copy(current_user, document_id, file, reason)
+
+
+@router.get(
+    "/{document_id}/signed-copies",
+    tags=[TAG_SIGNED_COPY],
+    response_model=SignedCopyListResponse,
+    summary="All signed copies, newest first",
+)
+async def get_signed_copies(
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_auth),
+    queries: DocumentQueries = Depends(get_queries),
+) -> SignedCopyListResponse:
+    return await queries.get_signed_copies(current_user, document_id)
+
+
+@router.patch(
+    "/{document_id}/entry",
+    tags=[TAG_SIGNED_COPY],
+    response_model=DocumentResponse,
+    summary="Correct the register entry",
+    description="Fix the Doc. No. / Page No. (or book) of a SIGNED document before finalize.",
+)
+async def correct_entry(
+    document_id: uuid.UUID,
+    body: CorrectEntryRequest,
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    intake: DocumentIntake = Depends(get_intake),
+) -> DocumentResponse:
+    return await intake.correct_entry(
+        current_user, document_id, body.doc_no, body.page_no, body.book_id
+    )
+
+
+# ── History ─────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/{document_id}/history",
+    tags=[TAG_DOCUMENTS],
+    response_model=DocumentHistoryResponse,
+    summary="Lifecycle history",
+    description="Every lifecycle action on the document, oldest first.",
+)
+async def get_history(
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_auth),
+    queries: DocumentQueries = Depends(get_queries),
+) -> DocumentHistoryResponse:
+    return await queries.get_history(current_user, document_id)
+
+
+# ── Invitations: mine ───────────────────────────────────────────────
+
+
+@router.get(
+    "/invitations/mine",
+    tags=[TAG_SHARING],
+    response_model=DocumentInvitationListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List my pending invitations",
+    description=(
+        "Invitations awaiting this user's response. A pending invitation grants "
+        "no access — the document does not appear in `GET /documents/` until it "
+        "is accepted. Any authenticated user may call this; it only ever returns "
+        "their own invitations."
+    ),
+    responses={
+        200: {"description": "Pending invitations"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+    },
+)
+async def list_my_invitations(
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_auth),
+    sharing: DocumentSharing = Depends(get_sharing),
+) -> DocumentInvitationListResponse:
+    return await sharing.list_invitations(current_user)
+
+
+# ── Invitations: accept ─────────────────────────────────────────────
+
+
+@router.post(
+    "/invitations/{invitation_id}/accept",
+    tags=[TAG_SHARING],
+    response_model=DocumentInvitationActionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Accept an invitation",
+    description=(
+        "Grants access to the document. Only the invitee may accept, and only "
+        "while the invitation is still pending."
+    ),
+    responses={
+        200: {"description": "Accepted — the document is now accessible"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        404: {"description": "Invitation not found or addressed to someone else"},
+        409: {"description": "Already accepted or declined"},
+    },
+)
+async def accept_invitation(
+    request: Request,
+    invitation_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_auth),
+    sharing: DocumentSharing = Depends(get_sharing),
+) -> DocumentInvitationActionResponse:
+    return await sharing.respond_to_invitation(current_user, invitation_id, accept=True)
+
+
+# ── Invitations: decline ────────────────────────────────────────────
+
+
+@router.post(
+    "/invitations/{invitation_id}/decline",
+    tags=[TAG_SHARING],
+    response_model=DocumentInvitationActionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Decline an invitation",
+    description=(
+        "Refuses the invitation; no access is granted. The refusal is recorded "
+        "so the owner can see it. The owner may invite again, which reopens it."
+    ),
+    responses={
+        200: {"description": "Declined"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        404: {"description": "Invitation not found or addressed to someone else"},
+        409: {"description": "Already accepted or declined"},
+    },
+)
+async def decline_invitation(
+    request: Request,
+    invitation_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_auth),
+    sharing: DocumentSharing = Depends(get_sharing),
+) -> DocumentInvitationActionResponse:
+    return await sharing.respond_to_invitation(
+        current_user, invitation_id, accept=False
     )
 
 
 # ── Parties: list ───────────────────────────────────────────────────
 
+
 @router.get(
     "/{document_id}/parties",
+    tags=[TAG_SHARING],
     response_model=DocumentPartyListResponse,
     status_code=status.HTTP_200_OK,
     summary="List document parties",
-    description="Return all whitelisted parties for a document. Accessible by owner or any party.",
+    description="Return the issuer and all whitelisted parties for a document. Accessible by owner, any party, or admin.",
     responses={
         200: {"description": "List of parties"},
         401: {"description": "Not authenticated — missing or invalid bearer token"},
@@ -189,21 +560,24 @@ async def get_document_parties(
     request: Request,
     document_id: uuid.UUID,
     current_user: AuthenticatedUser = Depends(require_auth),
-    service: DocumentService = Depends(get_document_service),
+    sharing: DocumentSharing = Depends(get_sharing),
 ) -> DocumentPartyListResponse:
-    return await service.get_parties(
-        current_user.user_id, document_id,
+    return await sharing.get_parties(
+        current_user,
+        document_id,
     )
 
 
 # ── Parties: add ────────────────────────────────────────────────────
 
+
 @router.post(
     "/{document_id}/parties",
+    tags=[TAG_SHARING],
     response_model=DocumentPartyResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Add a party to a document",
-    description="Whitelist a user by email to access this document. Only the document owner may add parties.",
+    description="Whitelist a user by email to access this document. Only the document owner (or admin) may add parties. Roles: viewer | signer | editor — signer and editor may only be granted to lawyers.",
     responses={
         201: {"description": "Party added"},
         400: {"description": "User does not exist, or role is invalid for this user"},
@@ -217,10 +591,13 @@ async def add_document_party(
     document_id: uuid.UUID,
     body: AddPartyRequest,
     current_user: AuthenticatedUser = Depends(require_lawyer),
-    service: DocumentService = Depends(get_document_service),
+    sharing: DocumentSharing = Depends(get_sharing),
 ) -> DocumentPartyResponse:
-    party = await service.add_party(
-        current_user.user_id, document_id, body.email, body.role,
+    party = await sharing.add_party(
+        current_user,
+        document_id,
+        body.email,
+        body.role,
     )
     return DocumentPartyResponse(
         id=party.id,
@@ -235,12 +612,14 @@ async def add_document_party(
 
 # ── Parties: remove ─────────────────────────────────────────────────
 
+
 @router.delete(
     "/{document_id}/parties/{party_user_id}",
+    tags=[TAG_SHARING],
     response_model=RemovePartyResponse,
     status_code=status.HTTP_200_OK,
     summary="Remove a party from a document",
-    description="Revoke a user's access to this document. Only the document owner may remove parties.",
+    description="Revoke a user's access to this document. Only the document owner (or admin) may remove parties.",
     responses={
         200: {"description": "Party removed"},
         401: {"description": "Not authenticated — missing or invalid bearer token"},
@@ -253,8 +632,80 @@ async def remove_document_party(
     document_id: uuid.UUID,
     party_user_id: uuid.UUID,
     current_user: AuthenticatedUser = Depends(require_lawyer),
-    service: DocumentService = Depends(get_document_service),
+    sharing: DocumentSharing = Depends(get_sharing),
 ) -> RemovePartyResponse:
-    return await service.remove_party(
-        current_user.user_id, document_id, party_user_id,
+    return await sharing.remove_party(
+        current_user,
+        document_id,
+        party_user_id,
     )
+
+
+# ── Finalize ────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/{document_id}/finalize",
+    tags=[TAG_FINALIZE],
+    response_model=RecordResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Finalize a document",
+    description=(
+        "The lawyer confirms the signed copy. Freezes it, anchors the SHA-256 of "
+        "the PDF on-chain, then queues OCR and analysis on the frozen copy. Only "
+        "from SIGNED. This is the only point at which a document is hashed on-chain."
+    ),
+    responses={
+        200: {"description": "Finalized document"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only the document owner may finalize"},
+        404: {"description": "Document not found"},
+        409: {
+            "description": "Not SIGNED, or the stored file no longer matches the upload"
+        },
+    },
+)
+async def finalize_document(
+    request: Request,
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    finalization: DocumentFinalization = Depends(get_finalization),
+) -> RecordResponse:
+    return await finalization.finalize(current_user, document_id)
+
+
+# ── Verify ──────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/{document_id}/verify",
+    tags=[TAG_FINALIZE],
+    response_model=DocumentVerificationResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Verify a document against the chain",
+    description=(
+        "Hashes the stored signed copy as it is now and compares it with the "
+        "hash anchored on-chain. The verdict is computed server-side."
+    ),
+    responses={
+        200: {
+            "description": "Verification result, with a tamper report when applicable"
+        },
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        404: {"description": "Document not found, or it has no on-chain record"},
+    },
+)
+async def verify_document(
+    request: Request,
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_auth),
+    # Untyped: importing BlockchainService here would be circular
+    # (blockchain.service imports the documents package).
+    verification=Depends(get_verification),
+) -> DocumentVerificationResponse:
+    return await verification.verify_document(current_user, document_id)
+
+
+# ── OCR review (extraction/router.py) ───────────────────────────────
+
+router.include_router(extraction_router)
