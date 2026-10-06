@@ -109,6 +109,9 @@ class Settings(BaseSettings):
     CONTRACT_ADDRESS: str = Field(..., description="")
     CONTRACT_OWNER_PRIVATE_KEY: str = Field(..., description="")
 
+    # On by default so development keeps sending through Resend as before;
+    # set false to log emails instead of sending them.
+    USE_REAL_EMAIL: bool = Field(default=True, description="Send email through Resend")
     RESEND_API_KEY: str = Field(..., min_length=1, description="Resend API key")
     RESEND_FROM_EMAIL: str = Field(
         default="noreply@lexchain.app", description="Sender address"

@@ -86,3 +86,34 @@ def handle_document_processed(
     )
 
 
+async def _send_draft_activity_email(user_id, subject, body, document_name, draft_url):
+    import app.all_models  # noqa: F401
+    from app.features.users.repository import UserRepository
+    from app.infrastructure.email import (
+        EmailMessage,
+        build_draft_activity_email,
+        build_email_provider,
+    )
+    from app.infrastructure.observability.logging_setup import log
+
+    async with AsyncSessionLocal() as session:
+        user = await UserRepository(session).get_by_id(uuid.UUID(user_id))
+    if user is None or not user.is_active:
+        return
+
+    html, text = build_draft_activity_email(subject, body, document_name, draft_url)
+    sent = await build_email_provider().send(
+        EmailMessage(to=user.email, subject=subject, html=html, text=text)
+    )
+    if not sent:
+        log.error("email.draft_activity.failed", user_id=user_id, subject=subject)
+
+
+@celery_app.task(name="notifications.draft_activity_email")
+def send_draft_activity_email(
+    user_id: str, subject: str, body: str, document_name: str, draft_url: str | None
+):
+    """Email one recipient about a comment, reply or resolve on a draft."""
+    asyncio.run(
+        _send_draft_activity_email(user_id, subject, body, document_name, draft_url)
+    )
