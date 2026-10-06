@@ -1,0 +1,10 @@
+{
+  "timestamp_utc": "2026-07-19T13:13:23Z",
+  "token_usd": { "ETH": 1865.67, "POL": 0.080647 },
+  "source": { "gas_price": "cast gas-price (live)", "token_usd": "coingecko simple/price" },
+  "chains": {
+    "ethereum": { "gas_price_wei": 40683816, "total_anchor_gas": 160575, "native_token": "ETH", "cost_per_anchor_usd": 0.012188 },
+    "base": { "gas_price_wei": 6000000, "total_anchor_gas": 160575, "native_token": "ETH", "cost_per_anchor_usd": 0.001797 },
+    "polygon": { "gas_price_wei": 280097332451, "total_anchor_gas": 160575, "native_token": "POL", "cost_per_anchor_usd": 0.003627 }
+  }
+}

@@ -4,3 +4,10 @@ out = "out"
 libs = ["lib"]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+
+# Fork endpoints for the cross-chain gas benchmark. script/bench_gas.sh exports
+# these env vars (public defaults, overridable) before invoking forge.
+[rpc_endpoints]
+ethereum = "${ETH_RPC_URL}"
+base = "${BASE_RPC_URL}"
+polygon = "${POLYGON_RPC_URL}"
