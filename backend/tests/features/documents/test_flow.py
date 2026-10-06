@@ -1,0 +1,195 @@
+"""Both entry paths, end to end through DocumentService."""
+
+import hashlib
+
+import pytest
+
+from app.features.documents.models import DocumentParty
+from app.shared.constants import PARTY_STATUS_ACCEPTED
+from app.shared.errors.exceptions import ConflictError, ForbiddenError
+from tests.conftest import as_auth, connect_google, pdf
+
+
+
+async def test_path1_prepare_sign_attach_finalize(
+    queries, intake, drafting, finalization, google, lawyer, open_book, storage, queue
+):
+    me = as_auth(lawyer)
+    await connect_google(google, lawyer)
+
+    doc = await intake.open_document(me, "Deed of Sale – Cruz lot")
+    assert (doc.lifecycle, doc.book_id, doc.signed_copy) == ("PREPARING", None, None)
+    assert doc.permissions.can_create_draft
+
+    doc = await drafting.create_draft(me, doc.document_id)
+    assert doc.draft_url.startswith("https://docs.google.com/document/d/")
+    assert not doc.permissions.can_create_draft
+    assert doc.permissions.can_mark_ready
+    assert not doc.permissions.can_attach_signed_copy
+
+    with pytest.raises(ConflictError, match="Mark the document Ready"):
+        await intake.attach_signed_copy(me, doc.document_id, pdf(), open_book.id)
+
+    doc = await drafting.mark_ready(me, doc.document_id)
+    assert doc.lifecycle == "READY_FOR_SIGNATURE"
+
+    doc = await intake.attach_signed_copy(
+        me, doc.document_id, pdf("cruz-signed"), open_book.id
+    )
+    assert (doc.lifecycle, doc.doc_no, doc.page_no) == ("SIGNED", 1, 1)
+    assert doc.signed_copy.is_current
+    assert queue.processed == []  # nothing is processed before finalize
+
+    record = await finalization.finalize(me, doc.document_id)
+    stored = storage.objects[doc.signed_copy.storage_url]
+    assert record.data_hash == hashlib.sha256(stored).hexdigest()
+    assert queue.processed == [doc.document_id]
+
+    doc = await queries.get_document(me, doc.document_id)
+    assert (doc.lifecycle, doc.status, doc.on_chain) == ("FINALIZED", "QUEUED", True)
+
+    history = await queries.get_history(me, doc.document_id)
+    assert [c.action for c in history.changes] == [
+        "open", "create_draft", "mark_ready", "attach_signed_copy", "finalize",
+    ]
+
+
+async def test_path2_upload_then_finalize(
+    queries, intake, finalization, lawyer, closed_book, queue
+):
+    me = as_auth(lawyer)
+
+    doc = await intake.upload_signed(
+        me, pdf("old-deed"), "Old deed (2025)", closed_book.id, doc_no=45, page_no=9
+    )
+    assert (doc.lifecycle, doc.doc_no, doc.page_no, doc.status) == ("SIGNED", 45, 9, None)
+    assert queue.processed == []
+
+    await finalization.finalize(me, doc.document_id)
+    doc = await queries.get_document(me, doc.document_id)
+    assert doc.lifecycle == "FINALIZED"
+
+
+async def test_closed_book_requires_numbers(intake, lawyer, closed_book):
+    from app.shared.errors.exceptions import BadRequestError
+
+    with pytest.raises(BadRequestError, match="closed"):
+        await intake.upload_signed(
+            as_auth(lawyer), pdf(), "Old deed", closed_book.id
+        )
+
+
+async def test_upload_is_stopped_while_a_document_waits_for_its_signed_copy(
+    intake, drafting, lawyer, open_book
+):
+    me = as_auth(lawyer)
+    waiting = await intake.open_document(me, "Deed of Sale – Cruz lot")
+    await drafting.mark_ready(me, waiting.document_id)
+
+    with pytest.raises(ConflictError) as refused:
+        await intake.upload_signed(me, pdf(), "Cruz deed", open_book.id)
+    assert refused.value.details["reason"] == "READY_FOR_SIGNATURE_EXISTS"
+    assert refused.value.details["documents"][0]["document_id"] == str(
+        waiting.document_id
+    )
+
+    doc = await intake.upload_signed(
+        me, pdf(), "Unrelated deed", open_book.id, confirm_new_record=True
+    )
+    assert doc.lifecycle == "SIGNED"
+
+
+async def test_same_file_cannot_be_filed_twice(intake, lawyer, open_book):
+    me = as_auth(lawyer)
+    first = await intake.upload_signed(me, pdf("x"), "First", open_book.id)
+
+    with pytest.raises(ConflictError) as refused:
+        await intake.upload_signed(me, pdf("x"), "Again", open_book.id)
+    assert refused.value.details == {
+        "reason": "DUPLICATE_FILE",
+        "document_id": str(first.document_id),
+    }
+
+
+async def test_rejected_filing_leaves_nothing_stored(
+    intake, lawyer, closed_book, storage
+):
+    me = as_auth(lawyer)
+    await intake.upload_signed(
+        me, pdf("a"), "A", closed_book.id, doc_no=7, page_no=1
+    )
+    with pytest.raises(ConflictError, match="Doc. No. 7"):
+        await intake.upload_signed(
+            me, pdf("b"), "B", closed_book.id, doc_no=7, page_no=1
+        )
+    assert len(storage.objects) == 1
+
+
+async def test_replace_keeps_entry_and_old_copy(queries, intake, lawyer, open_book):
+    me = as_auth(lawyer)
+    doc = await intake.upload_signed(me, pdf("wrong-scan"), "Deed", open_book.id)
+
+    replaced = await intake.replace_signed_copy(
+        me, doc.document_id, pdf("right-scan"), reason="Scanned the unsigned page"
+    )
+    assert (replaced.doc_no, replaced.page_no) == (doc.doc_no, doc.page_no)
+    assert replaced.document_hash != doc.document_hash
+
+    copies = await queries.get_signed_copies(me, doc.document_id)
+    assert [c.is_current for c in copies.copies] == [True, False]
+    assert copies.copies[0].replaced_reason == "Scanned the unsigned page"
+
+
+async def test_correct_entry(intake, lawyer, closed_book):
+    me = as_auth(lawyer)
+    doc = await intake.upload_signed(
+        me, pdf(), "Deed", closed_book.id, doc_no=45, page_no=9
+    )
+    fixed = await intake.correct_entry(me, doc.document_id, 54, 11)
+    assert (fixed.doc_no, fixed.page_no) == (54, 11)
+
+
+async def test_cancel_only_before_signing(intake, drafting, lawyer, open_book):
+    me = as_auth(lawyer)
+    draft = await intake.open_document(me, "Draft")
+    cancelled = await drafting.cancel(me, draft.document_id)
+    assert cancelled.lifecycle == "CANCELLED"
+
+    signed = await intake.upload_signed(me, pdf(), "Signed", open_book.id)
+    with pytest.raises(ConflictError):
+        await drafting.cancel(me, signed.document_id)
+
+
+async def test_verify_detects_a_changed_file(
+    intake, finalization, verification, lawyer, open_book, storage
+):
+    me = as_auth(lawyer)
+    doc = await intake.upload_signed(me, pdf("deed"), "Deed", open_book.id)
+    await finalization.finalize(me, doc.document_id)
+    verify = verification.verify_document
+
+    assert (await verify(me, doc.document_id)).status == "AUTHENTIC"
+
+    storage.objects[doc.signed_copy.storage_url] += b" "
+    assert (await verify(me, doc.document_id)).status == "TAMPERED"
+
+
+async def test_party_reads_but_cannot_act(
+    queries, intake, drafting, session, lawyer, client, open_book
+):
+    me = as_auth(lawyer)
+    doc = await intake.open_document(me, "Deed")
+    session.add(
+        DocumentParty(
+            document_id=doc.document_id,
+            user_id=client.id,
+            email=client.email,
+            status=PARTY_STATUS_ACCEPTED,
+        )
+    )
+    await session.flush()
+
+    seen = await queries.get_document(as_auth(client), doc.document_id)
+    assert not seen.permissions.can_mark_ready
+    with pytest.raises(ForbiddenError):
+        await drafting.mark_ready(as_auth(client), doc.document_id)
