@@ -41,6 +41,7 @@ Stages (`Document.lifecycle`, changed only by `lifecycle.transition`):
 | Tokens Fernet-encrypted at rest | A DB dump must not hand out access to lawyers' Drives. |
 | Comments are **polled**, not pushed | Drive `files.watch` doesn't report comments and expires within a day; Workspace Events for Drive is a developer preview. Polling every 5 min (`DRAFT_COMMENT_SYNC_SECONDS`), plus on demand and before *Ready*. |
 | *Ready* refused while any comment is open | Every question is closed before the text is frozen (409 `UNRESOLVED_COMMENTS`). |
+| Suggestions are **not** tracked — comments only (decided 2026-10-07) | Clients get the commenter role; typing in the Doc makes a *suggestion*, which changes nothing until the lawyer accepts it. The Drive comments API doesn't return suggestions or their replies. Rather than read the Doc via the Docs API to block *Ready* on pending suggestions, the lawyer checks the Doc manually before marking ready — the firm prefers a deliberate review over an automated gate. The UI should tell clients to use comments and remind the lawyer to review suggestions. |
 | Notify: thread participants + lawyer, minus the actor | Covers client comments → lawyer, lawyer questions → clients, replies/resolve/reopen → the other side. In-app **and** email; duplicating Google's own emails is fine. |
 
 ## Google Docs integration — how it works
@@ -115,6 +116,16 @@ comments, notification types).
   broke (seen after a restart): `docker compose down && docker compose up -d db`.
 - Comment sync on a schedule needs the `celery-beat` service (added to
   `docker-compose.yml`).
+
+## Found in the live run (2026-10-06)
+
+- Google's consent screen shows Drive access as an unticked checkbox; a
+  connection without `drive.file` is now refused (fixed, `1dccba6`).
+- Live-verified against Google: connect, create draft, share to an accepted
+  client as commenter, lock on *Ready* (reader), unlock on reopen, comment
+  sync, the open-comments gate, resolve.
+- A commenter typing in the Doc creates a suggestion — invisible to the sync
+  (see the suggestions decision above).
 
 ## Not done / next
 
