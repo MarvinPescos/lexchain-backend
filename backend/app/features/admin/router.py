@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, status, Request
 import uuid
-from app.infrastructure.security.dependencies import AuthenticatedUser, require_admin
+from app.infrastructure.security.dependencies import AuthenticatedUser, require_lawyer
 from .service import AdminService
 from .dependencies import get_admin_service
 from .schemas import (
     CreateInvitationRequest, InvitationResponse,
     InvitationListResponse, AdminDashboardResponse, AdminUserListResponse,
+    AdminUserResponse, SetUserActiveRequest,
 )
 
 
@@ -15,13 +16,13 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
     response_model=AdminDashboardResponse,
     status_code=status.HTTP_200_OK,
     summary="Admin dashboard overview",
-    responses={200: {"description": "Dashboard stats"}, 401: {"description": "Not admin"}},
+    responses={200: {"description": "Dashboard stats"}, 403: {"description": "Not a lawyer"}},
 )
 
 
 async def get_dashboard(
     request: Request,
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(require_lawyer),
     service: AdminService = Depends(get_admin_service),
 ) -> AdminDashboardResponse:
     return await service.get_dashboard()
@@ -30,13 +31,13 @@ async def get_dashboard(
     response_model=AdminUserListResponse,
     status_code=status.HTTP_200_OK,
     summary="List all users",
-    responses={200: {"description": "List of users"}, 401: {"description": "Not admin"}},
+    responses={200: {"description": "List of users"}, 403: {"description": "Not a lawyer"}},
 )
 
 
 async def get_all_users(
     request: Request,
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(require_lawyer),
     service: AdminService = Depends(get_admin_service),
 ) -> AdminUserListResponse:
     return await service.get_all_users()
@@ -49,7 +50,7 @@ async def get_all_users(
     responses={
         201: {"description": "Invitation created"},
         400: {"description": "Invitation already exists"},
-        401: {"description": "Not admin"},
+        403: {"description": "Not a lawyer"},
     },
 )
 
@@ -57,7 +58,7 @@ async def get_all_users(
 async def create_invitation(
     request: Request,
     body: CreateInvitationRequest,
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(require_lawyer),
     service: AdminService = Depends(get_admin_service),
 ) -> InvitationResponse:
     return await service.create_invitation(body.email, body.role, request)
@@ -66,12 +67,12 @@ async def create_invitation(
     response_model=InvitationListResponse,
     status_code=status.HTTP_200_OK,
     summary="List all invitations",
-    responses={200: {"description": "List of invitations"}, 401: {"description": "Not admin"}},
+    responses={200: {"description": "List of invitations"}, 403: {"description": "Not a lawyer"}},
 )
 
 
 async def get_invitations(
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(require_lawyer),
     service: AdminService = Depends(get_admin_service),
 ) -> InvitationListResponse:
     return await service.get_invitations()
@@ -79,13 +80,44 @@ async def get_invitations(
     "/invitations/{invitation_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Revoke an invitation",
-    responses={204: {"description": "Revoked"}, 401: {"description": "Not admin"}, 404: {"description": "Not found"}},
+    responses={204: {"description": "Revoked"}, 403: {"description": "Not a lawyer"}, 404: {"description": "Not found"}},
 )
 
 
 async def revoke_invitation(
     invitation_id: uuid.UUID,
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(require_lawyer),
     service: AdminService = Depends(get_admin_service),
 ):
     await service.revoke_invitation(invitation_id)
+
+
+# Added 2026-09-12 16:59 PST — lets a lawyer actually use the is_active guard.
+# get_current_user (dependencies.py) and sign_in both refuse inactive accounts,
+# but until now nothing could set the flag, so the check could never fire
+# outside of a manual database edit.
+@router.patch(
+    "/users/{user_id}/active",
+    response_model=AdminUserResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Activate or deactivate a user",
+    description=(
+        "Deactivating blocks the account on its next request and stops it "
+        "signing in. You cannot deactivate yourself or the last active lawyer."
+    ),
+    responses={
+        200: {"description": "Account updated"},
+        400: {"description": "Would lock out the last lawyer, or is yourself"},
+        403: {"description": "Not a lawyer"},
+        404: {"description": "User not found"},
+    },
+)
+async def set_user_active(
+    user_id: uuid.UUID,
+    body: SetUserActiveRequest,
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    service: AdminService = Depends(get_admin_service),
+) -> AdminUserResponse:
+    return await service.set_user_active(
+        current_user.user_id, user_id, body.is_active
+    )

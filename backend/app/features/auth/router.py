@@ -1,17 +1,22 @@
-from fastapi import APIRouter, Depends, status, Request
+from app.infrastructure.security.dependencies import (
+    AuthenticatedUser,
+    require_auth,
+    security_scheme,
+)
+from fastapi import APIRouter, Depends, Request, status
+from fastapi.security import HTTPAuthorizationCredentials
 
-# from app.infrastructure.database import get_db
 # from app.infrastructure.cache import limiter, RateLimits
-from .service import AuthService
 from .dependencies import get_auth_service
 from .schemas import (
-    SignUpRequest,
-    SignUpResponse,
+    MessageResponse,
+    ResendVerificationRequest,
     SignInRequest,
     SignInResponse,
-    ResendVerificationRequest,
-    MessageResponse,
+    SignUpRequest,
+    SignUpResponse,
 )
+from .service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -22,10 +27,10 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
     status_code=status.HTTP_201_CREATED,
     summary="Register a new user",
     description="""
-    Create a new user account with email, password, and username.
-    
+    Create a new user account with email, password, and name.
+
     - **Email Verification**: If enabled in Supabase, user must verify email before signing in.
-    - **Username**: Must be 3-30 characters, alphanumeric and underscores only.
+    - **Name**: First and last name, 1-50 characters, letters/spaces/hyphens/apostrophes.
     - **Password**: Must be at least 8 characters with uppercase, lowercase, and digit.
     - **Rate Limit**: 5 requests per minute.
     """,
@@ -35,19 +40,17 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
         429: {
             "description": "Too Many Requests - Rate limit exceeded",
             "content": {
-                "application/json": {
-                    "example": {"error": "Rate limit exceeded"}
-                }
-            }
+                "application/json": {"example": {"error": "Rate limit exceeded"}}
+            },
         },
-        502: {"description": "Failed to connect to Supabase"}
-    }
+        502: {"description": "Failed to connect to Supabase"},
+    },
 )
 # @limiter.limit(RateLimits.AUTH_STRICT)
 async def sign_up(
     request: Request,
     data: SignUpRequest,
-    service: AuthService = Depends(get_auth_service)
+    service: AuthService = Depends(get_auth_service),
 ) -> SignUpResponse:
     """
     Register a new user with Supabase and sync to local database.
@@ -62,17 +65,9 @@ async def sign_up(
 
     Raises:
         BadRequestError: If the user already exists or sign-up fails.
+        BadGatewayError: If Supabase is unreachable.
     """
-    result = await service.sign_up(data)
-    
-    return SignUpResponse(
-        message="Account created successfully. Please check your email to verify your account." 
-                if result["requires_email_confirmation"] 
-                else "Account created successfully.",
-        user_id=result["user_id"],
-        email=result["email"],
-        requires_email_confirmation=result["requires_email_confirmation"],
-    )
+    return await service.sign_up(data)
 
 
 @router.post(
@@ -82,30 +77,30 @@ async def sign_up(
     summary="Sign in a user",
     description="""
     Authenticate a user with email and password.
-    
+
     - **Returns**: Access token, refresh token, and token expiration time.
     - **Email Verification**: User must have verified their email to sign in.
     - **Rate Limit**: 5 requests per minute.
     """,
     responses={
         200: {"description": "Successfully authenticated"},
-        401: {"description": "Invalid credentials or email not verified"},
+        401: {
+            "description": "Invalid credentials, email not verified, or account deactivated"
+        },
         429: {
             "description": "Too Many Requests - Rate limit exceeded",
             "content": {
-                "application/json": {
-                    "example": {"error": "Rate limit exceeded"}
-                }
-            }
-        }
-    }
+                "application/json": {"example": {"error": "Rate limit exceeded"}}
+            },
+        },
+        502: {"description": "Failed to connect to Supabase"},
+    },
 )
 # @limiter.limit(RateLimits.AUTH_STRICT)
 async def sign_in(
     request: Request,
     data: SignInRequest,
-    # session: AsyncSession = Depends(get_db), #not been used? comment lang balikan ra tika     
-    service: AuthService = Depends(get_auth_service)
+    service: AuthService = Depends(get_auth_service),
 ) -> SignInResponse:
     """
     Authenticate a user with Supabase and return session tokens.
@@ -119,16 +114,61 @@ async def sign_in(
         A `SignInResponse` containing access and refresh tokens.
 
     Raises:
-        UnauthorizedError: If credentials are invalid or email is not verified.
+        UnauthorizedError: If credentials are invalid, the email is not
+            verified, or the account is deactivated.
+        BadGatewayError: If Supabase is unreachable.
     """
-    result = await service.sign_in(data)
-    
-    return SignInResponse(
-        access_token=result["access_token"],
-        refresh_token=result["refresh_token"],
-        expires_in=result["expires_in"],
-        user=result["user"],
-    )
+    return await service.sign_in(data)
+
+
+@router.post(
+    "/signout",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Sign out",
+    description="""
+    End the caller's session.
+
+    - **Scope**: Revokes only the session this token belongs to; other devices
+      stay signed in.
+    - **Client**: Clear the stored access and refresh tokens after calling this.
+    - **Idempotent**: Signing out an already-ended session still returns 200.
+    """,
+    responses={
+        200: {"description": "Session ended"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        502: {
+            "description": "Failed to connect to Supabase — the session was NOT revoked"
+        },
+    },
+)
+async def sign_out(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+    current_user: AuthenticatedUser = Depends(require_auth),
+    service: AuthService = Depends(get_auth_service),
+) -> MessageResponse:
+    """
+    Revoke the caller's Supabase session.
+
+    Args:
+        request: The fastAPI request object.
+        credentials: The bearer credentials the request authenticated with.
+        current_user: The authenticated caller.
+        service: The authentication service.
+
+    Returns:
+        A message confirming the session was ended.
+
+    Raises:
+        BadGatewayError: If Supabase is unreachable and the session could not
+            be revoked.
+    """
+    # `credentials` alongside require_auth so the raw token is available to
+    # revoke — require_auth resolves to an AuthenticatedUser and deliberately
+    # does not carry the token. FastAPI caches a dependency per request, so
+    # security_scheme is still only evaluated once.
+    return await service.sign_out(credentials.credentials, current_user)
 
 
 @router.post(
@@ -138,28 +178,26 @@ async def sign_in(
     summary="Resend verification email",
     description="""
     Resend the verification email for users who haven't verified their email yet.
-    
+
     - **Use Case**: When verification link expires or email was not received.
+    - **Response**: Always the same message, whether or not the address has an account.
     - **Rate Limit**: 3 requests per minute.
     """,
     responses={
-        200: {"description": "Verification email sent successfully"},
-        400: {"description": "Could not send verification email"},
+        200: {"description": "Request accepted"},
         429: {
             "description": "Too Many Requests - Rate limit exceeded",
             "content": {
-                "application/json": {
-                    "example": {"error": "Rate limit exceeded"}
-                }
-            }
-        }
-    }
+                "application/json": {"example": {"error": "Rate limit exceeded"}}
+            },
+        },
+    },
 )
 # @limiter.limit(RateLimits.PASSWORD)
 async def resend_verification(
     request: Request,
     data: ResendVerificationRequest,
-    service: AuthService = Depends(get_auth_service)
+    service: AuthService = Depends(get_auth_service),
 ) -> MessageResponse:
     """
     Resend the verification email to an unverified user.
@@ -170,10 +208,7 @@ async def resend_verification(
         service: The authentication service.
 
     Returns:
-        A simple message response.
-
-    Raises:
-        BadRequestError: If the email cannot be sent.
+        A neutral message that does not reveal whether the address has an
+        account.
     """
-    result = service.resend_verification_email(data.email)
-    return MessageResponse(message=result["message"])
+    return await service.resend_verification_email(data.email)

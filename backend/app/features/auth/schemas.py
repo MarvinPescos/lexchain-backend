@@ -1,15 +1,21 @@
 import uuid
 
-from app.shared.utils.validators import ValidatedName, ValidatedPassword, ValidatedPhone
+from app.shared.utils.validators import ValidatedName, ValidatedPassword
 from pydantic import BaseModel, EmailStr, Field
 
 
+# Removed 2026-09-14 19:55 PST — `phone_number` from SignUpRequest.
+# It was validated, accepted, and then dropped on the floor: sign_up never
+# passed it to sync_from_supabase and `users` has no column to hold it, so
+# every caller sending one had it silently discarded. Collecting a personal
+# phone number and storing it nowhere is the worst of both. ValidatedPhone
+# stays in shared/utils/validators.py — re-add the field here together with a
+# users.phone_number column and a migration when something actually reads it.
 class SignUpRequest(BaseModel):
     email: EmailStr = Field(..., description="Valid email for this user")
     password: ValidatedPassword = Field(..., description="Valid Password")
     f_name: ValidatedName = Field(..., description="Valid first name")
     l_name: ValidatedName = Field(..., description="Valid last name")
-    phone_number: ValidatedPhone | None = Field(..., description="Valid Phone number")
 
 
 class SignUpResponse(BaseModel):
@@ -23,7 +29,29 @@ class SignUpResponse(BaseModel):
 
 class SignInRequest(BaseModel):
     email: EmailStr = Field(..., description="Valid email for this user")
-    password: ValidatedPassword = Field(..., description="Valid password")
+    # Changed 2026-09-14 19:55 PST — plain `str`, not ValidatedPassword.
+    # Running the sign-up complexity policy on sign-in does two bad things: any
+    # account whose password predates the policy can never log in again (422,
+    # with no path to recover), and a malformed password answers differently
+    # from a wrong one — 422 naming the rule that failed, versus 401 "Invalid
+    # credentials" — which hands back the policy and a pre-auth oracle for
+    # free. The password is only ever checked by Supabase; this layer has no
+    # business inspecting it.
+    password: str = Field(..., description="The user's password")
+
+
+class SignInUser(BaseModel):
+    """The signed-in user, as the client needs it."""
+
+    id: uuid.UUID = Field(..., description="Local database user ID")
+    email: EmailStr = Field(..., description="User's email address")
+    role: str = Field(
+        ...,
+        description=(
+            "lawyer — full authority (upload, review, finalize, admin panel); "
+            "user — client, may only view documents they are a party to."
+        ),
+    )
 
 
 class SignInResponse(BaseModel):
@@ -35,7 +63,7 @@ class SignInResponse(BaseModel):
     )
     token_type: str = Field(default="bearer", description="Token type, always 'bearer'")
     expires_in: int = Field(..., description="Token expiration time in seconds")
-    user: dict = Field(..., description="User information from Supabase")
+    user: SignInUser = Field(..., description="The signed-in user")
 
 
 class ResendVerificationRequest(BaseModel):
@@ -46,22 +74,8 @@ class MessageResponse(BaseModel):
     message: str = Field(..., description="Response message")
 
 
-class UserProfileResponse(BaseModel):
-    email: str = Field(..., description="User's email address")
-    f_name: ValidatedName = Field(..., description="Valid first name")
-    l_name: ValidatedName = Field(..., description="Valid last name")
-    avatar: str = Field(default="icon1", description="User Avatar")
-    role: str = Field(..., description="User role")
-
-    class Config:
-        from_attributes = True
-
-    @classmethod
-    def from_user(cls, user):
-        """Convert User model to response schema."""
-        return cls(
-            email=user.email,
-            f_name=user.f_name,
-            l_name=user.l_name,
-            role=user.role,
-        )
+# Moved 2026-09-14 19:55 PST — UserProfileResponse now lives in
+# users/schemas.py. Nothing in this feature ever used it; it was imported from
+# here by users/router.py and users/service.py, which made `users` depend on
+# `auth` for its own response shape. Its unused `from_user` classmethod was
+# dropped rather than moved.
