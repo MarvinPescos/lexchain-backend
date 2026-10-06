@@ -50,3 +50,11 @@ def enrich_document_task(self, document_id: uuid.UUID):
         )
     except Exception as exc:
         raise self.retry(exc=exc)
+
+
+@celery_app.task(name="document.sync_draft_comments")
+def sync_draft_comments_task():
+    """Mirror Google Docs comments for every draft still being prepared."""
+    from app.workers.sync_draft_comments import sync_due_drafts
+
+    asyncio.run(sync_due_drafts())

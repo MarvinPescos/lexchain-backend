@@ -28,4 +28,12 @@ celery_app.conf.update(
         "document.*": {"queue": "documents"},
         "notifications.*": {"queue": "notifications"},
     },
+    # Draft comments are polled: Drive's file webhooks do not report comments.
+    # Run with `celery -A app.celery_app beat`.
+    beat_schedule={
+        "sync-draft-comments": {
+            "task": "document.sync_draft_comments",
+            "schedule": settings.DRAFT_COMMENT_SYNC_SECONDS,
+        },
+    },
 )
