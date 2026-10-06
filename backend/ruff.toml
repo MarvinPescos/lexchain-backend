@@ -1,0 +1,31 @@
+# Added 2026-09-13 — silence B008 for FastAPI's injection markers.
+#
+# flake8-bugbear's B008 ("do not perform function call in argument defaults")
+# exists because a call in a default is evaluated once, at import, and every
+# invocation then shares that one object — a real bug for `def f(x=[])` or
+# `def f(t=datetime.now())`.
+#
+# FastAPI's dependency injection is built on doing exactly that on purpose:
+# `Depends(get_db)` constructs an inert marker once at import, and FastAPI
+# reads it off the signature and resolves it per request. The object is never
+# mutated and never shared as state, so the rule's premise does not hold.
+#
+# extend-immutable-calls is the setting Ruff provides for this case. Listing
+# the markers keeps B008 switched on for genuine offenders instead of turning
+# the whole rule off.
+#
+# Only this section is set on purpose: adding `select` here would change which
+# rules run at all, which is an editor-level decision, not this file's job.
+
+[lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Body",
+    "fastapi.Cookie",
+    "fastapi.Depends",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Query",
+    "fastapi.Security",
+]

@@ -1,7 +1,8 @@
 import uuid
 
 from app.infrastructure.security.dependencies import AuthenticatedUser, require_auth
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from app.shared.errors.exceptions import NotFoundError
+from fastapi import APIRouter, Depends, Query, status
 
 from .dependencies import get_notification_service
 from .schemas import MarkAllReadResponse, NotificationListResponse, UnreadCountResponse
@@ -64,7 +65,7 @@ async def mark_read(
 ):
     ok = await service.mark_read(current_user.user_id, notification_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="Notification not found")
+        raise NotFoundError("Notification not found")
 
 
 @router.patch(

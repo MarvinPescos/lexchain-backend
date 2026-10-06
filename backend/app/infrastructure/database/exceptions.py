@@ -3,7 +3,18 @@ Database-specific exception classes.
 All database-related errors should inherit from DatabaseError
 """
 
-class InfrastructureError(Exception):
+from app.shared.errors.exceptions import BaseAppException
+
+
+# Added 2026-09-07 11:19 PST — put infrastructure errors under BaseAppException.
+# This hierarchy derived straight from Exception, and main.py only registers a
+# handler for BaseAppException, so nothing caught it: every raise site in
+# base_repository (7 of them) and the SQLAlchemyError conversion in
+# sessions.py:46 escaped as an unhandled 500 with FastAPI's default body
+# instead of the app's error shape. `status_code` was dead — set on every
+# instance, read by nobody. `details` was typed `str | None` here and
+# `dict | None` on BaseAppException; the base type wins.
+class InfrastructureError(BaseAppException):
     """
         Exception class for all database-related errors.
         All database-specific exception should inherit from this class.
@@ -13,7 +24,7 @@ class InfrastructureError(Exception):
         self,
         message: str,
         status_code: int = 500,
-        details: str | None = None,
+        details: dict | None = None,
         original_error: Exception | None = None
     ):
         """
@@ -26,12 +37,12 @@ class InfrastructureError(Exception):
                 original_error: The original SQLALchemy or database error (default: None)
         """
 
-        self.message = message
-        self.status_code = status_code
-        self.details = details
+        # Kept off to_dict() on purpose — the driver error can carry SQL
+        # fragments and connection strings, so it stays in the logs.
         self.original_error = original_error
-        super().__init__(self.message)
-       
+        super().__init__(message=message, status_code=status_code, details=details)
+
+
 class DatabaseError(InfrastructureError):
     """Database Operation Failed"""
     ...
