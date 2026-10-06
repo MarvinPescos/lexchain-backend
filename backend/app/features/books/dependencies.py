@@ -8,5 +8,5 @@ from .service import BookService
 def get_book_service(
     db: AsyncSession = Depends(get_db),
 ) -> BookService:
-    """Dependency injection (provides DocumentService with database session)"""
+    """Dependency injection (provides BookService with database session)"""
     return BookService(db)
