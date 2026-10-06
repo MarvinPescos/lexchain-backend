@@ -29,7 +29,7 @@ Stages (`Document.lifecycle`, changed only by `lifecycle.transition`):
 |---|---|
 | Stages are strict: attaching a signed copy is refused from `PREPARING`; LexChain never performs a stage for the lawyer | A law firm: *Ready* is the deliberate "text agreed, stop editing" act. Shortcuts that skip it were rejected. |
 | Upload ≠ finalize | The lawyer must confirm the right signed copy is in. Until finalize the copy can be replaced (with a reason) and the entry corrected. |
-| Finalize hashes the **PDF bytes**, not OCR text | Finalize happens before OCR now. The signed PDF is the legal document. Verify/restore compare file hashes; the OCR text diff (`tamper.py`) is no longer used. |
+| Finalize hashes the **PDF bytes**, not OCR text | Finalize happens before OCR now. The signed PDF is the legal document. Verify compares file hashes; the OCR text diff (`tamper.py`) is no longer used. |
 | OCR/NLP runs **after** finalize | Nothing is processed until the lawyer confirms. `status` is null until finalize, then `QUEUED → … → COMPLETED`. OCR review only exists on finalized documents. |
 | Register entry (Doc. No., Page No.) is claimed when the signed copy is attached | It's written in the notarial block at signing; a Path 1 record has no number while being prepared. |
 | Same file can't be filed twice by one lawyer | Unique index on the *current* signed copy's sha256 (replaced copies don't count). |
@@ -132,6 +132,25 @@ comments, notification types).
   with exactly one person besides the lawyer and LexChain made that share;
   otherwise unattributed, and replies/resolves on such threads notify every
   client on the document. Verified live with a second Google account.
+
+## Signing half, live on Supabase + Base Sepolia (2026-10-07)
+
+- Verified: Path 2 upload to the real `Documents` bucket (hash matches),
+  duplicate refused, finalize (real anchor tx, `FINALIZED`, OCR queued),
+  verify `AUTHENTIC`; Path 1 attach-too-early refused, ready, attach,
+  replace with reason, correct entry.
+- Fixed (`9427a77`): the ABI was only found inside Docker.
+- Fixed (`3c17b4f`): the stored anchor record was all zeros — a read-back
+  hit a lagging RPC node; now taken from the receipt's event, receipt status
+  checked, empty reads retried, RPC failure is a 503.
+- Found, not fixed:
+  - Finalize no longer archives the original to the backup bucket and the
+    restore route is gone; `infrastructure/backup` is unused. (The
+    `feat(documents)` commit message says otherwise — it is wrong.)
+  - `get_blockchain_provider()` uses the real chain in development and the
+    **mock in production** — production would never anchor.
+  - `LexChainNotary.storeDocumentHash` overwrites an existing record; it is
+    not write-once.
 
 ## Not done / next
 
