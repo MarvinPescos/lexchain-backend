@@ -136,3 +136,12 @@ async def test_comments_are_parsed_across_pages():
     assert (first.author.permission_id, first.quoted_text, first.resolved) == ("p9", "Lot 12", True)
     assert first.replies[0].action == "resolve" and first.replies[0].author.me
     assert seen[0].url.params["includeDeleted"] == "true"
+
+
+async def test_missing_scope_asks_to_reconnect():
+    body = {"error": {"code": 403, "details": [{"reason": "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}
+    ws, _ = workspace(lambda r: httpx.Response(403, json=body))
+    with pytest.raises(GoogleAuthError) as refused:
+        await ws.create("tok", "Deed")
+    assert refused.value.status_code == 409
+    assert refused.value.details == {"reason": "GOOGLE_RECONNECT_REQUIRED"}

@@ -72,3 +72,15 @@ async def _revoked(refresh_token):
     from app.infrastructure.google import GoogleAuthError
 
     raise GoogleAuthError("invalid_grant")
+
+
+async def test_connect_without_drive_permission_is_refused(google, session, lawyer):
+    """Google's consent screen lets the lawyer untick Drive access."""
+    from urllib.parse import parse_qs, urlparse
+
+    google.oauth.granted_scopes = ("openid", "email")
+    query = parse_qs(urlparse(google.start(lawyer.id).authorization_url).query)
+
+    with pytest.raises(BadRequestError, match="tick the Google Drive permission"):
+        await google.complete(query["code"][0], query["state"][0])
+    assert await stored(session, lawyer) is None

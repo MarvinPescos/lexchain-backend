@@ -13,7 +13,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import settings
-from app.infrastructure.google import GoogleAuthError, GoogleOAuth
+from app.infrastructure.google import DRIVE_SCOPE, GoogleAuthError, GoogleOAuth
 from app.infrastructure.observability.logging_setup import log
 from app.shared.errors.exceptions import BadRequestError, ConflictError
 
@@ -81,6 +81,14 @@ class GoogleConnectionService:
             raise BadRequestError("Google sign-in was not completed. Connect again.")
         if not tokens.refresh_token:
             raise BadRequestError("Google did not grant offline access. Connect again.")
+        if not tokens.granted(DRIVE_SCOPE):
+            # The consent screen shows Drive access as an unticked checkbox;
+            # without it every draft call would fail later. Store nothing.
+            await self.oauth.revoke(tokens.refresh_token)
+            raise BadRequestError(
+                "LexChain needs access to the Google Docs it creates. Connect "
+                "again and tick the Google Drive permission."
+            )
         email = await self.oauth.account_email(tokens.access_token)
 
         fernet = _fernet()

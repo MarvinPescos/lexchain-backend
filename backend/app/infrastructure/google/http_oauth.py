@@ -83,4 +83,5 @@ class HttpGoogleOAuth:
             access_token=body["access_token"],
             expires_in=body.get("expires_in", 3600),
             refresh_token=body.get("refresh_token"),
+            scope=body.get("scope", ""),
         )

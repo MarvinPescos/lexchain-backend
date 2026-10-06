@@ -6,6 +6,8 @@ from ..google.base import GoogleAuthError
 from .base import DraftRef, RemoteAuthor, RemoteComment, RemoteReply
 
 FILES_URL = "https://www.googleapis.com/drive/v3/files"
+# 403s that mean "this token cannot do that" rather than "try again later".
+_AUTH_REASONS = {"ACCESS_TOKEN_SCOPE_INSUFFICIENT", "insufficientPermissions"}
 GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
 _FIELDS = "id,name,mimeType,webViewLink"
 _AUTHOR = "author(displayName,me,permissionId)"
@@ -132,6 +134,8 @@ class GoogleDocsWorkspace:
             return
         if response.status_code == 401:
             raise GoogleAuthError("Google rejected the access token")
+        if response.status_code == 403 and _reason(response) in _AUTH_REASONS:
+            raise GoogleAuthError(_reason(response))
         if response.status_code == 404 and not_found:
             raise BadRequestError(not_found)
         raise BadGatewayError(
@@ -171,3 +175,16 @@ class GoogleDocsWorkspace:
                 for r in c.get("replies", [])
             ],
         )
+
+
+def _reason(response: httpx.Response) -> str:
+    """Google's machine-readable error reason, from either error format."""
+    try:
+        error = response.json().get("error", {})
+    except ValueError:
+        return ""
+    for detail in error.get("details", []):
+        if detail.get("reason"):
+            return detail["reason"]
+    errors = error.get("errors") or [{}]
+    return errors[0].get("reason", "")
