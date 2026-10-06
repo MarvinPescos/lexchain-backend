@@ -4,6 +4,7 @@ from app.features.books import Book
 from app.features.chunks import DocumentChunk
 from app.features.documents import Document, DocumentParty
 from app.features.extraction import DocumentExtraction
+from app.features.google import GoogleConnection
 from app.features.insights import DocumentInsight
 from app.features.notifications import Notification
 from app.features.users.models import User

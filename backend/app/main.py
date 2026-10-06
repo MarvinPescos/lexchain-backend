@@ -15,6 +15,7 @@ from app.features.auth import router as auth_router
 # from app.features.blockchain import router as blockchain_router
 from app.features.books import router as book_router
 from app.features.documents import router as document_router
+from app.features.google import router as google_router
 from app.features.notifications import router as notification_router
 from app.features.retrieval import router as retrieval_router
 from app.features.users import router as user_router
@@ -162,3 +163,4 @@ app.include_router(retrieval_router)
 app.include_router(admin_router)
 app.include_router(notification_router)
 app.include_router(book_router)
+app.include_router(google_router)

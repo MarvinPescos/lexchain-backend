@@ -100,6 +100,31 @@ class Settings(BaseSettings):
 
     CELERY_BROKER_URL: str = Field(..., description="Broker URL")
 
+    # Google Docs drafting. Off by default: the mock Drive and a sign-in that
+    # skips Google's consent screen are used instead.
+    USE_REAL_GOOGLE: bool = Field(default=False, description="Use the real Google APIs")
+    GOOGLE_CLIENT_ID: str = Field(default="", description="OAuth client ID")
+    GOOGLE_CLIENT_SECRET: str = Field(default="", description="OAuth client secret")
+    GOOGLE_REDIRECT_URI: str = Field(
+        default="http://localhost:8000/google/callback",
+        description="Must match the redirect URI registered on the OAuth client",
+    )
+    GOOGLE_TOKEN_KEY: str = Field(
+        default="",
+        description=(
+            "Fernet key encrypting stored Google tokens and the OAuth state. "
+            "Generate with: python -c 'from cryptography.fernet import Fernet; "
+            "print(Fernet.generate_key().decode())'"
+        ),
+    )
+    DRAFT_COMMENT_SYNC_SECONDS: int = Field(
+        default=300, ge=30, description="How often draft comments are pulled from Google Docs"
+    )
+    GOOGLE_CONNECTED_REDIRECT: str = Field(
+        default="http://localhost:3000/settings",
+        description="Frontend page the lawyer lands on after connecting Google",
+    )
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
