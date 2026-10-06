@@ -15,14 +15,7 @@ class Web3BlockchainProvider:
         self.contract_address = settings.CONTRACT_ADDRESS
         self.private_key = settings.CONTRACT_OWNER_PRIVATE_KEY
 
-        abi_path = (
-            Path(__file__).resolve().parent.parent.parent.parent
-            / "blockchain"
-            / "out"
-            / "LexChainNotary.sol"
-            / "LexChainNotary.json"
-        )
-        self.abi: list[dict] = json.loads(abi_path.read_text())["abi"]
+        self.abi: list[dict] = json.loads(_abi_path().read_text())["abi"]
         self.account = self.w3.eth.account.from_key(self.private_key)
 
     @property
@@ -78,3 +71,21 @@ class Web3BlockchainProvider:
             )
         except Exception:
             return None
+
+
+def _abi_path() -> Path:
+    """The compiled contract's artifact.
+
+    In Docker, compose mounts the Foundry project at <backend>/blockchain; run
+    on the host, it sits next to backend/ in the repo. First one that exists.
+    """
+    backend = Path(__file__).resolve().parents[3]
+    artifact = Path("out") / "LexChainNotary.sol" / "LexChainNotary.json"
+    candidates = [backend / "blockchain" / artifact, backend.parent / "blockchain" / artifact]
+    for path in candidates:
+        if path.exists():
+            return path
+    raise FileNotFoundError(
+        "LexChainNotary ABI not found — run `forge build` in blockchain/. Looked in: "
+        + ", ".join(str(p) for p in candidates)
+    )
