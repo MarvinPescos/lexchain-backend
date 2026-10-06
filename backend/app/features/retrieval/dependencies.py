@@ -3,9 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database import get_db
 from app.infrastructure.nlp.embeddings import Embedder, build_embedder
-from app.infrastructure.nlp.llm.groq_llm import GroqLLMProvider
-from app.infrastructure.nlp.llm.mock_llm import MockLLMProvider
-from app.core import settings
+from app.infrastructure.nlp.llm import build_llm
 
 from .service import RetrievalService, RAGService
 
@@ -20,8 +18,7 @@ def get_retrieval_service(
     return RetrievalService(db, embedder)
 
 def get_llm():
-    use_real = settings.USE_REAL_LLM
-    return GroqLLMProvider() if use_real else MockLLMProvider()
+    return build_llm()
 
 def get_rag_service(
     retrieval: RetrievalService = Depends(get_retrieval_service),

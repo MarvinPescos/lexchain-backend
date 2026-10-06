@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
@@ -38,10 +38,34 @@ class Settings(BaseSettings):
     )
     # SUPABASE_JWT_SECRET: str = Field(..., description="Supabase JWT secret for token verification") #Not been used I think
 
-    # LLM
-    GROQ_API_KEY: str = Field(..., description="Groq api key")
-    NVIDIA_API_KEY: str = Field(..., description="nvidia api key")
-    USE_REAL_LLM: bool = Field(default=True, description="Groq api key")
+    # LLM — all real inference goes through OpenRouter.
+    # Accepts OPEN_ROUTER as well, which is what the existing .env uses.
+    OPENROUTER_API_KEY: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPENROUTER_API_KEY", "OPEN_ROUTER"),
+        description="OpenRouter API key",
+    )
+    OPENROUTER_BASE_URL: str = Field(
+        default="https://openrouter.ai/api/v1", description="OpenRouter API base URL"
+    )
+    OPENROUTER_MODEL: str = Field(
+        default="meta-llama/llama-3.3-70b-instruct",
+        description="Model slug, e.g. meta-llama/llama-3.3-70b-instruct",
+    )
+    OPENROUTER_SITE_URL: str = Field(
+        default="", description="Optional HTTP-Referer sent to OpenRouter"
+    )
+    OPENROUTER_APP_NAME: str = Field(
+        default="LexChain", description="Optional X-Title sent to OpenRouter"
+    )
+    USE_REAL_LLM: bool = Field(
+        default=True, description="False routes every LLM call to the mock provider"
+    )
+
+    # Legacy providers — kept optional so existing .env files still load, but
+    # nothing constructs them any more.
+    GROQ_API_KEY: str = Field(default="", description="Unused: superseded by OpenRouter")
+    NVIDIA_API_KEY: str = Field(default="", description="Unused: superseded by OpenRouter")
 
     # Embedder
     USE_REAL_EMBEDDER: bool = Field(default=False, description="Basta Embedder")

@@ -2,10 +2,8 @@
 
 import json
 
+from app.infrastructure.nlp.llm import build_llm
 from app.infrastructure.nlp.llm.base import LLMMessage
-
-# from app.infrastructure.nlp.llm.groq_llm import GroqLLMProvider
-from app.infrastructure.nlp.llm.nvidia_llm import NvidiaLLMProvider
 from app.infrastructure.observability.logging_setup import log
 
 from .base import AnalysisResult
@@ -86,15 +84,15 @@ If a field has no relevant data, use an empty list [] for arrays or null for sum
 
 class LLMAnalysisProvider:
     """
-    Real analysis provider powered by NVIDIA LLM.
+    Real analysis provider powered by the configured LLM (OpenRouter).
 
     Accepts raw document text (from the OCR step), sends it to the LLM
     with a structured extraction prompt, and returns an AnalysisResult
     that matches the existing protocol and database schema.
     """
 
-    def __init__(self, model: str = "meta/llama-3.1-70b-instruct") -> None:
-        self._llm = NvidiaLLMProvider(model=model)
+    def __init__(self, model: str | None = None) -> None:
+        self._llm = build_llm(model=model)
 
     async def analyze(self, text: str) -> AnalysisResult:
         # ── Truncate to avoid token limits ──────────────────────────
