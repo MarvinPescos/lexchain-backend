@@ -15,8 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade -r requirements.txt
-RUN python -m spacy download en_core_web_sm
+RUN pip install --no-cache-dir --upgrade --retries 10 --timeout 120 -r requirements.txt
+
+# Installed straight from the release wheel rather than `spacy download`, which
+# gives no retry control — the GitHub asset host is slow enough to time out and
+# fail the whole build. Pinned so the model matches spacy>=3.7,<4.0 reproducibly.
+RUN pip install --no-cache-dir --retries 10 --timeout 120 \
+    "en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 
 COPY --chown=appuser:appgroup . .
 
