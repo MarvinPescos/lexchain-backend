@@ -606,6 +606,8 @@ async def add_document_party(
         f_name=party.user.f_name if party.user else "",
         l_name=party.user.l_name if party.user else "",
         role=party.role,
+        status=party.status,
+        responded_at=party.responded_at,
         created_at=party.created_at,
     )
 
