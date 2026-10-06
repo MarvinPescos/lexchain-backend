@@ -3,14 +3,14 @@ import httpx
 from app.shared.errors.exceptions import BadGatewayError, BadRequestError
 
 from ..google.base import GoogleAuthError
-from .base import DraftRef, RemoteAuthor, RemoteComment, RemoteReply
+from .base import DraftRef, RemoteAuthor, RemoteComment, RemotePermission, RemoteReply
 
 FILES_URL = "https://www.googleapis.com/drive/v3/files"
 # 403s that mean "this token cannot do that" rather than "try again later".
 _AUTH_REASONS = {"ACCESS_TOKEN_SCOPE_INSUFFICIENT", "insufficientPermissions"}
 GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
 _FIELDS = "id,name,mimeType,webViewLink"
-_AUTHOR = "author(displayName,me,permissionId)"
+_AUTHOR = "author(displayName,me,permissionId,photoLink)"
 _COMMENT_FIELDS = (
     f"nextPageToken,comments(id,{_AUTHOR},content,quotedFileContent,resolved,"
     f"deleted,createdTime,modifiedTime,"
@@ -88,6 +88,20 @@ class GoogleDocsWorkspace:
             return
         self._raise_for(response, None)
 
+    async def list_permissions(
+        self, access_token: str, file_id: str
+    ) -> list[RemotePermission]:
+        body = await self._call(
+            access_token,
+            "GET",
+            f"{FILES_URL}/{file_id}/permissions",
+            params={"fields": "permissions(id,role,emailAddress)"},
+        )
+        return [
+            RemotePermission(id=p["id"], role=p["role"], email=p.get("emailAddress"))
+            for p in body.get("permissions", [])
+        ]
+
     async def list_comments(self, access_token: str, file_id: str) -> list[RemoteComment]:
         comments: list[RemoteComment] = []
         page_token: str | None = None
@@ -151,6 +165,7 @@ class GoogleDocsWorkspace:
             name=author.get("displayName", "Unknown"),
             me=author.get("me", False),
             permission_id=author.get("permissionId"),
+            photo=author.get("photoLink"),
         )
 
     def _comment(self, c: dict) -> RemoteComment:

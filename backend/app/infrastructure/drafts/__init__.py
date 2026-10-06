@@ -6,6 +6,7 @@ from .base import (
     DraftWorkspace,
     RemoteAuthor,
     RemoteComment,
+    RemotePermission,
     RemoteReply,
 )
 from .factory import build_draft_workspace
@@ -18,6 +19,7 @@ __all__ = [
     "DraftWorkspace",
     "RemoteAuthor",
     "RemoteComment",
+    "RemotePermission",
     "RemoteReply",
     "build_draft_workspace",
 ]

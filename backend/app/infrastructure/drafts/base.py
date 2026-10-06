@@ -20,14 +20,16 @@ class DraftRef(BaseModel):
 class RemoteAuthor(BaseModel):
     """Who wrote a comment or reply, as Drive reports it.
 
-    Drive may omit the email, so a party is matched by `permission_id` (the
-    id of the permission LexChain created when sharing), and the lawyer by
-    `me` (every call runs with the lawyer's token).
+    Only `me` is dependable: every call runs with the lawyer's token, so `me`
+    marks the lawyer. For anyone else Drive withholds the email and, in
+    practice, the permission id too — `name` and `photo` are profile values
+    that do not match the sharing permission.
     """
 
     name: str
     me: bool = False
     permission_id: str | None = None
+    photo: str | None = None
 
 
 class RemoteReply(BaseModel):
@@ -50,6 +52,14 @@ class RemoteComment(BaseModel):
     created_at: datetime
     modified_at: datetime
     replies: list[RemoteReply] = []
+
+
+class RemotePermission(BaseModel):
+    """Someone the draft is shared with."""
+
+    id: str
+    role: str
+    email: str | None = None
 
 
 class DraftWorkspace(Protocol):
@@ -76,6 +86,12 @@ class DraftWorkspace(Protocol):
     ) -> None: ...
 
     async def unshare(self, access_token: str, file_id: str, permission_id: str) -> None: ...
+
+    async def list_permissions(
+        self, access_token: str, file_id: str
+    ) -> list[RemotePermission]:
+        """Everyone with access to the draft, owner included."""
+        ...
 
     async def list_comments(self, access_token: str, file_id: str) -> list[RemoteComment]:
         """Every comment thread on the draft, with replies, deleted ones included."""

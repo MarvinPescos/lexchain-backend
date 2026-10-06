@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from app.shared.errors.exceptions import BadRequestError
 
-from .base import DraftRef, RemoteAuthor, RemoteComment, RemoteReply
+from .base import DraftRef, RemoteAuthor, RemoteComment, RemotePermission, RemoteReply
 
 
 class MockDraftWorkspace:
@@ -40,6 +40,15 @@ class MockDraftWorkspace:
 
     async def unshare(self, access_token: str, file_id: str, permission_id: str) -> None:
         self.files[file_id]["permissions"].pop(permission_id, None)
+
+    async def list_permissions(
+        self, access_token: str, file_id: str
+    ) -> list[RemotePermission]:
+        owner = RemotePermission(id="owner", role="owner")
+        return [owner] + [
+            RemotePermission(id=pid, role=p["role"], email=p["email"])
+            for pid, p in self.files[file_id]["permissions"].items()
+        ]
 
     async def list_comments(self, access_token: str, file_id: str) -> list[RemoteComment]:
         return [c.model_copy(deep=True) for c in self.files[file_id]["comments"]]
@@ -91,10 +100,8 @@ class MockDraftWorkspace:
     def _author(self, file_id: str, email: str | None) -> RemoteAuthor:
         if email is None:
             return RemoteAuthor(name="Owner", me=True)
-        for permission_id, p in self.files[file_id]["permissions"].items():
-            if p["email"] == email:
-                return RemoteAuthor(name=email.split("@")[0], permission_id=permission_id)
-        return RemoteAuthor(name=email.split("@")[0])
+        # Like real Drive: no email and no permission id for other people.
+        return RemoteAuthor(name=email.split("@")[0], photo=f"photo-of-{email}")
 
     def _find(self, file_id: str, comment_id: str) -> RemoteComment:
         return next(c for c in self.files[file_id]["comments"] if c.id == comment_id)
@@ -104,6 +111,13 @@ class MockDraftWorkspace:
     def add_existing(self, name: str, kind: str = "doc") -> str:
         """A file the lawyer already had in Drive (what the picker would return)."""
         return self._new(name, kind=kind).file_id
+
+    def share_outside_lexchain(self, file_id: str, email: str) -> None:
+        """The lawyer shared the Doc by hand in Google Docs."""
+        self.files[file_id]["permissions"][uuid.uuid4().hex] = {
+            "email": email,
+            "role": "commenter",
+        }
 
     def roles(self, file_id: str) -> dict[str, str]:
         return {p["email"]: p["role"] for p in self.files[file_id]["permissions"].values()}

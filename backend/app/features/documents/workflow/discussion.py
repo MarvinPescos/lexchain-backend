@@ -124,12 +124,22 @@ class DocumentDiscussion:
             p.draft_permission_id: p for p in parties if p.draft_permission_id
         }
         stored = {c.external_id: c for c in await self.repo.get_draft_comments(document.id)}
+        sole_party = await self._sole_party(token, document, by_permission)
 
         def author_id(author: RemoteAuthor) -> uuid.UUID | None:
+            """Who wrote it, as far as Drive lets us know.
+
+            `me` is the lawyer. Drive withholds who anyone else is, so a party
+            is only named when the draft is shared with exactly one person
+            besides the lawyer and LexChain created that share. Otherwise the
+            author stays unattributed (None) and keeps Google's display name.
+            """
             if author.me:
                 return document.user_id
             party = by_permission.get(author.permission_id)
-            return party.user_id if party else None
+            if party:
+                return party.user_id
+            return sole_party.user_id if sole_party else None
 
         events: list[_Event] = []
         for rc in remote:
@@ -152,6 +162,10 @@ class DocumentDiscussion:
                 comment.quoted_text = rc.quoted_text
                 comment.resolved = rc.resolved
                 comment.deleted = rc.deleted
+                # Attribution can become possible later (e.g. a second share
+                # was removed); fill it in, never overwrite a known author.
+                if comment.author_user_id is None:
+                    comment.author_user_id = author_id(rc.author)
 
             known = {r.external_id for r in comment.replies}
             for rr in rc.replies:
@@ -202,6 +216,27 @@ class DocumentDiscussion:
 
     # ========== helpers =============
 
+    async def _sole_party(
+        self,
+        token: str,
+        document: Document,
+        by_permission: dict[str, DocumentParty],
+    ) -> DocumentParty | None:
+        """The one party who can comment, if the draft has exactly one.
+
+        Read from Drive each sync, so a share the lawyer added by hand in
+        Google Docs turns attribution by elimination off instead of
+        misattributing that person's comments.
+        """
+        permissions = await self.workspace.list_permissions(
+            token, document.draft_file_id
+        )
+        others = [p for p in permissions if p.role != "owner"]
+        if len(others) != 1:
+            return None
+        party = by_permission.get(others[0].id)
+        return party if party and party.status == PARTY_STATUS_ACCEPTED else None
+
     def _new_comment(
         self, document: Document, rc: RemoteComment, author_user_id: uuid.UUID | None
     ) -> DraftComment:
@@ -234,8 +269,15 @@ class DocumentDiscussion:
             else:
                 recipients = {document.user_id}
         else:
-            recipients = {document.user_id, event.comment.author_user_id}
-            recipients |= {r.author_user_id for r in event.comment.replies}
+            participants = {event.comment.author_user_id}
+            participants |= {r.author_user_id for r in event.comment.replies}
+            recipients = {document.user_id} | participants
+            if None in participants:
+                # A client is in this thread but Drive won't say which one:
+                # tell every client on the document rather than miss them.
+                recipients |= {
+                    p.user_id for p in parties if p.status == PARTY_STATUS_ACCEPTED
+                }
         recipients.discard(None)
         recipients.discard(event.actor_id)
         return recipients

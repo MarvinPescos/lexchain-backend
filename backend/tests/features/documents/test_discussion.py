@@ -127,13 +127,45 @@ async def test_first_sync_imports_without_notifying(
     assert await inbox(session, lawyer) == []
 
 
-async def test_unmatched_author_is_kept_but_not_notified(setup, drive, session, lawyer):
+async def test_share_added_by_hand_turns_attribution_off(setup, drive, session, lawyer):
+    """Drive won't say who a non-lawyer author is. With someone else shared
+    outside LexChain, a comment can't be pinned on the client."""
     doc, file_id, discussion = setup
+    drive.share_outside_lexchain(file_id, "stranger@gmail.com")
     drive.comment(file_id, "drive-by comment", by="stranger@gmail.com")
+
     result = await discussion.sync_now(as_auth(lawyer), doc.document_id)
 
     assert result.comments[0].author_user_id is None
     assert result.comments[0].author_name == "stranger"
+    # Still reaches the lawyer: any comment not by the lawyer does.
+    assert [t for t, _ in await inbox(session, lawyer)] == [NotificationType.DRAFT_COMMENT]
+
+
+async def test_several_clients_unattributed_but_all_told_of_the_answer(
+    setup, drive, session, sharing, lawyer, client, other_lawyer
+):
+    """Two parties: Drive can't tell them apart, so a reply on a client's
+    thread goes to every client instead of possibly missing the author."""
+    doc, file_id, discussion = setup
+    party = DocumentParty(
+        document_id=doc.document_id, user_id=other_lawyer.id, email=other_lawyer.email
+    )
+    session.add(party)
+    await session.flush()
+    await sharing.respond_to_invitation(as_auth(other_lawyer), party.id, accept=True)
+
+    c = drive.comment(file_id, "Fix the lot number", by=client.email)
+    result = await discussion.sync_now(as_auth(lawyer), doc.document_id)
+    assert result.comments[0].author_user_id is None
+
+    drive.reply(file_id, c, "Done, it's lot 12")
+    await discussion.sync_now(as_auth(lawyer), doc.document_id)
+
+    for person in (client, other_lawyer):
+        assert (NotificationType.DRAFT_REPLY, "Owner: Done, it's lot 12") in await inbox(
+            session, person
+        )
 
 
 async def test_ready_refused_while_comments_are_open(setup, drafting, drive, lawyer, client):

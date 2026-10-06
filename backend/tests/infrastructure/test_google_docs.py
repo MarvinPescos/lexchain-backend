@@ -145,3 +145,14 @@ async def test_missing_scope_asks_to_reconnect():
         await ws.create("tok", "Deed")
     assert refused.value.status_code == 409
     assert refused.value.details == {"reason": "GOOGLE_RECONNECT_REQUIRED"}
+
+
+async def test_permissions_are_listed():
+    body = {"permissions": [
+        {"id": "o1", "role": "owner", "emailAddress": "reyes@gmail.com"},
+        {"id": "p9", "role": "commenter", "emailAddress": "cruz@gmail.com"},
+    ]}
+    ws, seen = workspace(lambda r: httpx.Response(200, json=body))
+    perms = await ws.list_permissions("tok", "f1")
+    assert [(p.id, p.role) for p in perms] == [("o1", "owner"), ("p9", "commenter")]
+    assert seen[0].url.path == "/drive/v3/files/f1/permissions"

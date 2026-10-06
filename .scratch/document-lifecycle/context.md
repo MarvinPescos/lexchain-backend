@@ -126,6 +126,12 @@ comments, notification types).
   sync, the open-comments gate, resolve.
 - A commenter typing in the Doc creates a suggestion — invisible to the sync
   (see the suggestions decision above).
+- Drive does not return a commenter's email or permission id (only `me`,
+  a profile name and a photo, which don't match the share). Authors are now
+  attributed by `me` (the lawyer) or by elimination when the draft is shared
+  with exactly one person besides the lawyer and LexChain made that share;
+  otherwise unattributed, and replies/resolves on such threads notify every
+  client on the document. Verified live with a second Google account.
 
 ## Not done / next
 
