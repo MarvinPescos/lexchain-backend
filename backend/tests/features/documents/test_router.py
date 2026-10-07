@@ -29,3 +29,17 @@ async def test_inviting_a_party_answers_pending(session, intake, lawyer, client)
 
     assert r.status_code == 201
     assert (r.json()["status"], r.json()["responded_at"]) == ("pending", None)
+
+
+async def test_front_end_origin_is_allowed_by_cors():
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as http:
+        r = await http.options(
+            "/documents/",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == "http://localhost:3000"

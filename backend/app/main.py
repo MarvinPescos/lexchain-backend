@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -19,6 +20,7 @@ from app.features.google import router as google_router
 from app.features.notifications import router as notification_router
 from app.features.retrieval import router as retrieval_router
 from app.features.users import router as user_router
+from app.core import settings
 from app.infrastructure.database import close_db
 from app.infrastructure.observability.logging_setup import log
 from app.shared.errors.exceptions import HTTP_ERROR_TYPES, BaseAppException
@@ -68,6 +70,15 @@ OPENAPI_TAGS = [
 ]
 
 app = FastAPI(lifespan=lifespan, openapi_tags=OPENAPI_TAGS)
+
+# The front-end runs on its own origin, so without this every browser call is
+# blocked. Bearer tokens travel in the Authorization header, not cookies.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()],
+    allow_methods=["*"],
+    allow_headers=["Authorization", "Content-Type", "ngrok-skip-browser-warning"],
+)
 
 
 @app.middleware("http")

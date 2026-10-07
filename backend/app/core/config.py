@@ -139,6 +139,12 @@ class Settings(BaseSettings):
     DRAFT_COMMENT_SYNC_SECONDS: int = Field(
         default=300, ge=30, description="How often draft comments are pulled from Google Docs"
     )
+    # Browser origins allowed to call the API (the front-end). Comma-separated
+    # in .env, e.g. CORS_ORIGINS=http://localhost:3000,https://app.example.com
+    CORS_ORIGINS: str = Field(
+        default="http://localhost:3000,http://localhost:5173",
+        description="Comma-separated front-end origins allowed by CORS",
+    )
     GOOGLE_CONNECTED_REDIRECT: str = Field(
         default="http://localhost:3000/settings",
         description="Frontend page the lawyer lands on after connecting Google",
