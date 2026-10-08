@@ -1,7 +1,7 @@
-import asyncio
 import uuid
 
 from app.celery_app import celery_app
+from app.celery_tasks.runner import run_async
 from app.features.notifications.models import NotificationType
 from app.features.notifications.repository import NotificationRepository
 from app.infrastructure.database import AsyncSessionLocal
@@ -25,7 +25,7 @@ async def _create_notification(user_id, type, title, body, metadata):
 def handle_party_added(
     party_user_id: uuid.UUID, owner_name: str, document_title: str, document_id: str
 ):
-    asyncio.run(
+    run_async(
         _create_notification(
             user_id=party_user_id,
             type=NotificationType.PARTY_ADDED,
@@ -43,7 +43,7 @@ def handle_document_recorded(
     document_id: str,
     tx_hash: str,
 ):
-    asyncio.run(
+    run_async(
         _create_notification(
             user_id=user_id,
             type=NotificationType.DOCUMENT_RECORDED,
@@ -75,7 +75,7 @@ def handle_document_processed(
         title = "Document processing failed"
         body = f"Processing failed for '{document_title}'."
 
-    asyncio.run(
+    run_async(
         _create_notification(
             user_id=user_id,
             type=notification_type,
@@ -114,6 +114,6 @@ def send_draft_activity_email(
     user_id: str, subject: str, body: str, document_name: str, draft_url: str | None
 ):
     """Email one recipient about a comment, reply or resolve on a draft."""
-    asyncio.run(
+    run_async(
         _send_draft_activity_email(user_id, subject, body, document_name, draft_url)
     )

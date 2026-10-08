@@ -1,8 +1,8 @@
-import asyncio
 import uuid
 
 import app.all_models  # noqa: F401 — registers all SQLAlchemy models for the worker process
 from app.celery_app import celery_app
+from app.celery_tasks.runner import run_async
 from app.workers.process_documents import enrich_document_job, extract_document_job
 
 
@@ -16,7 +16,7 @@ from app.workers.process_documents import enrich_document_job, extract_document_
 def extract_document_task(self, document_id: uuid.UUID, storage_url: str):
     """Phase 1 — OCR only. Leaves the document awaiting issuer review."""
     try:
-        asyncio.run(
+        run_async(
             extract_document_job(
                 document_id=document_id,
                 storage_url=storage_url,
@@ -40,7 +40,7 @@ def enrich_document_task(self, document_id: uuid.UUID):
     from app.infrastructure.nlp.embeddings import build_embedder
 
     try:
-        asyncio.run(
+        run_async(
             enrich_document_job(
                 document_id=document_id,
                 analyzer=LLMAnalysisProvider(),
@@ -57,4 +57,4 @@ def sync_draft_comments_task():
     """Mirror Google Docs comments for every draft still being prepared."""
     from app.workers.sync_draft_comments import sync_due_drafts
 
-    asyncio.run(sync_due_drafts())
+    run_async(sync_due_drafts())
