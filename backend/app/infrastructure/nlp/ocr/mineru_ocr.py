@@ -44,6 +44,9 @@ class MinerUOCRProvider(OCRProvider):
                 "backend": self.backend,
                 "return_md": "true",
                 "return_content_list": "true",
+                # The OCR model's language; MinerU defaults to Chinese ("ch"),
+                # which badly hurts scanned English documents.
+                "lang_list": settings.MINERU_LANG,
             }
 
             response = await client.post(

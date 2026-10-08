@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     MINERU_API_URL: str = Field(
         default="http://localhost:8888", description="MinerU API URL"
     )
+    MINERU_LANG: str = Field(
+        default="en", description="OCR language sent to MinerU (its own default is 'ch')"
+    )
     MINERU_BACKEND: str = Field(
         default="pipeline", description="MinerU backend: pipeline | vlm-engine"
     )
