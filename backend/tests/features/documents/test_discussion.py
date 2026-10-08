@@ -210,3 +210,26 @@ async def test_sync_without_commit_queues_nothing(setup, drive, emails, client):
     document = await discussion.session.get(Document, doc.document_id)
     await discussion.sync(document)  # no commit, no send_emails
     assert emails == []
+
+
+async def test_first_comment_on_a_new_draft_notifies(
+    intake, drafting, drive, google, session, lawyer, client
+):
+    """No baseline sync: a Doc LexChain created has no history to import."""
+    me = as_auth(lawyer)
+    await connect_google(google, lawyer)
+    doc = await intake.open_document(me, "Deed")
+    session.add(
+        DocumentParty(
+            document_id=doc.document_id, user_id=client.id, email=client.email,
+            status=PARTY_STATUS_ACCEPTED,
+        )
+    )
+    await session.flush()
+    created = await drafting.create_draft(me, doc.document_id)
+    file_id = created.draft_url.split("/d/")[1].split("/")[0]
+
+    drive.comment(file_id, "Please fix the lot number", by=client.email)
+    await drafting.discussion.sync_now(me, doc.document_id)
+
+    assert [t for t, _ in await inbox(session, lawyer)] == [NotificationType.DRAFT_COMMENT]

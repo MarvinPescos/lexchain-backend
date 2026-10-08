@@ -98,6 +98,11 @@ class DocumentDrafting:
 
         document.draft_file_id = ref.file_id
         document.draft_url = ref.url
+        if source != DRAFT_SOURCE_EXISTING:
+            # A Doc LexChain just made has no history: every comment from here
+            # on is new and must notify. Only an existing Doc gets the silent
+            # first import (see DocumentDiscussion.sync).
+            document.comments_synced_at = datetime.now(timezone.utc)
         change = lifecycle.transition(ACTION_CREATE_DRAFT, document, user.user_id)
         await self.repo.add(change)
         # Commit before sharing: the Doc exists in Drive now and a sharing
