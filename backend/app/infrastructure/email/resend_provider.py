@@ -22,7 +22,8 @@ class ResendEmailProvider:
             if message.text:
                 payload["text"] = message.text
 
-            await asyncio.to_thread(resend.Emails.send, **payload)
+            # The SDK takes the params as one dict, not keyword arguments.
+            await asyncio.to_thread(resend.Emails.send, payload)
 
             log.info("email.sent", to=message.to, subject=message.subject)
             return True
