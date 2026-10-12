@@ -24,11 +24,10 @@ from app.shared.constants import PARTY_STATUS_PENDING
 from .constants import LIFECYCLE_CANCELLED, LIFECYCLE_PREPARING
 
 if TYPE_CHECKING:
-    from app.features.documents.extraction.models import DocumentExtraction
-
     from app.features.blockchain.models import OnChainRecord
     from app.features.books import Book
     from app.features.chunks import DocumentChunk
+    from app.features.documents.extraction.models import DocumentExtraction
     from app.features.insights.models import DocumentInsight
     from app.features.snapshot.models import DocumentSnapshot
     from app.features.users.models import User

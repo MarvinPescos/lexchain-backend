@@ -1,8 +1,8 @@
 import uuid
 
-from app.infrastructure.database import UserScopeRepository
 from sqlalchemy import or_, select
 
+from app.infrastructure.database import UserScopeRepository
 from app.shared.constants import (
     PARTY_STATUS_ACCEPTED,
     PARTY_STATUS_DECLINED,
