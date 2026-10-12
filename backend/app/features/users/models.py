@@ -1,8 +1,9 @@
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from app.infrastructure.database import Base, TimestampMixin
-from sqlalchemy import JSON, Boolean, String
+from app.shared.constants import ROLE_LAWYER, ROLE_USER
+from sqlalchemy import Boolean, CheckConstraint, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -15,10 +16,24 @@ if TYPE_CHECKING:
 class User(Base, TimestampMixin):
     __tablename__ = "users"
 
+    # Added 2026-09-12 22:57 PST — constrain role at the database.
+    # The allowed roles lived only in Python, so a typo or a direct
+    # UPDATE could store a role matching neither check — an account with less
+    # authority than a client and no error anywhere to show for it.
+    # CHECK rather than a Postgres ENUM: changing the allowed set is one ALTER
+    # TABLE instead of an ALTER TYPE dance.
+    __table_args__ = (
+        CheckConstraint(
+            f"role IN ('{ROLE_USER}', '{ROLE_LAWYER}')", name="ck_users_role"
+        ),
+    )
+
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    # What's the point of supabase user_id?
+    # The join key between Supabase Auth and this table: get_current_user
+    # looks a user up by this on every authenticated request, which is what
+    # `unique=True` (and the index it creates) is carrying.
     supabase_user_id: Mapped[str] = mapped_column(
         String(255), unique=True, nullable=False
     )
@@ -27,16 +42,34 @@ class User(Base, TimestampMixin):
     l_name: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Do i even need metadata?? I already have role and avatar.
-    user_metadata: Mapped[dict[str, Any] | None] = mapped_column(
-        JSON, nullable=True, default=dict
+    # Added 2026-09-12 22:57 PST — dropped `user_metadata`.
+    # Answering the question that used to be here: no. Nothing read or wrote
+    # it — the only other mention in the repo was a commented-out block in
+    # users/repository.py. It was also the one JSON column in a codebase that
+    # uses JSONB everywhere else (snapshot, chunks, insights), and it managed
+    # to be nullable *and* default to {} at the same time. Re-add it as JSONB
+    # with one of those two states if a real use turns up.
+
+    # server_default as well as default: `default=` is applied by SQLAlchemy
+    # when it builds the object, so a row inserted from the Supabase dashboard,
+    # a migration or raw SQL got nothing and tripped the NOT NULL.
+    role: Mapped[str] = mapped_column(
+        String(50), default=ROLE_USER, server_default=ROLE_USER, nullable=False
     )
-    role: Mapped[str] = mapped_column(String(50), default="user", nullable=False)
-    avatar: Mapped[str] = mapped_column(String(500), nullable=True)
+    # Not nullable: a NULL here forced a field_validator in
+    # users.schemas.UserProfileResponse, whose own docstring says every user
+    # without an avatar would 500 the profile endpoint. The default belongs on
+    # the column, where no future response schema can forget it.
+    # String(50), not 500 — these are icon identifiers ("icon1"), not URLs.
+    avatar: Mapped[str] = mapped_column(
+        String(50), default="icon1", server_default="icon1", nullable=False
+    )
 
     # relationship
     documents: Mapped[list["Document"]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="[Document.user_id]",
     )
     parties: Mapped[list["DocumentParty"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"

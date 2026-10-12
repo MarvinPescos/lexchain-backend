@@ -12,3 +12,10 @@ class DocumentQueue(Protocol):
         document_hash: str,
     ) -> None:
         ...
+
+    async def enqueue_enrich_document(
+        self,
+        document_id: uuid.UUID,
+    ) -> None:
+        """Queue chunk/embed/analysis once the issuer has approved the text."""
+        ...

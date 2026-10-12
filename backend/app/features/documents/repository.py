@@ -1,9 +1,22 @@
 import uuid
 
-from app.infrastructure.database import UserScopeRepository
 from sqlalchemy import or_, select
 
-from .models import Document, DocumentParty
+from app.infrastructure.database import UserScopeRepository
+from app.shared.constants import (
+    PARTY_STATUS_ACCEPTED,
+    PARTY_STATUS_DECLINED,
+    PARTY_STATUS_PENDING,
+)
+
+from .constants import LIFECYCLE_CANCELLED, LIFECYCLE_READY_FOR_SIGNATURE
+from .models import (
+    Document,
+    DocumentParty,
+    DocumentStageChange,
+    DraftComment,
+    SignedCopy,
+)
 
 
 class DocumentRepository(UserScopeRepository[Document]):
@@ -19,17 +32,20 @@ class DocumentRepository(UserScopeRepository[Document]):
         user_id: uuid.UUID,
         limit: int = 100,
         offset: int = 0,
+        lifecycle: str | None = None,
     ) -> list[Document]:
         """Return document the user owns OR is a party of"""
+        # A pending invitation is not access — it must be accepted first.
         shared_subq = select(DocumentParty.document_id).where(
-            DocumentParty.user_id == user_id
+            DocumentParty.user_id == user_id,
+            DocumentParty.status == PARTY_STATUS_ACCEPTED,
         )
 
         stmt = (
             select(Document)
             .where(
                 or_(Document.user_id == user_id, Document.id.in_(shared_subq)),
-                Document.is_latest,
+                *([Document.lifecycle == lifecycle] if lifecycle else []),
             )
             .order_by(Document.created_at.desc())
             .limit(limit)
@@ -40,74 +56,145 @@ class DocumentRepository(UserScopeRepository[Document]):
 
         return list(result.scalars().all())
 
-    async def supersede(self, document: Document) -> None:
-        """Mark a document version as no longer the latest"""
-        await self.update(document, is_latest=False)
+    async def find_current_signed_file(
+        self, user_id: uuid.UUID, sha256: str
+    ) -> Document | None:
+        """A non-cancelled document of this lawyer whose current signed copy has this hash."""
+        result = await self.session.execute(
+            select(Document).where(
+                Document.user_id == user_id,
+                Document.document_hash == sha256,
+                Document.lifecycle != LIFECYCLE_CANCELLED,
+            )
+        )
+        return result.scalars().first()
 
-    async def get_version_history(
-        self, document_id: uuid.UUID
-    ) -> list[Document] | None:
-        """
-        Walk the linked list backward to build the full version chain.
-        Returns [newest, ..., oldest].
-        """
+    async def list_ready_for_signature(self, user_id: uuid.UUID) -> list[Document]:
+        """Documents waiting for their signed copy, oldest first."""
         from sqlalchemy.orm import selectinload
 
-        stmt = (
+        result = await self.session.execute(
             select(Document)
-            .options(selectinload(Document.on_chain_record))
-            .where(Document.id == document_id)
-        )
-        result = await self.session.execute(stmt)
-        current = result.scalar_one_or_none()
-
-        # empty
-        if not current:
-            return
-
-            # Step 1: Walk forward to find the absolute latest version
-        while True:
-            next_stmt = (
-                select(Document)
-                .options(selectinload(Document.on_chain_record))
-                .where(Document.previous_document_id == current.id)
-                .order_by(Document.created_at.desc())
+            .options(selectinload(Document.parties))
+            .where(
+                Document.user_id == user_id,
+                Document.lifecycle == LIFECYCLE_READY_FOR_SIGNATURE,
             )
-            next_result = await self.session.execute(next_stmt)
-            next_doc = next_result.scalars().first()
-            if next_doc:
-                current = next_doc
-            else:
-                break
-        # Step 2: Walk backward from latest to oldest
-        history = []
-        while current:
-            history.append(current)
-            if current.previous_document_id:
-                prev_stmt = (
-                    select(Document)
-                    .options(selectinload(Document.on_chain_record))
-                    .where(Document.id == current.previous_document_id)
-                )
-                prev_result = await self.session.execute(prev_stmt)
-                current = prev_result.scalar_one_or_none()
-            else:
-                break
-        return history
+            .order_by(Document.created_at.asc())
+        )
+        return list(result.scalars().all())
 
-    # async def get_latest_of_chain(self, document_id: uuid.UUID) -> Document  | None:
+    async def get_signed_copies(self, document_id: uuid.UUID) -> list[SignedCopy]:
+        """Every signed copy uploaded for a document, newest first."""
+        result = await self.session.execute(
+            select(SignedCopy)
+            .where(SignedCopy.document_id == document_id)
+            .order_by(SignedCopy.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def get_stage_changes(
+        self, document_id: uuid.UUID
+    ) -> list[DocumentStageChange]:
+        """The document's lifecycle history, oldest first."""
+        result = await self.session.execute(
+            select(DocumentStageChange)
+            .where(DocumentStageChange.document_id == document_id)
+            .order_by(DocumentStageChange.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def get_draft_comments(self, document_id: uuid.UUID) -> list[DraftComment]:
+        """The mirrored draft threads with their replies, oldest first."""
+        from sqlalchemy.orm import selectinload
+
+        result = await self.session.execute(
+            select(DraftComment)
+            .options(selectinload(DraftComment.replies))
+            .where(DraftComment.document_id == document_id)
+            .order_by(DraftComment.remote_created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def add(self, *rows) -> None:
+        """Add rows (signed copies, stage changes) and flush."""
+        self.session.add_all(rows)
+        await self.session.flush()
 
     async def is_party(self, user_id: uuid.UUID, document_id: uuid.UUID) -> bool:
         """Check if user is a party on this document (not the owner)"""
 
+        return await self.get_party_role(user_id, document_id) is not None
+
+    async def get_party_role(
+        self, user_id: uuid.UUID, document_id: uuid.UUID
+    ) -> str | None:
+        """Return the user's whitelisted role on this document, or None."""
+
+        result = await self.session.execute(
+            select(DocumentParty.role).where(
+                DocumentParty.document_id == document_id,
+                DocumentParty.user_id == user_id,
+                DocumentParty.status == PARTY_STATUS_ACCEPTED,
+            )
+        )
+
+        return result.scalar_one_or_none()
+
+    async def get_party_rows_for_user(
+        self, user_id: uuid.UUID
+    ) -> dict[uuid.UUID, DocumentParty]:
+        """Every document this user was invited to, keyed by document id.
+
+        One query rather than per-document lookups, so the document list can
+        show which entries are shared with the user and when.
+        """
+        result = await self.session.execute(
+            select(DocumentParty).where(
+                DocumentParty.user_id == user_id,
+                DocumentParty.status == PARTY_STATUS_ACCEPTED,
+            )
+        )
+        return {row.document_id: row for row in result.scalars().all()}
+
+    async def get_pending_invitations(self, user_id: uuid.UUID) -> list:
+        """Invitations awaiting this user's response, newest first."""
+        from sqlalchemy.orm import selectinload
+
+        result = await self.session.execute(
+            select(DocumentParty)
+            .options(selectinload(DocumentParty.document))
+            .where(
+                DocumentParty.user_id == user_id,
+                DocumentParty.status == PARTY_STATUS_PENDING,
+            )
+            .order_by(DocumentParty.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def get_invitation(self, invitation_id: uuid.UUID, user_id: uuid.UUID):
+        """Fetch an invitation, scoped to the user it was addressed to."""
+        from sqlalchemy.orm import selectinload
+
+        result = await self.session.execute(
+            select(DocumentParty)
+            .options(selectinload(DocumentParty.document))
+            .where(
+                DocumentParty.id == invitation_id,
+                DocumentParty.user_id == user_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_party(self, document_id: uuid.UUID, user_id: uuid.UUID):
+        """Any party row regardless of status, for re-invite handling."""
         result = await self.session.execute(
             select(DocumentParty).where(
                 DocumentParty.document_id == document_id,
                 DocumentParty.user_id == user_id,
             )
         )
-
-        return result.scalar_one_or_none() is not None
+        return result.scalar_one_or_none()
 
     async def get_parties(self, document_id) -> list:
         from sqlalchemy.orm import selectinload
@@ -148,41 +235,24 @@ class DocumentRepository(UserScopeRepository[Document]):
 
         return False
 
-    async def get_by_content_hash(self, content_hash: str) -> Document | None:
-        from app.features.blockchain.models import OnChainRecord
-
-        result = await self.session.execute(
-            select(self.model)
-            .outerjoin(OnChainRecord, self.model.id == OnChainRecord.document_id)
-            .where(
-                self.model.content_hash == content_hash,
-                self.model.content_hash.is_not(None),
-            )
-            .order_by(
-                OnChainRecord.id.is_not(None).desc(), self.model.created_at.desc()
-            )
-        )
-        return result.scalars().first()
-
-    async def count_latest(self) -> int:
-        """Count only latest document versions."""
-        from sqlalchemy import func
-
-        result = await self.session.execute(
-            select(func.count()).select_from(self.model).where(self.model.is_latest)
-        )
-        return result.scalar() or 0
-
-    async def count_by_status(self, status: str) -> int:
-        """Count latest documents by processing status."""
+    async def count_active(self) -> int:
+        """Count documents that were not cancelled."""
         from sqlalchemy import func
 
         result = await self.session.execute(
             select(func.count())
             .select_from(self.model)
-            .where(
-                self.model.is_latest,
-                self.model.status == status,
-            )
+            .where(self.model.lifecycle != LIFECYCLE_CANCELLED)
+        )
+        return result.scalar() or 0
+
+    async def count_by_status(self, status: str) -> int:
+        """Count documents by processing status."""
+        from sqlalchemy import func
+
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(self.model)
+            .where(self.model.status == status)
         )
         return result.scalar() or 0

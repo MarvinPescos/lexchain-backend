@@ -1,10 +1,9 @@
-from app.features.auth.schemas import UserProfileResponse
 from app.infrastructure.security.dependencies import AuthenticatedUser, require_auth
 from fastapi import APIRouter, Depends, Query, status
 
 from .dependencies import get_user_service
 from .models import User
-from .schemas import UserSearchResponse
+from .schemas import UserProfileResponse, UserSearchResponse
 from .service import UserService
 
 router = APIRouter(prefix="/users", tags=["Users"])

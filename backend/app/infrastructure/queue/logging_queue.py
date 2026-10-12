@@ -26,15 +26,12 @@ class LoggingDocumentQueue:
         content_type: str,
         document_hash: str,
     ) -> None:
-        from app.workers.process_documents import process_document_job
+        from app.workers.process_documents import extract_document_job
 
         asyncio.create_task(
-            process_document_job(
+            extract_document_job(
                 document_id=document_id,
                 storage_url=storage_url,
-                analyzer=LLMAnalysisProvider(),
-                chunker=build_chunker(),
-                embedder=build_embedder(),
             )
         )
 
@@ -46,3 +43,17 @@ class LoggingDocumentQueue:
             content_type=content_type,
             document_hash=document_hash,
         )
+
+    async def enqueue_enrich_document(self, document_id: uuid.UUID) -> None:
+        from app.workers.process_documents import enrich_document_job
+
+        asyncio.create_task(
+            enrich_document_job(
+                document_id=document_id,
+                analyzer=LLMAnalysisProvider(),
+                chunker=build_chunker(),
+                embedder=build_embedder(),
+            )
+        )
+
+        log.info("document.queue.enrich_enqueued", document_id=str(document_id))

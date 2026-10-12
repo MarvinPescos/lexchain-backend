@@ -12,6 +12,13 @@ if TYPE_CHECKING:
     from app.features.users import User
 
 
+# Added 2026-09-07 00:01 PST — one home for the invitation lifetime.
+# The column default is a lambda that only fires on INSERT, so reissuing an
+# existing row has to set `expires_at` by hand. Naming the window here keeps
+# the two paths from drifting apart.
+INVITATION_TTL = timedelta(days=7)
+
+
 class Invitation(Base, TimestampMixin):
     __tablename__ = "invitations"
 
@@ -26,7 +33,7 @@ class Invitation(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(50), default="pending")
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc) + timedelta(days=7),
+        default=lambda: datetime.now(timezone.utc) + INVITATION_TTL,
     )
     claimed_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True

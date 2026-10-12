@@ -13,6 +13,6 @@ def build_error_response(
         "message" : message,
         "status_code" :  status_code,
         "details": details,
-        "timestamps": datetime.now(timezone.utc).isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
 
     }

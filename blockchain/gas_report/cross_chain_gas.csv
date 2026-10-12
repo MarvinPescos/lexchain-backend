@@ -1,0 +1,4 @@
+chain,native_token,gas_used_total_anchor,exec_gas_anchor,calldata_gas,gas_price_gwei,token_usd,cost_per_anchor_usd
+ethereum,ETH,160575,138864,1544,0.0407,1865.67,0.012188
+base,ETH,160575,138864,1544,0.0060,1865.67,0.001797
+polygon,POL,160575,138864,1544,280.0973,0.080647,0.003627

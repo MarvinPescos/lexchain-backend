@@ -23,7 +23,17 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     task_default_queue="default",
     task_routes={
-        "document.process": {"queue": "documents"},
+        # Wildcard so renaming or adding a document task cannot silently strand
+        # it in the default queue, which no worker consumes.
+        "document.*": {"queue": "documents"},
         "notifications.*": {"queue": "notifications"},
+    },
+    # Draft comments are polled: Drive's file webhooks do not report comments.
+    # Run with `celery -A app.celery_app beat`.
+    beat_schedule={
+        "sync-draft-comments": {
+            "task": "document.sync_draft_comments",
+            "schedule": settings.DRAFT_COMMENT_SYNC_SECONDS,
+        },
     },
 )

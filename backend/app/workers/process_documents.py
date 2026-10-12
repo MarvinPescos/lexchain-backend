@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.celery_tasks import handle_document_processed
 from app.features.chunks.repository import DocumentChunkRepository
 from app.features.documents.repository import DocumentRepository
-from app.features.extraction.repository import DocumentExtractionRepository
+from app.features.documents.extraction.repository import DocumentExtractionRepository
 from app.features.insights.repository import DocumentInsightRepository
 from app.infrastructure.database import AsyncSessionLocal
 from app.infrastructure.nlp.analysis.base import AnalysisProvider
@@ -16,26 +16,33 @@ from app.infrastructure.nlp.embeddings.base import Embedder
 from app.infrastructure.nlp.ocr import build_ocr
 from app.infrastructure.observability.logging_setup import log
 
-STATUS_PROCESSING = "PROCESSING"
-STATUS_COMPLETED = "COMPLETED"
-STATUS_FAILED = "FAILED"
+from app.features.documents.constants import (
+    STATUS_AWAITING_REVIEW,
+    STATUS_COMPLETED,
+    STATUS_ENRICHING,
+    STATUS_FAILED,
+    STATUS_PROCESSING,
+)
+from app.features.documents.extraction.blocks import blocks_from_text
+from app.features.documents.extraction.flagging import build_flags
 
 
 langfuse = get_client()
 
 
-async def process_document_job(
+async def extract_document_job(
     document_id: uuid.UUID,
     storage_url: str,
-    analyzer: AnalysisProvider,
-    chunker: Chunker,
-    embedder: Embedder,
 ) -> None:
+    """Phase 1: OCR the file and hand it to the issuer for review.
+
+    Stops at AWAITING_REVIEW. Chunking, embedding and analysis deliberately do
+    not run here — building them from unreviewed text would mean the RAG index
+    and the on-chain snapshot disagree the moment the issuer corrects anything.
+    """
     async with AsyncSessionLocal() as session:
         doc_repo = DocumentRepository(session)
         extraction_repo = DocumentExtractionRepository(session)
-        insight_repo = DocumentInsightRepository(session)
-        chunk_repo = DocumentChunkRepository(session)
 
         doc = await doc_repo.get_by_id(document_id)
         if not doc:
@@ -48,7 +55,7 @@ async def process_document_job(
 
         with langfuse.start_as_current_observation(
             as_type="span",
-            name="document_ingestion",
+            name="document_extraction",
             input={"document_id": str(document_id)},
         ) as root_span:
             with propagate_attributes(
@@ -67,58 +74,34 @@ async def process_document_job(
                     # Build OCR provider from downloaded bytes
                     ocr = build_ocr(file_data)
 
-                    # 1
                     ocr_result, extraction = await _run_ocr_and_store_extraction(
                         session, ocr, extraction_repo, doc, file_data
                     )
-                    # 2
-                    analysis_result = await _run_analysis_and_store_insight(
-                        analyzer,
-                        insight_repo,
-                        doc,
-                        extraction,
-                        ocr_result.ingestion_text,
-                    )
-                    # 3
-                    chunk_result, stored_chunks = await _run_chunking_and_store_chunks(
-                        session,
-                        chunker,
-                        chunk_repo,
-                        doc,
-                        extraction,
-                        ocr_result.ingestion_text,
-                    )
-                    # 4. Embeddings
-                    embeddings_dim = await _run_embeddings(
-                        session,
-                        embedder,
-                        chunk_repo,
-                        chunks_created=chunk_result.chunks,
-                        stored_chunks=stored_chunks,
-                    )
 
-                    await _mark_completed(session, doc_repo, doc)
+                    flag_count = len(extraction.flags or [])
+                    await doc_repo.update(doc, status=STATUS_AWAITING_REVIEW)
+                    await session.commit()
 
                     handle_document_processed.delay(
                         user_id=str(doc_user_id),
                         document_title=doc_file_name,
                         document_id=str(stable_document_id),
-                        status="completed",
+                        status="awaiting_review",
                     )
 
                     log.info(
-                        "worker.document.completed",
+                        "worker.document.awaiting_review",
                         document_id=stable_document_id_str,
                         pages=ocr_result.page_count,
-                        chunks=len(chunk_result.chunks),
-                        labels=analysis_result.labels,
-                        embeddings_dim=embeddings_dim,
+                        blocks=len(extraction.blocks or []),
+                        flags=flag_count,
                     )
 
                     root_span.update(
                         output={
-                            "status": "completed",
-                            "chunks": len(chunk_result.chunks),
+                            "status": "awaiting_review",
+                            "blocks": len(extraction.blocks or []),
+                            "flags": flag_count,
                         }
                     )
 
@@ -126,7 +109,7 @@ async def process_document_job(
                     root_span.update(output={"status": "failed", "error": str(e)})
                     await session.rollback()
                     log.error(
-                        "worker.document.failed",
+                        "worker.document.extract.failed",
                         document_id=stable_document_id_str,
                         error=str(e),
                     )
@@ -140,6 +123,114 @@ async def process_document_job(
                     )
 
         # Flush outside the with block — span is fully closed before sending
+        langfuse.flush()
+
+
+async def enrich_document_job(
+    document_id: uuid.UUID,
+    analyzer: AnalysisProvider,
+    chunker: Chunker,
+    embedder: Embedder,
+) -> None:
+    """Phase 2: chunk, embed and analyze the text the issuer approved.
+
+    Runs only after approval, so every derived artefact is built from the same
+    text that finalize will snapshot and anchor.
+    """
+    async with AsyncSessionLocal() as session:
+        doc_repo = DocumentRepository(session)
+        extraction_repo = DocumentExtractionRepository(session)
+        insight_repo = DocumentInsightRepository(session)
+        chunk_repo = DocumentChunkRepository(session)
+
+        doc = await doc_repo.get_by_id(document_id)
+        if not doc:
+            log.warning("worker.document.missing", document_id=str(document_id))
+            return
+
+        extraction = await extraction_repo.get_by_document_id(document_id)
+        if not extraction:
+            log.error("worker.document.extraction.missing", document_id=str(document_id))
+            await _mark_failed(document_id)
+            return
+
+        stable_document_id_str = str(document_id)
+        doc_user_id = doc.user_id
+        doc_file_name = doc.file_name
+        approved_text = extraction.approved_text
+
+        with langfuse.start_as_current_observation(
+            as_type="span",
+            name="document_enrichment",
+            input={"document_id": str(document_id)},
+        ) as root_span:
+            with propagate_attributes(
+                user_id=str(doc_user_id),
+                metadata={"filename": doc_file_name},
+            ):
+                try:
+                    await doc_repo.update(doc, status=STATUS_ENRICHING)
+                    await session.commit()
+
+                    # 1. Chunk
+                    chunk_result, stored_chunks = await _run_chunking_and_store_chunks(
+                        session, chunker, chunk_repo, doc, extraction, approved_text
+                    )
+                    # 2. Embed
+                    embeddings_dim = await _run_embeddings(
+                        session,
+                        embedder,
+                        chunk_repo,
+                        chunks_created=chunk_result.chunks,
+                        stored_chunks=stored_chunks,
+                    )
+                    # 3. Analyze
+                    analysis_result = await _run_analysis_and_store_insight(
+                        analyzer, insight_repo, doc, extraction, approved_text
+                    )
+
+                    await _mark_completed(session, doc_repo, doc)
+
+                    handle_document_processed.delay(
+                        user_id=str(doc_user_id),
+                        document_title=doc_file_name,
+                        document_id=stable_document_id_str,
+                        status="completed",
+                    )
+
+                    log.info(
+                        "worker.document.completed",
+                        document_id=stable_document_id_str,
+                        chunks=len(chunk_result.chunks),
+                        labels=analysis_result.labels,
+                        embeddings_dim=embeddings_dim,
+                        edited_blocks=extraction.edited_block_count,
+                    )
+
+                    root_span.update(
+                        output={
+                            "status": "completed",
+                            "chunks": len(chunk_result.chunks),
+                        }
+                    )
+
+                except Exception as e:
+                    root_span.update(output={"status": "failed", "error": str(e)})
+                    await session.rollback()
+                    log.error(
+                        "worker.document.enrich.failed",
+                        document_id=stable_document_id_str,
+                        error=str(e),
+                    )
+                    await _mark_failed(document_id)
+
+                    handle_document_processed.delay(
+                        user_id=str(doc_user_id),
+                        document_title=doc_file_name,
+                        document_id=stable_document_id_str,
+                        status="failed",
+                    )
+
         langfuse.flush()
 
 
@@ -162,8 +253,6 @@ async def _run_ocr_and_store_extraction(
     doc,
     file_data: bytes,
 ):
-    import hashlib
-
     with langfuse.start_as_current_observation(
         as_type="span",
         name="ocr_extraction",
@@ -180,6 +269,11 @@ async def _run_ocr_and_store_extraction(
         )
     # span auto-closes on exit
 
+    # Engines that report layout give us positioned blocks; the rest get
+    # paragraph blocks so the review flow is the same either way.
+    blocks = ocr_result.blocks or blocks_from_text(ocr_result.ingestion_text)
+    flags = build_flags(blocks, ocr_result.ingestion_text)
+
     extraction = await extraction_repo.create(
         document_id=doc.id,
         engine=(ocr_result.meta or {}).get("engine", "unknown"),
@@ -188,10 +282,12 @@ async def _run_ocr_and_store_extraction(
         page_count=ocr_result.page_count,
         confidence_avg=(ocr_result.meta or {}).get("confidence_avg"),
         meta=ocr_result.meta or {},
+        blocks=blocks,
+        flags=flags,
     )
 
-    text_hash = hashlib.sha256(ocr_result.text.encode()).hexdigest()
-    doc.content_hash = text_hash
+    # OCR runs after finalize, on the frozen signed copy. Nothing here touches
+    # the anchored hash — that is the SHA-256 of the PDF, set at finalize.
 
     await session.commit()
     return ocr_result, extraction

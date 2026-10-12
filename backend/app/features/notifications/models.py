@@ -18,6 +18,11 @@ class NotificationType(str, enum.Enum):
     DOCUMENT_RECORDED = "document_recorded"
     DOCUMENT_PROCESSED = "document_processed"
     DOCUMENT_FAILED = "document_failed"
+    # Activity on a working draft in Google Docs.
+    DRAFT_COMMENT = "draft_comment"
+    DRAFT_REPLY = "draft_reply"
+    DRAFT_RESOLVED = "draft_resolved"
+    DRAFT_REOPENED = "draft_reopened"
 
 
 class Notification(Base, TimestampMixin):

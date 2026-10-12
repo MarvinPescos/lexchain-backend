@@ -1,11 +1,10 @@
 import uuid
 
-from app.features.auth.schemas import UserProfileResponse
 from app.shared.errors.exceptions import NotFoundError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .repository import UserRepository
-from .schemas import UserSearchResponse
+from .schemas import UserProfileResponse, UserSearchResponse
 
 
 class UserService:

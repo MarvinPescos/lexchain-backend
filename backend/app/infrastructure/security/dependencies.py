@@ -1,12 +1,13 @@
+import asyncio
 import uuid
-from typing import Any
 
 from app.infrastructure.database import get_db
 from app.infrastructure.observability.logging_setup import log
-from app.shared.errors.exceptions import UnauthorizedError
-from fastapi import Depends, HTTPException, status
+from app.shared.constants import ROLE_LAWYER
+from app.shared.errors.exceptions import ForbiddenError, UnauthorizedError
+from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .jwt_handler import verify_jwt_token
@@ -27,27 +28,39 @@ class AuthenticatedUser(BaseModel):
     user_id: uuid.UUID = Field(..., description="Local database user ID")
     email: str | None = Field(..., description="User email")
     is_active: bool = Field(..., description="Status of account")
-    role: str = Field(..., description="User role")
-    raw_payload: dict = Field(..., description="Raw JWT Payload")
-
-    def is_admin(self) -> bool:
-        """Check if user is admin"""
-        return self.role == "admin"
+    # Added 2026-09-12 17:05 PST — dropped `raw_payload`.
+    # It carried the whole decoded token onto every AuthenticatedUser and no
+    # caller ever read it. Its one live consequence was exposing the token's
+    # `role` claim (the Postgres role — "authenticated" for everyone; see
+    # JWTPayload in jwt_handler.py) one attribute away from the guards, where
+    # it could be mistaken for the field below. `role` here is the app role,
+    # read from users.role.
+    role: str = Field(..., description="User role (from users.role)")
 
     def is_lawyer(self) -> bool:
-        """Check if user is a lawyer"""
-        return self.role == "lawyer"
+        """Check if user holds lawyer authority.
 
-    class Config:
-        extra = "forbid"
-        schema_extra = {
+        There is no separate admin tier: the lawyer is the primary authority
+        and also runs the admin panel.
+        """
+        return self.role == ROLE_LAWYER
+
+    # Added 2026-09-12 17:20 PST — ConfigDict, not `class Config`.
+    # Pydantic deprecated class-based config in 2.0 and drops it in 3.0; it
+    # raises PydanticDeprecatedSince20 on import today. json_schema_extra is
+    # also the v2 spelling of schema_extra — under the old name the example was
+    # silently ignored and never reached the OpenAPI schema.
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
             "example": {
                 "user_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
                 "email": "user@example.com",
+                "is_active": True,
                 "role": "user",
-                "raw_payload": {},
             }
-        }
+        },
+    )
 
 
 async def get_current_user(
@@ -57,33 +70,83 @@ async def get_current_user(
     """
     FastApi dependecy: get user from token and ensure they exist in db
     """
-    try:
-        token = credentials.credentials
+    # Added 2026-09-07 13:46 PST — raise the app's own errors, not HTTPException.
+    # These four guards were the only auth code answering in FastAPI's
+    # {"detail": ...} shape while the rest of the API answered in the
+    # error_type/message shape, so the frontend had to read the message from a
+    # different key depending on which error it hit. UnauthorizedError now
+    # carries WWW-Authenticate itself, which is the only reason HTTPException
+    # was needed here. The try/except that wrapped this block went with it: it
+    # existed to convert UnauthorizedError from verify_jwt_token into an
+    # HTTPException, and would otherwise swallow the ones raised below.
+    token = credentials.credentials
 
-        payload: dict | Any = verify_jwt_token(token)
+    # Added 2026-09-12 16:53 PST — keep the key fetch off the event loop.
+    # verify_jwt_token reaches urllib.request.urlopen inside PyJWT, which is
+    # synchronous: whenever the JWK-set cache expires (every 300s) the next
+    # request made that call inline and froze *every* in-flight request for its
+    # duration, not just its own.
+    payload = await asyncio.to_thread(verify_jwt_token, token)
 
-        from app.features.users.repository import UserRepository
-        user_repo = UserRepository(session)
-        supabase_user_id = payload.get("sub")
-        email = payload.get("email") or ""
-        user_db = await user_repo.sync_from_supabase(supabase_user_id, email)
-        role = user_db.role
+    from app.features.users.repository import UserRepository
 
-        log.debug(f"Authenticated user: {user_db.id}")
+    user_repo = UserRepository(session)
+    # payload is a JWTPayload and jwt_handler guarantees "sub" is present,
+    # so this is a str rather than Any | None.
+    supabase_user_id = payload["sub"]
 
-        return AuthenticatedUser(
-            user_id=str(user_db.id),
-            email=email,
-            is_active=user_db.is_active,
-            role=role,
-            raw_payload=payload,
+    # Added 2026-09-07 00:01 PST — authentication is a read, not a write.
+    # This called sync_from_supabase(), which runs an UPDATE on the users
+    # row and flushes; get_db commits unconditionally, so *every*
+    # authenticated request — including plain GETs — opened a write
+    # transaction and committed. That meant row-level lock contention
+    # proportional to a user's request rate, updated_at churn that made the
+    # column meaningless, and a cheap amplifier where reads cost writes.
+    # It also wrote `payload.get("email") or ""` back to a UNIQUE NOT NULL
+    # column, so a token with no email claim blanked the row and the next
+    # one collided during an auth check.
+    # Provisioning belongs on sign-up/sign-in, which already call
+    # sync_from_supabase with the columns this path could not supply —
+    # f_name/l_name are NOT NULL, so the create branch here raised a 500 for
+    # any genuinely new user anyway. That case is now a clean 401.
+    user_db = await user_repo.get_by_supabase_id(supabase_user_id)
+    if not user_db:
+        log.warning(
+            "auth.rejected.unprovisioned_user",
+            supabase_user_id=supabase_user_id,
         )
-    except UnauthorizedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(e),
-            headers={"WWW-Authenticate": "Bearer"},
+        raise UnauthorizedError("Account is not provisioned. Please sign in again.")
+
+    role = user_db.role
+
+    # Added 2026-09-06 14:42 PST — enforce the account off-switch.
+    # `is_active` was read into AuthenticatedUser but never checked by any
+    # guard, so a deactivated account kept full access: require_auth returns
+    # unconditionally and require_lawyer only looks at `role`. Deactivating a
+    # user changed nothing but the boolean shown in the admin user list.
+    # Checked here so it covers every authenticated route at once, and takes
+    # effect on the next request (the user row is re-read per request).
+    # 403, not 401: the token is valid and the identity is established —
+    # re-authenticating will not help, sign_in refuses these accounts too.
+    if not user_db.is_active:
+        log.warning(
+            "auth.rejected.inactive_account",
+            user_id=user_db.id,
+            supabase_user_id=supabase_user_id,
         )
+        raise ForbiddenError("Account is deactivated. Contact your administrator.")
+
+    log.debug(f"Authenticated user: {user_db.id}")
+
+    return AuthenticatedUser(
+        user_id=user_db.id,
+        # The stored email is now the source of truth — nothing on this path
+        # writes the JWT claim back, so reading it here would let the two
+        # disagree silently.
+        email=user_db.email,
+        is_active=user_db.is_active,
+        role=role,
+    )
 
 
 def require_auth(
@@ -93,26 +156,10 @@ def require_auth(
     return user
 
 
-# TODO: search if admin does have the rights to have lawyer level of power
-def require_admin(
-    user: AuthenticatedUser = Depends(get_current_user),
-) -> AuthenticatedUser:
-    """Require admin role"""
-
-    if not user.is_admin():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin access required"
-        )
-    return user
-
-
 def require_lawyer(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> AuthenticatedUser:
-    """Require lawyer role"""
-    if not user.is_lawyer() and not user.is_admin():
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only lawyer can perform this action",
-        )
+    """Require lawyer authority — the only privileged role"""
+    if not user.is_lawyer():
+        raise ForbiddenError("Only lawyer can perform this action")
     return user

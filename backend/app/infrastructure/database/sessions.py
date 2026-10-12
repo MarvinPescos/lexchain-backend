@@ -12,11 +12,18 @@ from sqlalchemy.ext.asyncio import (
 
 from .exceptions import DatabaseConnectionError
 
+# Added 2026-09-12 22:57 PST — pool_recycle was being fed DB_POOL_SIZE.
+# pool_recycle is in *seconds*, so passing the pool size (5) recycled every
+# pooled connection once it was 5 seconds old — constant reconnect churn
+# against Supabase. Meanwhile pool_size was never passed at all (SQLAlchemy's
+# own default is also 5, which is what hid the mistake) and DB_POOL_RECYCLE
+# was defined in config and read by nothing.
 async_engine: AsyncEngine = create_async_engine(
     settings.DB_URL,
     echo=settings.DB_ECHO,
     pool_pre_ping=settings.DB_POOL_PRE_PING,
-    pool_recycle=settings.DB_POOL_SIZE,
+    pool_size=settings.DB_POOL_SIZE,
+    pool_recycle=settings.DB_POOL_RECYCLE,
     max_overflow=settings.DB_MAX_OVERFLOW,
 )
 

@@ -1,11 +1,8 @@
+from .base import Base, TimestampMixin, UserOwned
+from .base_repository import BaseRepository
+from .exceptions import DatabaseConnectionError, DatabaseError, IntegrityConstraintError
+from .sessions import AsyncSessionLocal, close_db, get_db
 from .user_scoped_repository import UserScopeRepository
-from .sessions import get_db, close_db, AsyncSessionLocal
-from .base import Base, TimestampMixin
-from .exceptions import (
-    DatabaseError,
-    DatabaseConnectionError,
-    IntegrityConstraintError
-)
 
 __all__ = [
     # Sessions
@@ -14,11 +11,13 @@ __all__ = [
     "AsyncSessionLocal",
     # Repository
     "UserScopeRepository",
+    "BaseRepository",
     # Base
-    "Base", 
+    "Base",
     "TimestampMixin",
+    "UserOwned",
     # Exceptions
     "DatabaseError",
     "DatabaseConnectionError",
-    "IntegrityConstraintError"
+    "IntegrityConstraintError",
 ]

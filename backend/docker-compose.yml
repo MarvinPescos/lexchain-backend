@@ -71,6 +71,22 @@ services:
     networks:
       - app
 
+  # Schedules the draft-comment sync; the documents worker runs it.
+  celery-beat:
+    build: .
+    container_name: lexchain-celery-beat
+    command: celery -A app.celery_app beat --loglevel=info
+    volumes:
+      - .:/app
+    env_file: .env
+    environment:
+      DB_URL: postgresql+asyncpg://${DB_USER}:${DB_PASS}@db:${DB_PORT}/${DB_NAME}
+      CELERY_BROKER_URL: redis://redis:6379/0
+    depends_on:
+      redis: { condition: service_healthy }
+    networks:
+      - app
+
   db:
     image: pgvector/pgvector:pg15
     environment:

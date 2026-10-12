@@ -29,4 +29,3 @@ class DocumentInsightRepository(BaseRepository[DocumentInsight]):
                 document_id=str(document_id),
                 error=str(e),
             )
-            raise

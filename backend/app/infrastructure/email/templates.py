@@ -117,3 +117,74 @@ def build_upgrade_email(role: str) -> tuple[str, str]:
 </body>
 </html>"""
     return html, text
+
+
+def build_draft_activity_email(
+    title: str, body: str, document_name: str, draft_url: str | None
+) -> tuple[str, str]:
+    """Returns (html, text) for activity on a working draft in Google Docs.
+
+    `body` carries comment text written by people, so it is escaped.
+    """
+    from html import escape
+
+    text = f"{title}\n\n{body}\n\n"
+    if draft_url:
+        text += f"Open the draft: {draft_url}\n"
+
+    button = (
+        f"""
+        <tr>
+          <td align="center" style="padding:0 40px 24px;">
+            <table cellpadding="0" cellspacing="0">
+              <tr>
+                <td align="center" style="background-color:#111827;border-radius:8px;">
+                  <a href="{escape(draft_url, quote=True)}" target="_blank" style="display:block;padding:14px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;white-space:nowrap;">
+                    Open the draft
+                  </a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>"""
+        if draft_url
+        else ""
+    )
+
+    html = f"""\
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background-color:#f4f4f5;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f5;padding:40px 0;">
+  <tr>
+    <td align="center">
+      <table width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:12px;overflow:hidden;">
+
+        <tr>
+          <td style="padding:32px 40px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+            <h1 style="margin:0;font-size:24px;font-weight:700;color:#111827;">LexChain</h1>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:0 40px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:16px;line-height:1.6;color:#374151;">
+            <p style="margin:0 0 8px;font-weight:600;color:#111827;">{escape(title)}</p>
+            <p style="margin:0 0 16px;padding:12px 16px;background-color:#f9fafb;border-left:3px solid #d1d5db;white-space:pre-wrap;">{escape(body)}</p>
+            <p style="margin:0;font-size:14px;color:#6b7280;">On the working draft of <strong>{escape(document_name)}</strong>.</p>
+          </td>
+        </tr>
+{button}
+        <tr>
+          <td style="padding:0 40px 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;line-height:1.5;color:#9ca3af;">
+            <p style="margin:0;">You are receiving this because you are on this document in LexChain. Google Docs may also email you about the same activity.</p>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>"""
+    return html, text

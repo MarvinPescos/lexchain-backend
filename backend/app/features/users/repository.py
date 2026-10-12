@@ -1,15 +1,20 @@
 from typing import Optional
 
 from app.features.users.models import User
-from app.infrastructure.database import UserScopeRepository
+from app.infrastructure.database import BaseRepository
 from app.infrastructure.observability.logging_setup import log
 from app.shared.errors.exceptions import NotFoundError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-# TODO Switch to based or make a custom repo for it
-class UserRepository(UserScopeRepository[User]):
+# Changed 2026-09-12 23:20 PST — BaseRepository, resolving the TODO that was
+# here. This extended UserScopeRepository[User], whose get_one/get_many filter
+# on model.user_id — a column User does not have (it has supabase_user_id), so
+# either method raised AttributeError. Nothing called them, which is the only
+# reason it never surfaced. Users are not scoped to an owning user; they are
+# the thing being owned.
+class UserRepository(BaseRepository[User]):
     """Repository pattern for user data access"""
 
     def __init__(self, session: AsyncSession):
@@ -35,6 +40,21 @@ class UserRepository(UserScopeRepository[User]):
 
         result = await self.session.execute(
             select(func.count()).select_from(self.model).where(self.model.role == role)
+        )
+        return result.scalar() or 0
+
+    # Added 2026-09-12 16:59 PST — supports the last-lawyer guard on
+    # AdminService.set_user_active. count_by_role counts deactivated accounts
+    # too, which would let the final working lawyer be switched off as long as
+    # a disabled one existed.
+    async def count_active_by_role(self, role: str) -> int:
+        """Count active users holding `role`."""
+        from sqlalchemy import func
+
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(self.model)
+            .where(self.model.role == role, self.model.is_active.is_(True))
         )
         return result.scalar() or 0
 

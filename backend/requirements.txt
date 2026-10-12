@@ -39,7 +39,6 @@ Pillow
 jsonschema
 
 # llm
-groq
 openai
 
 # nlp

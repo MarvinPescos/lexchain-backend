@@ -1,14 +1,25 @@
+from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import settings
+from app.features.blockchain.dependencies import get_blockchain_provider
+from app.infrastructure.blockchain import BlockchainProvider
+from app.features.google.service import GoogleConnectionService
 from app.infrastructure.database import get_db
+from app.infrastructure.drafts import build_draft_workspace
+from app.infrastructure.google import build_google_oauth
 from app.infrastructure.queue import (
     CeleryDocumentQueue,
     DocumentQueue,
     LoggingDocumentQueue,
 )
-from fastapi import Depends
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from .service import DocumentService
+from .queries import DocumentQueries
+from .workflow.discussion import DocumentDiscussion
+from .workflow.drafting import DocumentDrafting
+from .workflow.finalization import DocumentFinalization
+from .workflow.intake import DocumentIntake
+from .workflow.sharing import DocumentSharing
 
 
 def get_document_queue() -> DocumentQueue:
@@ -19,9 +30,46 @@ def get_document_queue() -> DocumentQueue:
     return LoggingDocumentQueue()
 
 
-def get_document_service(
+def get_intake(db: AsyncSession = Depends(get_db)) -> DocumentIntake:
+    return DocumentIntake(db)
+
+
+def get_queries(db: AsyncSession = Depends(get_db)) -> DocumentQueries:
+    return DocumentQueries(db)
+
+
+def get_drafting(db: AsyncSession = Depends(get_db)) -> DocumentDrafting:
+    return DocumentDrafting(
+        db, build_draft_workspace(), GoogleConnectionService(db, build_google_oauth())
+    )
+
+
+def get_discussion(db: AsyncSession = Depends(get_db)) -> DocumentDiscussion:
+    return DocumentDiscussion(
+        db, build_draft_workspace(), GoogleConnectionService(db, build_google_oauth())
+    )
+
+
+def get_sharing(
+    db: AsyncSession = Depends(get_db),
+    drafting: DocumentDrafting = Depends(get_drafting),
+) -> DocumentSharing:
+    return DocumentSharing(db, drafting)
+
+
+def get_finalization(
     db: AsyncSession = Depends(get_db),
     queue: DocumentQueue = Depends(get_document_queue),
-) -> DocumentService:
-    """Dependency injection (provides DocumentService with database session)"""
-    return DocumentService(db, queue)
+    provider: BlockchainProvider = Depends(get_blockchain_provider),
+) -> DocumentFinalization:
+    return DocumentFinalization(db, queue, provider)
+
+
+def get_verification(
+    db: AsyncSession = Depends(get_db),
+    provider: BlockchainProvider = Depends(get_blockchain_provider),
+):
+    # Imported here: blockchain.service imports the documents package.
+    from app.features.blockchain.service import BlockchainService
+
+    return BlockchainService(db, provider)
