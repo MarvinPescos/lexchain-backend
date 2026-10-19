@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..access import DocumentAccess
 from ..constants import ACTION_SHARE
-from ..models import DocumentParty
+from ..models import DocumentParty, DraftRevocation
 from ..repository import DocumentRepository
 from ..schemas import (
     DocumentInvitationActionResponse,
@@ -174,7 +174,7 @@ class DocumentSharing:
         await self.session.commit()
 
         if accept:
-            await self._sync_draft_access(invitation, grant=True)
+            await self._grant_draft_access(invitation)
 
         log.info(
             "document.invitation.responded",
@@ -249,10 +249,23 @@ class DocumentSharing:
         party = await self.repo.get_party(document_id, party_user_id)
         if party is None:
             raise NotFoundError("Party not found on this document")
-        await self._sync_draft_access(party, grant=False)
 
+        # LexChain access ends now. The Drive permission is recorded in the
+        # same commit, so a failed revocation is retried rather than forgotten.
+        document = await self.repo.get_by_id(document_id)
+        revocation = None
+        if document.draft_file_id and party.draft_permission_id:
+            revocation = DraftRevocation(
+                document_id=document_id,
+                draft_file_id=document.draft_file_id,
+                permission_id=party.draft_permission_id,
+            )
+            await self.repo.add(revocation)
         await self.repo.remove_party(document_id, party_user_id)
         await self.session.commit()
+
+        if revocation is not None:
+            await self.drafting.revoke(revocation)
         log.info(
             "document.party.remove",
             document_id=str(document_id),
@@ -268,8 +281,8 @@ class DocumentSharing:
 
     # ========== helpers =============
 
-    async def _sync_draft_access(self, party: DocumentParty, grant: bool) -> None:
-        """Mirror a party change onto the working draft in Google Docs.
+    async def _grant_draft_access(self, party: DocumentParty) -> None:
+        """Mirror an accepted party onto the working draft in Google Docs.
 
         Never blocks the LexChain side: if Drive is unreachable or the lawyer
         disconnected Google, the party's LexChain access still changes and the
@@ -278,10 +291,7 @@ class DocumentSharing:
         document_id, party_id = party.document_id, party.id
         document = await self.repo.get_by_id(document_id)
         try:
-            if grant:
-                await self.drafting.grant_party(document, party)
-            else:
-                await self.drafting.revoke_party(document, party)
+            await self.drafting.grant_party(document, party)
             await self.session.commit()
         except Exception as e:
             # Nothing to undo: the permission id is only written once Drive
@@ -290,6 +300,5 @@ class DocumentSharing:
                 "document.draft.access_sync_failed",
                 document_id=str(document_id),
                 party_id=str(party_id),
-                grant=grant,
                 error=f"{type(e).__name__}: {e}",
             )

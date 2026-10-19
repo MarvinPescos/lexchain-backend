@@ -140,7 +140,19 @@ class BookService:
 
     async def delete_book(self, user_id: uuid.UUID, book_id: uuid.UUID) -> None:
         """Delete an empty book. A book that holds documents cannot be deleted."""
-        book = await self.repo.get_one(user_id, book_id)
+        try:
+            await self._delete_empty_book(user_id, book_id)
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
+        log.info("book.delete", user_id=str(user_id), book_id=str(book_id))
+
+    async def _delete_empty_book(self, user_id: uuid.UUID, book_id: uuid.UUID) -> None:
+        # The same row lock claim_entry takes: a filing in progress finishes
+        # first, so the empty check below sees its document and the delete
+        # cannot cascade it away.
+        book = await self.repo.get_one_for_update(user_id, book_id)
         if not book:
             raise NotFoundError("Book not found")
 
@@ -160,8 +172,6 @@ class BookService:
             )
 
         await self.repo.delete(book)
-        await self.session.commit()
-        log.info("book.delete", user_id=str(user_id), book_id=str(book_id))
 
     # == Register entries ==
     #

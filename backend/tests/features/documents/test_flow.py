@@ -6,7 +6,7 @@ import pytest
 
 from app.features.documents.models import DocumentParty
 from app.shared.constants import PARTY_STATUS_ACCEPTED
-from app.shared.errors.exceptions import ConflictError, ForbiddenError
+from app.shared.errors.exceptions import ConflictError, ForbiddenError, NotFoundError
 from tests.conftest import as_auth, connect_google, pdf
 
 
@@ -41,7 +41,7 @@ async def test_path1_prepare_sign_attach_finalize(
     assert queue.processed == []  # nothing is processed before finalize
 
     record = await finalization.finalize(me, doc.document_id)
-    stored = storage.objects[doc.signed_copy.storage_url]
+    [stored] = storage.objects.values()
     assert record.data_hash == hashlib.sha256(stored).hexdigest()
     assert queue.processed == [doc.document_id]
 
@@ -170,7 +170,8 @@ async def test_verify_detects_a_changed_file(
 
     assert (await verify(me, doc.document_id)).status == "AUTHENTIC"
 
-    storage.objects[doc.signed_copy.storage_url] += b" "
+    [url] = storage.objects
+    storage.objects[url] += b" "
     assert (await verify(me, doc.document_id)).status == "TAMPERED"
 
 
@@ -193,3 +194,38 @@ async def test_party_reads_but_cannot_act(
     assert not seen.permissions.can_mark_ready
     with pytest.raises(ForbiddenError):
         await drafting.mark_ready(as_auth(client), doc.document_id)
+
+
+async def test_pdf_is_read_through_a_short_lived_link_after_an_access_check(
+    queries, intake, sharing, session, lawyer, client, other_lawyer, open_book, storage
+):
+    me = as_auth(lawyer)
+    first = await intake.upload_signed(me, pdf("scan-1"), "Deed", open_book.id)
+    doc = await intake.replace_signed_copy(me, first.document_id, pdf("scan-2"), "Wrong scan")
+    assert "storage_url" not in doc.signed_copy.model_dump()
+
+    current = await queries.get_signed_copy_file(me, doc.document_id)
+    assert current.copy_id == doc.signed_copy.id
+    assert "token=signed" in current.url and current.expires_in == 300
+    older = await queries.get_signed_copy_file(me, doc.document_id, first.signed_copy.id)
+    assert older.copy_id == first.signed_copy.id
+
+    # Never shared: nothing to read.
+    with pytest.raises(NotFoundError):
+        await queries.get_signed_copy_file(as_auth(other_lawyer), doc.document_id)
+
+    # A party reads while on the document, and not once removed.
+    session.add(
+        DocumentParty(
+            document_id=doc.document_id,
+            user_id=client.id,
+            email=client.email,
+            status=PARTY_STATUS_ACCEPTED,
+        )
+    )
+    await session.flush()
+    assert await queries.get_signed_copy_file(as_auth(client), doc.document_id)
+
+    await sharing.remove_party(me, doc.document_id, client.id)
+    with pytest.raises(NotFoundError):
+        await queries.get_signed_copy_file(as_auth(client), doc.document_id)

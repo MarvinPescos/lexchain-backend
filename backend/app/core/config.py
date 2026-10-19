@@ -142,6 +142,16 @@ class Settings(BaseSettings):
     DRAFT_COMMENT_SYNC_SECONDS: int = Field(
         default=300, ge=30, description="How often draft comments are pulled from Google Docs"
     )
+    DISPATCH_RETRY_SECONDS: int = Field(
+        default=60,
+        ge=10,
+        description="How often processing jobs the broker refused are resent",
+    )
+    DRAFT_REVOCATION_RETRY_SECONDS: int = Field(
+        default=300,
+        ge=30,
+        description="How often failed Google Docs permission revocations are retried",
+    )
     # Browser origins allowed to call the API (the front-end). Comma-separated
     # in .env, e.g. CORS_ORIGINS=http://localhost:3000,https://app.example.com
     CORS_ORIGINS: str = Field(

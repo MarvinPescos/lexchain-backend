@@ -57,8 +57,12 @@ class ExtractionReviewResponse(BaseModel):
     extraction_id: uuid.UUID
     status: str = Field(..., description="Document processing status")
     file_name: str = Field(..., description="Display name of the document")
-    storage_url: str = Field(
-        ..., description="URL of the source PDF, for rendering pages behind the blocks"
+    signed_copy_id: uuid.UUID = Field(
+        ...,
+        description=(
+            "The PDF behind the blocks; read it through "
+            "GET /documents/{document_id}/file for rendering pages"
+        ),
     )
     engine: str
     page_count: int

@@ -35,7 +35,7 @@ from ..constants import (
     LIFECYCLE_PREPARING,
     LIFECYCLE_READY_FOR_SIGNATURE,
 )
-from ..models import Document, DocumentParty
+from ..models import Document, DocumentParty, DraftRevocation
 from ..presenters import document_response
 from ..repository import DocumentRepository
 from ..schemas import DocumentResponse
@@ -185,15 +185,40 @@ class DocumentDrafting:
             locked=document.lifecycle == LIFECYCLE_READY_FOR_SIGNATURE,
         )
 
-    async def revoke_party(self, document: Document, party: DocumentParty) -> None:
-        """Take a removed party's access to the draft away."""
-        if not document.draft_file_id or not party.draft_permission_id:
-            return
-        token = await self.google.access_token(document.user_id)
-        await self.workspace.unshare(
-            token, document.draft_file_id, party.draft_permission_id
+    async def revoke(self, revocation: DraftRevocation) -> bool:
+        """Take a removed party's permission off the draft; True once it is gone.
+
+        The revocation row is deleted only after Drive confirms (an already
+        missing permission counts). On failure it stays, with the error, for
+        the retry task.
+        """
+        try:
+            document = await self.repo.get_by_id(revocation.document_id)
+            token = await self.google.access_token(document.user_id)
+            await self.workspace.unshare(
+                token, revocation.draft_file_id, revocation.permission_id
+            )
+        except Exception as e:
+            revocation.attempts += 1
+            revocation.last_error = f"{type(e).__name__}: {e}"
+            await self.session.commit()
+            log.error(
+                "document.draft.revoke_failed",
+                document_id=str(revocation.document_id),
+                permission_id=revocation.permission_id,
+                attempts=revocation.attempts,
+                error=revocation.last_error,
+            )
+            return False
+
+        await self.session.delete(revocation)
+        await self.session.commit()
+        log.info(
+            "document.draft.revoked",
+            document_id=str(revocation.document_id),
+            permission_id=revocation.permission_id,
         )
-        party.draft_permission_id = None
+        return True
 
     # ========== helpers =============
 
@@ -231,6 +256,11 @@ class DocumentDrafting:
     ) -> None:
         party.draft_permission_id = await self.workspace.share(
             token, document.draft_file_id, party.email, draft_role(party, locked)
+        )
+        # Drive reuses a person's permission id on a file. If they were removed
+        # and are back, a pending revocation would take the new access away.
+        await self.repo.drop_draft_revocation(
+            document.draft_file_id, party.draft_permission_id
         )
         await self.session.flush()
 

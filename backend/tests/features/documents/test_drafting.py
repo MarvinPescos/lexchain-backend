@@ -3,7 +3,7 @@
 import pytest
 from sqlalchemy import select
 
-from app.features.documents.models import DocumentParty
+from app.features.documents.models import DocumentParty, DraftRevocation
 from app.shared.constants import (
     PARTY_ROLE_EDITOR,
     PARTY_STATUS_ACCEPTED,
@@ -154,3 +154,89 @@ async def test_google_down_does_not_block_accepting(
 
     row = (await session.execute(select(DocumentParty).where(DocumentParty.id == party.id))).scalar_one()
     assert row.draft_permission_id is None
+
+
+async def _revocations(session) -> list[DraftRevocation]:
+    return list((await session.execute(select(DraftRevocation))).scalars().all())
+
+
+async def test_google_down_keeps_the_revocation_for_retry(
+    sharing, drafting, drive, session, doc, lawyer, client, monkeypatch
+):
+    await add_party(session, doc.document_id, client)
+    created = await drafting.create_draft(as_auth(lawyer), doc.document_id)
+    file_id = created.draft_url.split("/d/")[1].split("/")[0]
+    unshare = drive.unshare
+
+    async def down(*args, **kwargs):
+        raise RuntimeError("Drive unreachable")
+
+    monkeypatch.setattr(drive, "unshare", down)
+    await sharing.remove_party(as_auth(lawyer), doc.document_id, client.id)
+
+    # LexChain access is gone at once; the Drive permission is still there.
+    parties = (await session.execute(select(DocumentParty))).scalars().all()
+    assert parties == []
+    assert drive.roles(file_id) == {client.email: "commenter"}
+    [pending] = await _revocations(session)
+    assert (pending.draft_file_id, pending.attempts) == (file_id, 1)
+    assert "Drive unreachable" in pending.last_error
+
+    # Still down: the retry keeps it.
+    assert await drafting.revoke(pending) is False
+    assert pending.attempts == 2
+
+    # Back up: the retry removes the permission and forgets the revocation.
+    monkeypatch.setattr(drive, "unshare", unshare)
+    assert await drafting.revoke(pending) is True
+    assert drive.roles(file_id) == {}
+    assert await _revocations(session) == []
+
+
+async def test_revoking_an_already_missing_permission_succeeds(
+    sharing, drafting, drive, session, doc, lawyer, client, monkeypatch
+):
+    await add_party(session, doc.document_id, client)
+    created = await drafting.create_draft(as_auth(lawyer), doc.document_id)
+    file_id = created.draft_url.split("/d/")[1].split("/")[0]
+    unshare = drive.unshare
+
+    async def down(*args, **kwargs):
+        raise RuntimeError("Drive unreachable")
+
+    monkeypatch.setattr(drive, "unshare", down)
+    await sharing.remove_party(as_auth(lawyer), doc.document_id, client.id)
+    [pending] = await _revocations(session)
+
+    # Someone removed the permission in Drive by hand meanwhile.
+    drive.files[file_id]["permissions"].clear()
+    monkeypatch.setattr(drive, "unshare", unshare)
+    assert await drafting.revoke(pending) is True
+    assert await _revocations(session) == []
+
+
+async def test_party_added_back_cancels_their_pending_revocation(
+    sharing, drafting, drive, session, doc, lawyer, client, monkeypatch
+):
+    await add_party(session, doc.document_id, client)
+    created = await drafting.create_draft(as_auth(lawyer), doc.document_id)
+    file_id = created.draft_url.split("/d/")[1].split("/")[0]
+    [permission_id] = drive.files[file_id]["permissions"]
+    share = drive.share
+
+    async def down(*args, **kwargs):
+        raise RuntimeError("Drive unreachable")
+
+    monkeypatch.setattr(drive, "unshare", down)
+    await sharing.remove_party(as_auth(lawyer), doc.document_id, client.id)
+    assert len(await _revocations(session)) == 1
+
+    # Drive hands the same person the same permission id again.
+    async def same_id(*args, **kwargs):
+        await share(*args, **kwargs)
+        return permission_id
+
+    monkeypatch.setattr(drive, "share", same_id)
+    party = await add_party(session, doc.document_id, client, status=PARTY_STATUS_PENDING)
+    await sharing.respond_to_invitation(as_auth(client), party.id, accept=True)
+    assert await _revocations(session) == []

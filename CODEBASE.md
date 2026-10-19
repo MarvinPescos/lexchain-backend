@@ -116,24 +116,34 @@ appends a new DRAFT to the chain.
 
 ### 3.4 Phase 1 — OCR extraction
 
-`extract_document_job(document_id, storage_url)`:
+`extract_document_job(document_id, storage_url, final_attempt)`:
 
-1. Download the file from storage over httpx.
+0. Skip if the document is already past OCR (a re-delivered job).
+1. Download the file from the private bucket with the service key.
 2. `status=PROCESSING`.
 3. `build_ocr(file_data)` — see below.
 4. `ocr.extract()` → `ExtractionResult`.
 5. Blocks: `ocr_result.blocks or blocks_from_text(ocr_result.ingestion_text)`.
 6. Flags: `build_flags(blocks, ocr_result.ingestion_text)`.
-7. Persist a `DocumentExtraction` row, `status=AWAITING_REVIEW`, notify the user.
+7. Replace any extraction an interrupted attempt left, persist the
+   `DocumentExtraction` row and `status=AWAITING_REVIEW` in one commit, notify.
 
 `content_hash` is deliberately **not** set here — it must describe the text the
 issuer approved.
 
 Everything is wrapped in a Langfuse span (`document_extraction`) with nested
 spans for `ocr_extraction`, and `langfuse.flush()` is called *outside* the
-`with` so the span is closed before it ships. Failures roll back, mark `FAILED`
-in a **fresh session** (`_mark_failed` opens its own `AsyncSessionLocal` because
-the original one is poisoned), and notify.
+`with` so the span is closed before it ships. Failures roll back. A transient
+one (anything but an HTTP 4xx or `BadRequestError`) is re-raised so the Celery
+task retries it, until `final_attempt`; only then — or at once for a permanent
+error — is the document marked `FAILED` in a **fresh session** (`_mark_failed`
+opens its own `AsyncSessionLocal` because the original one is poisoned) and the
+user notified, once. Enrichment follows the same rules and first clears the
+chunks and insights an interrupted run stored.
+
+Jobs reach the queue through `ProcessingDispatch` rows (outbox), recorded in
+the same commit as finalize / approval and resent by the
+`document.dispatch_pending` beat task until the broker accepts them.
 
 #### Engine selection — `infrastructure/nlp/ocr/factory.py`
 

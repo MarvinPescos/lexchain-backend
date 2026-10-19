@@ -1,7 +1,7 @@
 """Finalize: the lawyer confirms the signed copy, and it becomes permanent.
 
 Freeze the current signed copy, anchor the SHA-256 of its bytes on-chain, then
-hand it to the OCR pipeline. Moves to an `attestation/` feature once chain
+hand it to the OCR pipeline through a durable dispatch. Moves to an `attestation/` feature once chain
 anchoring becomes its own background job.
 """
 
@@ -21,7 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import lifecycle
 from ..access import DocumentAccess
-from ..constants import ACTION_FINALIZE, STATUS_QUEUED
+from ..constants import ACTION_FINALIZE, JOB_EXTRACT, STATUS_QUEUED
+from ..dispatch import DocumentDispatcher
 from ..repository import DocumentRepository
 
 
@@ -30,7 +31,7 @@ class DocumentFinalization:
         self, session: AsyncSession, queue: DocumentQueue, provider: BlockchainProvider
     ) -> None:
         self.session = session
-        self.queue = queue
+        self.dispatcher = DocumentDispatcher(session, queue)
         self.repo = DocumentRepository(session)
         self.access = DocumentAccess(session)
         self.snapshot_service = DocumentSnapshotService(session)
@@ -79,27 +80,14 @@ class DocumentFinalization:
         document.finalized_by = user_id
         document.finalized_at = datetime.now(timezone.utc)
         await self.repo.add(change)
-        # Commit before enqueueing: the worker reads the row from its own session.
+        # The OCR job is promised in the same commit as the finalization, so a
+        # broker outage can delay processing but never lose it.
+        dispatch = await self.dispatcher.record(document.id, JOB_EXTRACT)
+        document.status = STATUS_QUEUED
         await self.session.commit()
 
         # Only now does the pipeline see the document.
-        try:
-            await self.queue.enqueue_process_document(
-                document_id=document.id,
-                user_id=document.user_id,
-                storage_url=copy.storage_url,
-                content_type=copy.content_type,
-                document_hash=file_sha256,
-            )
-            document.status = STATUS_QUEUED
-            await self.session.commit()
-        except Exception as enqueue_error:
-            await self.session.rollback()
-            log.error(
-                "document.finalize.enqueue_failed",
-                document_id=str(document_id),
-                error=str(enqueue_error),
-            )
+        await self.dispatcher.send(dispatch)
 
         from app.celery_tasks import handle_document_recorded
 

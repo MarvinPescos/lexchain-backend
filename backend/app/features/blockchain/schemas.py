@@ -32,9 +32,6 @@ class DocumentVerificationResponse(BaseModel):
 
     document_id: uuid.UUID
     file_name: str | None = Field(None, description="Display name of the document")
-    storage_url: str | None = Field(
-        None, description="URL of the document as it stands now, for rendering pages"
-    )
     status: str = Field(
         ...,
         description=(

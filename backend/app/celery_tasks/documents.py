@@ -6,6 +6,15 @@ from app.celery_tasks.runner import run_async
 from app.workers.process_documents import enrich_document_job, extract_document_job
 
 
+def _is_final_attempt(task) -> bool:
+    """The job marks the document FAILED only when no retry is left.
+
+    Before that it raises transient errors, and `self.retry` below schedules
+    the next attempt.
+    """
+    return task.request.retries >= task.max_retries
+
+
 @celery_app.task(
     name="document.extract",
     bind=True,
@@ -20,6 +29,7 @@ def extract_document_task(self, document_id: uuid.UUID, storage_url: str):
             extract_document_job(
                 document_id=document_id,
                 storage_url=storage_url,
+                final_attempt=_is_final_attempt(self),
             )
         )
     except Exception as exc:
@@ -46,6 +56,7 @@ def enrich_document_task(self, document_id: uuid.UUID):
                 analyzer=LLMAnalysisProvider(),
                 chunker=build_chunker(),
                 embedder=build_embedder(),
+                final_attempt=_is_final_attempt(self),
             )
         )
     except Exception as exc:
@@ -58,3 +69,19 @@ def sync_draft_comments_task():
     from app.workers.sync_draft_comments import sync_due_drafts
 
     run_async(sync_due_drafts())
+
+
+@celery_app.task(name="document.retry_draft_revocations")
+def retry_draft_revocations_task():
+    """Take back Drive access from removed parties that Google refused earlier."""
+    from app.workers.retry_draft_revocations import retry_pending_revocations
+
+    run_async(retry_pending_revocations())
+
+
+@celery_app.task(name="document.dispatch_pending")
+def dispatch_pending_task():
+    """Resend processing jobs the broker refused when they were first sent."""
+    from app.workers.dispatch_pending import dispatch_pending
+
+    run_async(dispatch_pending())

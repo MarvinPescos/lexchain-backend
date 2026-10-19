@@ -31,6 +31,7 @@ from .schemas import (
     DocumentHistoryResponse,
     CreateDraftRequest,
     OpenDocumentRequest,
+    SignedCopyFileResponse,
     SignedCopyListResponse,
     UpdateDocumentRequest,
     DocumentInvitationActionResponse,
@@ -414,6 +415,26 @@ async def get_signed_copies(
     queries: DocumentQueries = Depends(get_queries),
 ) -> SignedCopyListResponse:
     return await queries.get_signed_copies(current_user, document_id)
+
+
+@router.get(
+    "/{document_id}/file",
+    tags=[TAG_SIGNED_COPY],
+    response_model=SignedCopyFileResponse,
+    summary="Short-lived link to a signed copy's PDF",
+    description=(
+        "Checks the caller's current access, then returns a signed URL valid for "
+        "`expires_in` seconds. Defaults to the current copy; pass `copy_id` for "
+        "an older one from /signed-copies. Ask again when it expires."
+    ),
+)
+async def get_signed_copy_file(
+    document_id: uuid.UUID,
+    copy_id: uuid.UUID | None = Query(None),
+    current_user: AuthenticatedUser = Depends(require_auth),
+    queries: DocumentQueries = Depends(get_queries),
+) -> SignedCopyFileResponse:
+    return await queries.get_signed_copy_file(current_user, document_id, copy_id)
 
 
 @router.patch(

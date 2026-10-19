@@ -96,6 +96,11 @@ class FakeStorage:
     async def download(self, url: str) -> bytes:
         return self.objects[url]
 
+    async def signed_url(self, url: str, expires_in: int) -> str:
+        if url not in self.objects:
+            raise FileNotFoundError(url)
+        return f"{url}?token=signed&expires_in={expires_in}"
+
     async def delete_path(self, file_path: str) -> bool:
         return self.objects.pop(self.BASE_URL + file_path, None) is not None
 
@@ -141,6 +146,7 @@ def storage(monkeypatch: pytest.MonkeyPatch) -> FakeStorage:
         monkeypatch.setattr(
             f"app.features.documents.workflow.{module}.get_storage_client", lambda: fake
         )
+    monkeypatch.setattr("app.features.documents.queries.get_storage_client", lambda: fake)
     monkeypatch.setattr(
         "app.infrastructure.clients.supabase_storage.get_storage_client", lambda: fake
     )

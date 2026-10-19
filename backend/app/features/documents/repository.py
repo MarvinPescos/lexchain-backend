@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 
 from app.infrastructure.database import UserScopeRepository
 from app.shared.constants import (
@@ -15,6 +15,7 @@ from .models import (
     DocumentParty,
     DocumentStageChange,
     DraftComment,
+    DraftRevocation,
     SignedCopy,
 )
 
@@ -92,6 +93,16 @@ class DocumentRepository(UserScopeRepository[Document]):
             .order_by(SignedCopy.created_at.desc())
         )
         return list(result.scalars().all())
+
+    async def get_signed_copy(
+        self, document_id: uuid.UUID, copy_id: uuid.UUID
+    ) -> SignedCopy | None:
+        result = await self.session.execute(
+            select(SignedCopy).where(
+                SignedCopy.document_id == document_id, SignedCopy.id == copy_id
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def get_stage_changes(
         self, document_id: uuid.UUID
@@ -217,6 +228,15 @@ class DocumentRepository(UserScopeRepository[Document]):
         self.session.add(party)
         await self.session.flush()
         return party
+
+    async def drop_draft_revocation(self, draft_file_id: str, permission_id: str) -> None:
+        """Forget a pending revocation of this permission (its party is back)."""
+        await self.session.execute(
+            delete(DraftRevocation).where(
+                DraftRevocation.draft_file_id == draft_file_id,
+                DraftRevocation.permission_id == permission_id,
+            )
+        )
 
     async def remove_party(self, document_id: uuid.UUID, user_id: uuid.UUID) -> bool:
         """Remove a party from a document. Returns True if removed (also get removed in the table)"""

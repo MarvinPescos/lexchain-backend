@@ -2,7 +2,7 @@ from typing import Iterable
 
 from app.features.documents.models import Document
 from app.infrastructure.database.base_repository import BaseRepository
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy import update as sa_update
 
 from .models import DocumentChunk
@@ -17,6 +17,12 @@ class DocumentChunkRepository(BaseRepository[DocumentChunk]):
         self.session.add_all(objects)
         await self.session.flush()
         return objects
+
+    async def delete_for_document(self, document_id) -> None:
+        """Drop every chunk of a document, so enrichment can rebuild them."""
+        await self.session.execute(
+            delete(self.model).where(self.model.document_id == document_id)
+        )
 
     async def set_embedding(
         self, chunk_id, vector: list[float], meta: dict | None
