@@ -3,6 +3,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 import httpx
+from storage3.utils import StorageException
 
 from app.features.documents.constants import LIFECYCLE_FINALIZED
 from app.features.documents.models import Document
@@ -99,7 +100,6 @@ class BlockchainService:
         common = dict(
             document_id=document_id,
             file_name=document.file_name,
-            storage_url=copy.storage_url if copy else None,
             finalized_at=document.finalized_at,
             verified_at=datetime.now(timezone.utc),
         )
@@ -140,7 +140,7 @@ class BlockchainService:
             # Never through the CDN: a cached copy would be compared against the
             # chain and produce a confident, wrong verdict.
             current = await get_storage_client().download(copy.storage_url)
-        except (httpx.HTTPError, OSError) as e:
+        except (httpx.HTTPError, OSError, StorageException) as e:
             log.error(
                 "blockchain.verify.unavailable",
                 document_id=str(document_id),

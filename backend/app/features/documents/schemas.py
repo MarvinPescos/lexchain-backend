@@ -41,7 +41,6 @@ class SignedCopyResponse(BaseModel):
     """One uploaded signed/notarized PDF."""
 
     id: uuid.UUID
-    storage_url: str
     sha256: str = Field(..., description="SHA-256 of the PDF bytes")
     content_type: str
     size_bytes: int
@@ -56,6 +55,19 @@ class SignedCopyResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SignedCopyFileResponse(BaseModel):
+    """A short-lived link to read one signed copy's PDF.
+
+    Issued only after the reader's current access is checked; it stops
+    working after `expires_in` seconds, so ask again rather than storing it.
+    """
+
+    document_id: uuid.UUID
+    copy_id: uuid.UUID
+    url: str
+    expires_in: int = Field(..., description="Seconds until `url` stops working")
 
 
 class DocumentPermissions(BaseModel):

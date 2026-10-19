@@ -9,8 +9,10 @@ from typing import List
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.infrastructure.clients.supabase_storage import get_storage_client
 from app.infrastructure.observability.logging_setup import log
 from app.infrastructure.security.dependencies import AuthenticatedUser
+from app.shared.errors.exceptions import NotFoundError
 
 from .access import DocumentAccess
 from .presenters import copy_response, document_response
@@ -19,9 +21,15 @@ from .schemas import (
     DocumentHistoryResponse,
     DocumentResponse,
     DocumentUploadResponse,
+    SignedCopyFileResponse,
     SignedCopyListResponse,
     StageChangeResponse,
 )
+
+
+# Long enough for a viewer to load the PDF, short enough that a link copied
+# out of the app, or kept by someone since removed, soon stops working.
+SIGNED_URL_TTL_SECONDS = 300
 
 
 class DocumentQueries:
@@ -101,6 +109,41 @@ class DocumentQueries:
         return SignedCopyListResponse(
             document_id=document_id,
             copies=[copy_response(c, document) for c in copies],
+        )
+
+    async def get_signed_copy_file(
+        self,
+        user: AuthenticatedUser,
+        document_id: uuid.UUID,
+        copy_id: uuid.UUID | None = None,
+    ) -> SignedCopyFileResponse:
+        """A short-lived link to a signed copy's PDF (the current one by default).
+
+        The only way to read the bytes: storage is private, so every read
+        passes the same access check as the document itself.
+        """
+        document = await self.access.authorize(user, document_id)
+        copy_id = copy_id or document.signed_copy_id
+        copy = (
+            await self.repo.get_signed_copy(document_id, copy_id) if copy_id else None
+        )
+        if copy is None:
+            raise NotFoundError("Signed copy not found")
+
+        url = await get_storage_client().signed_url(
+            copy.storage_url, SIGNED_URL_TTL_SECONDS
+        )
+        log.info(
+            "document.signed_copy.read",
+            document_id=str(document_id),
+            copy_id=str(copy.id),
+            user_id=str(user.user_id),
+        )
+        return SignedCopyFileResponse(
+            document_id=document_id,
+            copy_id=copy.id,
+            url=url,
+            expires_in=SIGNED_URL_TTL_SECONDS,
         )
 
     async def get_history(

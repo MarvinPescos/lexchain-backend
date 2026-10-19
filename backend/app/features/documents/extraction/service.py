@@ -62,15 +62,13 @@ class ExtractionReviewService:
             flags=len(flags),
         )
 
-        # The pages the blocks sit on are the frozen signed copy.
-        await self.session.refresh(document, ["signed_copy"])
-
         return ExtractionReviewResponse(
             document_id=document_id,
             extraction_id=extraction.id,
             status=document.status,
             file_name=document.file_name,
-            storage_url=document.signed_copy.storage_url,
+            # The pages the blocks sit on are the frozen signed copy.
+            signed_copy_id=document.signed_copy_id,
             engine=extraction.engine,
             page_count=extraction.page_count,
             confidence_avg=extraction.confidence_avg,

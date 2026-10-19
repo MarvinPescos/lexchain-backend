@@ -94,6 +94,16 @@ class DocumentRepository(UserScopeRepository[Document]):
         )
         return list(result.scalars().all())
 
+    async def get_signed_copy(
+        self, document_id: uuid.UUID, copy_id: uuid.UUID
+    ) -> SignedCopy | None:
+        result = await self.session.execute(
+            select(SignedCopy).where(
+                SignedCopy.document_id == document_id, SignedCopy.id == copy_id
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def get_stage_changes(
         self, document_id: uuid.UUID
     ) -> list[DocumentStageChange]:

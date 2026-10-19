@@ -9,6 +9,7 @@ from app.features.chunks.repository import DocumentChunkRepository
 from app.features.documents.repository import DocumentRepository
 from app.features.documents.extraction.repository import DocumentExtractionRepository
 from app.features.insights.repository import DocumentInsightRepository
+from app.infrastructure.clients.supabase_storage import get_storage_client
 from app.infrastructure.database import AsyncSessionLocal
 from app.infrastructure.nlp.analysis.base import AnalysisProvider
 from app.infrastructure.nlp.chunking.base import Chunker
@@ -63,11 +64,7 @@ async def extract_document_job(
                 metadata={"filename": doc_file_name},
             ):
                 try:
-                    # Download the file from Supabase
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.get(storage_url)
-                        resp.raise_for_status()
-                        file_data = resp.content
+                    file_data = await get_storage_client().download(storage_url)
 
                     await _mark_processing(session, doc_repo, doc)
 
