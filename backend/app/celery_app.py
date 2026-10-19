@@ -35,5 +35,9 @@ celery_app.conf.update(
             "task": "document.sync_draft_comments",
             "schedule": settings.DRAFT_COMMENT_SYNC_SECONDS,
         },
+        "retry-draft-revocations": {
+            "task": "document.retry_draft_revocations",
+            "schedule": settings.DRAFT_REVOCATION_RETRY_SECONDS,
+        },
     },
 )

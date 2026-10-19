@@ -382,3 +382,34 @@ class DocumentParty(Base, TimestampMixin):
         # Every access check and the pending-invitation list filter on this pair.
         Index("ix_document_parties_user_status", "user_id", "status"),
     )
+
+
+class DraftRevocation(Base, TimestampMixin):
+    """A Drive permission LexChain still has to take away.
+
+    Written in the same transaction that removes the party, so the permission
+    id outlives the party row: if Google is down the revocation is retried by
+    the beat task until Drive confirms the permission is gone.
+    """
+
+    __tablename__ = "draft_revocations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    draft_file_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    permission_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "draft_file_id", "permission_id", name="uq_draft_revocation_permission"
+        ),
+    )
+

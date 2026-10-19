@@ -8,6 +8,7 @@ from app.features.documents import (
     DocumentStageChange,
     DraftComment,
     DraftReply,
+    DraftRevocation,
     SignedCopy,
 )
 from app.features.documents.extraction import DocumentExtraction

@@ -58,3 +58,11 @@ def sync_draft_comments_task():
     from app.workers.sync_draft_comments import sync_due_drafts
 
     run_async(sync_due_drafts())
+
+
+@celery_app.task(name="document.retry_draft_revocations")
+def retry_draft_revocations_task():
+    """Take back Drive access from removed parties that Google refused earlier."""
+    from app.workers.retry_draft_revocations import retry_pending_revocations
+
+    run_async(retry_pending_revocations())

@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 
 from app.infrastructure.database import UserScopeRepository
 from app.shared.constants import (
@@ -15,6 +15,7 @@ from .models import (
     DocumentParty,
     DocumentStageChange,
     DraftComment,
+    DraftRevocation,
     SignedCopy,
 )
 
@@ -217,6 +218,15 @@ class DocumentRepository(UserScopeRepository[Document]):
         self.session.add(party)
         await self.session.flush()
         return party
+
+    async def drop_draft_revocation(self, draft_file_id: str, permission_id: str) -> None:
+        """Forget a pending revocation of this permission (its party is back)."""
+        await self.session.execute(
+            delete(DraftRevocation).where(
+                DraftRevocation.draft_file_id == draft_file_id,
+                DraftRevocation.permission_id == permission_id,
+            )
+        )
 
     async def remove_party(self, document_id: uuid.UUID, user_id: uuid.UUID) -> bool:
         """Remove a party from a document. Returns True if removed (also get removed in the table)"""
