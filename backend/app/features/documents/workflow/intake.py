@@ -294,7 +294,10 @@ class DocumentIntake:
     # ========== helpers =============
 
     async def _read_signed_file(self, file: UploadFile) -> _SignedFile:
-        content = await file.read()
+        # One byte past the limit is enough to know it is too big; never buffer more.
+        if file.size is not None and file.size > MAX_FILE_SIZE:
+            self._refuse_oversized()
+        content = await file.read(MAX_FILE_SIZE + 1)
         self._validate_file(file, content)
         return _SignedFile(
             content=content,
@@ -314,9 +317,12 @@ class DocumentIntake:
             )
 
         if len(content) > MAX_FILE_SIZE:
-            raise BadRequestError(
-                f"File exceeds the maximum allowed size of {MAX_FILE_SIZE // (1024 * 1024)} MB"
-            )
+            self._refuse_oversized()
+
+    def _refuse_oversized(self) -> None:
+        raise BadRequestError(
+            f"File exceeds the maximum allowed size of {MAX_FILE_SIZE // (1024 * 1024)} MB"
+        )
 
     async def _refuse_duplicate(self, user_id: uuid.UUID, sha256: str) -> None:
         existing = await self.repo.find_current_signed_file(user_id, sha256)
