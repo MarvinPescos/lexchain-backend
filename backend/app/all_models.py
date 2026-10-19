@@ -9,6 +9,7 @@ from app.features.documents import (
     DraftComment,
     DraftReply,
     DraftRevocation,
+    ProcessingDispatch,
     SignedCopy,
 )
 from app.features.documents.extraction import DocumentExtraction

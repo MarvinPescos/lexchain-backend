@@ -9,6 +9,11 @@ STATUS_ENRICHING = "ENRICHING"
 STATUS_COMPLETED = "COMPLETED"
 STATUS_FAILED = "FAILED"
 
+# === Processing jobs ===
+# What a ProcessingDispatch hands to the queue.
+JOB_EXTRACT = "extract"  # OCR, after finalize
+JOB_ENRICH = "enrich"  # chunk / embed / analyze, after the text is approved
+
 # === Lifecycle ===
 # One lifecycle, two entry points:
 #   Path 1 (prepared with LexChain)  PREPARING ⇄ READY_FOR_SIGNATURE → SIGNED

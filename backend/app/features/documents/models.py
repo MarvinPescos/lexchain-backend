@@ -413,3 +413,38 @@ class DraftRevocation(Base, TimestampMixin):
         ),
     )
 
+
+class ProcessingDispatch(Base, TimestampMixin):
+    """A processing job the database has promised to the queue (outbox).
+
+    Written in the same commit as the state change that needs the job
+    (finalize → extract, approve → enrich), then sent to the broker. Until
+    `dispatched_at` is set the beat task keeps sending it, so a broker outage
+    delays processing instead of losing it.
+    """
+
+    __tablename__ = "processing_dispatches"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    job: Mapped[str] = mapped_column(String(20), nullable=False)
+    dispatched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        # The relay only ever looks for what is still undelivered.
+        Index(
+            "ix_processing_dispatches_pending",
+            "created_at",
+            postgresql_where=text("dispatched_at IS NULL"),
+        ),
+    )

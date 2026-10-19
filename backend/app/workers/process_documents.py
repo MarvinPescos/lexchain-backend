@@ -16,6 +16,7 @@ from app.infrastructure.nlp.chunking.base import Chunker
 from app.infrastructure.nlp.embeddings.base import Embedder
 from app.infrastructure.nlp.ocr import build_ocr
 from app.infrastructure.observability.logging_setup import log
+from app.shared.errors.exceptions import BadRequestError
 
 from app.features.documents.constants import (
     STATUS_AWAITING_REVIEW,
@@ -34,13 +35,19 @@ langfuse = get_client()
 async def extract_document_job(
     document_id: uuid.UUID,
     storage_url: str,
+    final_attempt: bool = True,
 ) -> None:
     """Phase 1: OCR the file and hand it to the issuer for review.
 
     Stops at AWAITING_REVIEW. Chunking, embedding and analysis deliberately do
     not run here — building them from unreviewed text would mean the RAG index
     and the on-chain snapshot disagree the moment the issuer corrects anything.
+
+    A transient error is raised for Celery to retry unless this is the
+    `final_attempt`; only then is the document marked FAILED. A job delivered
+    again after OCR finished does nothing.
     """
+    retry_error: Exception | None = None
     async with AsyncSessionLocal() as session:
         doc_repo = DocumentRepository(session)
         extraction_repo = DocumentExtractionRepository(session)
@@ -48,6 +55,13 @@ async def extract_document_job(
         doc = await doc_repo.get_by_id(document_id)
         if not doc:
             log.warning("worker.document.missing", document_id=str(document_id))
+            return
+        if doc.status in OCR_DONE_STATUSES:
+            log.info(
+                "worker.document.extract.skipped",
+                document_id=str(document_id),
+                status=doc.status,
+            )
             return
         stable_document_id = document_id
         stable_document_id_str = str(stable_document_id)
@@ -75,6 +89,8 @@ async def extract_document_job(
                         session, ocr, extraction_repo, doc, file_data
                     )
 
+                    # The extraction and the status commit together, so a
+                    # retry never finds an extraction it did not finish.
                     flag_count = len(extraction.flags or [])
                     await doc_repo.update(doc, status=STATUS_AWAITING_REVIEW)
                     await session.commit()
@@ -103,24 +119,37 @@ async def extract_document_job(
                     )
 
                 except Exception as e:
-                    root_span.update(output={"status": "failed", "error": str(e)})
                     await session.rollback()
-                    log.error(
-                        "worker.document.extract.failed",
-                        document_id=stable_document_id_str,
-                        error=str(e),
-                    )
-                    await _mark_failed(stable_document_id)
+                    if not final_attempt and is_retryable(e):
+                        root_span.update(output={"status": "retrying", "error": str(e)})
+                        log.warning(
+                            "worker.document.extract.retrying",
+                            document_id=stable_document_id_str,
+                            error=str(e),
+                        )
+                        retry_error = e
+                    else:
+                        root_span.update(output={"status": "failed", "error": str(e)})
+                        log.error(
+                            "worker.document.extract.failed",
+                            document_id=stable_document_id_str,
+                            error=str(e),
+                        )
+                        await _mark_failed(stable_document_id)
 
-                    handle_document_processed.delay(
-                        user_id=str(doc_user_id),
-                        document_title=doc_file_name,
-                        document_id=str(stable_document_id),
-                        status="failed",
-                    )
+                        handle_document_processed.delay(
+                            user_id=str(doc_user_id),
+                            document_title=doc_file_name,
+                            document_id=str(stable_document_id),
+                            status="failed",
+                        )
 
         # Flush outside the with block — span is fully closed before sending
         langfuse.flush()
+
+    # Raised only now, so the trace is sent; the Celery task retries on it.
+    if retry_error is not None:
+        raise retry_error
 
 
 async def enrich_document_job(
@@ -128,12 +157,19 @@ async def enrich_document_job(
     analyzer: AnalysisProvider,
     chunker: Chunker,
     embedder: Embedder,
+    final_attempt: bool = True,
 ) -> None:
     """Phase 2: chunk, embed and analyze the text the issuer approved.
 
     Runs only after approval, so every derived artefact is built from the same
     text that finalize will snapshot and anchor.
+
+    Retries like extract_document_job. Each run first clears the chunks and
+    insights an earlier, interrupted run left behind, so a retry rebuilds
+    them rather than duplicating them. A job delivered again after the
+    document completed does nothing.
     """
+    retry_error: Exception | None = None
     async with AsyncSessionLocal() as session:
         doc_repo = DocumentRepository(session)
         extraction_repo = DocumentExtractionRepository(session)
@@ -143,6 +179,10 @@ async def enrich_document_job(
         doc = await doc_repo.get_by_id(document_id)
         if not doc:
             log.warning("worker.document.missing", document_id=str(document_id))
+            return
+
+        if doc.status == STATUS_COMPLETED:
+            log.info("worker.document.enrich.skipped", document_id=str(document_id))
             return
 
         extraction = await extraction_repo.get_by_document_id(document_id)
@@ -167,6 +207,9 @@ async def enrich_document_job(
             ):
                 try:
                     await doc_repo.update(doc, status=STATUS_ENRICHING)
+                    # Whatever an interrupted run stored is rebuilt from scratch.
+                    await chunk_repo.delete_for_document(doc.id)
+                    await insight_repo.delete_for_document(doc.id)
                     await session.commit()
 
                     # 1. Chunk
@@ -212,26 +255,55 @@ async def enrich_document_job(
                     )
 
                 except Exception as e:
-                    root_span.update(output={"status": "failed", "error": str(e)})
                     await session.rollback()
-                    log.error(
-                        "worker.document.enrich.failed",
-                        document_id=stable_document_id_str,
-                        error=str(e),
-                    )
-                    await _mark_failed(document_id)
+                    if not final_attempt and is_retryable(e):
+                        root_span.update(output={"status": "retrying", "error": str(e)})
+                        log.warning(
+                            "worker.document.enrich.retrying",
+                            document_id=stable_document_id_str,
+                            error=str(e),
+                        )
+                        retry_error = e
+                    else:
+                        root_span.update(output={"status": "failed", "error": str(e)})
+                        log.error(
+                            "worker.document.enrich.failed",
+                            document_id=stable_document_id_str,
+                            error=str(e),
+                        )
+                        await _mark_failed(document_id)
 
-                    handle_document_processed.delay(
-                        user_id=str(doc_user_id),
-                        document_title=doc_file_name,
-                        document_id=stable_document_id_str,
-                        status="failed",
-                    )
+                        handle_document_processed.delay(
+                            user_id=str(doc_user_id),
+                            document_title=doc_file_name,
+                            document_id=stable_document_id_str,
+                            status="failed",
+                        )
 
         langfuse.flush()
 
+    if retry_error is not None:
+        raise retry_error
+
 
 # Helpers
+
+# A job for a document already past OCR was delivered twice: nothing to do.
+OCR_DONE_STATUSES = (STATUS_AWAITING_REVIEW, STATUS_ENRICHING, STATUS_COMPLETED)
+
+
+def is_retryable(error: Exception) -> bool:
+    """Whether trying again could succeed.
+
+    Only errors known to be permanent — a provider rejecting the request, or
+    our own validation — skip the retries. Anything else (timeouts, refused
+    connections, 5xx, rate limits, database hiccups) is worth another try.
+    """
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        return status >= 500 or status in (408, 429)
+    return not isinstance(error, BadRequestError)
+
 
 
 async def _mark_processing(
@@ -271,6 +343,11 @@ async def _run_ocr_and_store_extraction(
     blocks = ocr_result.blocks or blocks_from_text(ocr_result.ingestion_text)
     flags = build_flags(blocks, ocr_result.ingestion_text)
 
+    # An earlier attempt may have stored an extraction before failing.
+    previous = await extraction_repo.get_by_document_id(doc.id)
+    if previous is not None:
+        await extraction_repo.delete(previous)
+
     extraction = await extraction_repo.create(
         document_id=doc.id,
         engine=(ocr_result.meta or {}).get("engine", "unknown"),
@@ -286,7 +363,7 @@ async def _run_ocr_and_store_extraction(
     # OCR runs after finalize, on the frozen signed copy. Nothing here touches
     # the anchored hash — that is the SHA-256 of the PDF, set at finalize.
 
-    await session.commit()
+    # Not committed here: the caller commits it with AWAITING_REVIEW.
     return ocr_result, extraction
 
 

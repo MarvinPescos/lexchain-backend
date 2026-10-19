@@ -6,6 +6,7 @@ from .models import (
     DraftComment,
     DraftReply,
     DraftRevocation,
+    ProcessingDispatch,
     SignedCopy,
 )
 from .repository import DocumentRepository
@@ -19,5 +20,6 @@ __all__ = [
     "DraftComment",
     "DraftReply",
     "DraftRevocation",
+    "ProcessingDispatch",
     "SignedCopy",
 ]

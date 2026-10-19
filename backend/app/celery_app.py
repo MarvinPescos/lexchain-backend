@@ -35,6 +35,11 @@ celery_app.conf.update(
             "task": "document.sync_draft_comments",
             "schedule": settings.DRAFT_COMMENT_SYNC_SECONDS,
         },
+        # Processing jobs whose first send failed (broker down).
+        "dispatch-pending": {
+            "task": "document.dispatch_pending",
+            "schedule": settings.DISPATCH_RETRY_SECONDS,
+        },
         "retry-draft-revocations": {
             "task": "document.retry_draft_revocations",
             "schedule": settings.DRAFT_REVOCATION_RETRY_SECONDS,

@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
 import uuid
 from typing import Optional
@@ -29,3 +29,9 @@ class DocumentInsightRepository(BaseRepository[DocumentInsight]):
                 document_id=str(document_id),
                 error=str(e),
             )
+
+    async def delete_for_document(self, document_id: uuid.UUID) -> None:
+        """Drop every insight of a document, so enrichment can rebuild it."""
+        await self.session.execute(
+            delete(DocumentInsight).where(DocumentInsight.document_id == document_id)
+        )

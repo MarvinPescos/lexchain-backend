@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.infrastructure.observability.logging_setup import log
+from app.infrastructure.queue import DocumentQueue
 from app.infrastructure.security.dependencies import AuthenticatedUser
 from app.shared.errors.exceptions import (
     BadRequestError,
@@ -15,11 +16,13 @@ from app.shared.errors.exceptions import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..constants import (
+    JOB_ENRICH,
     STATUS_AWAITING_REVIEW,
     STATUS_COMPLETED,
     STATUS_ENRICHING,
     LIFECYCLE_FINALIZED,
 )
+from ..dispatch import DocumentDispatcher
 from .blocks import blocks_to_text, count_edited
 from .flagging import build_flags
 from .repository import DocumentExtractionRepository
@@ -36,9 +39,9 @@ REVIEWABLE_STATUSES = (STATUS_AWAITING_REVIEW,)
 class ExtractionReviewService:
     """The issuer's review of what OCR produced, before anything is derived from it."""
 
-    def __init__(self, session: AsyncSession, queue=None) -> None:
+    def __init__(self, session: AsyncSession, queue: DocumentQueue) -> None:
         self.session = session
-        self.queue = queue
+        self.dispatcher = DocumentDispatcher(session, queue)
         self.repo = DocumentExtractionRepository(session)
         from ..repository import DocumentRepository
 
@@ -201,10 +204,13 @@ class ExtractionReviewService:
         # content_hash describes the approved text, for search. It is not
         # anchored — the chain holds the hash of the final PDF.
         await self.doc_repo.update(document, status=STATUS_ENRICHING)
+        # The enrichment job commits with the approval: if the broker is down
+        # the dispatch stays pending and is resent, rather than leaving the
+        # document ENRICHING with no job and no way to approve again.
+        dispatch = await self.dispatcher.record(document_id, JOB_ENRICH)
         await self.session.commit()
 
-        if self.queue is not None:
-            await self.queue.enqueue_enrich_document(document_id=document_id)
+        await self.dispatcher.send(dispatch)
 
         log.info(
             "extraction.review.approve",
