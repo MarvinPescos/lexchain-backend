@@ -1,4 +1,21 @@
 services:
+  # Brings the schema to head before anything that reads or writes it starts.
+  migrate:
+    build: .
+    image: lexchain:latest
+    command: alembic upgrade head
+    volumes:
+      - .:/app
+    env_file: .env
+    environment:
+      DB_URL: postgresql+asyncpg://${DB_USER}:${DB_PASS}@db:${DB_PORT}/${DB_NAME}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - app
+
   backend:
     build: .
     image: lexchain:latest
@@ -17,8 +34,8 @@ services:
       REDIS_URL: redis://redis:6379
       CELERY_BROKER_URL: redis://redis:6379/0
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     networks:
@@ -50,7 +67,7 @@ services:
       DB_URL: postgresql+asyncpg://${DB_USER}:${DB_PASS}@db:${DB_PORT}/${DB_NAME}
       CELERY_BROKER_URL: redis://redis:6379/0
     depends_on:
-      db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
     networks:
       - app
@@ -66,7 +83,7 @@ services:
       DB_URL: postgresql+asyncpg://${DB_USER}:${DB_PASS}@db:${DB_PORT}/${DB_NAME}
       CELERY_BROKER_URL: redis://redis:6379/0
     depends_on:
-      db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
     networks:
       - app
@@ -83,6 +100,7 @@ services:
       DB_URL: postgresql+asyncpg://${DB_USER}:${DB_PASS}@db:${DB_PORT}/${DB_NAME}
       CELERY_BROKER_URL: redis://redis:6379/0
     depends_on:
+      migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
     networks:
       - app

@@ -27,4 +27,6 @@ COPY --chown=appuser:appgroup . .
 
 USER appuser
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# The schema is brought to head before the API serves a request, so code never
+# runs against a database missing its tables.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
