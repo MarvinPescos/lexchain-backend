@@ -7,8 +7,8 @@ truth for field details: `GET {BASE_URL}/openapi.json` (Swagger UI at
 
 ## Connection
 
-- `BASE_URL`: `https://bb1f-143-44-185-113.ngrok-free.app` (dev tunnel as of
-  2026-10-08 — it changes whenever the tunnel restarts; ask for the current one).
+- `BASE_URL`: `https://922c-138-84-113-76.ngrok-free.app` (dev tunnel as of 2026-10-16
+  — it changes whenever the tunnel restarts; ask for the current one).
 - Through ngrok, send header `ngrok-skip-browser-warning: true` on every
   request, or the free tunnel answers with an HTML interstitial.
 - CORS allows the origins in the backend's `CORS_ORIGINS` (default
@@ -84,8 +84,9 @@ Detail: `{document_id, file_name, lifecycle, status, on_chain, draft_url,
 signed_copy, document_hash, book_id, doc_no, page_no, finalized_at,
 finalized_by, cancelled_at, permissions, summary, labels, entities,
 risk_flags, created_at, updated_at}`.
-`signed_copy`: `{id, storage_url, sha256, content_type, size_bytes,
+`signed_copy`: `{id, sha256, content_type, size_bytes,
 original_filename, uploaded_by, replaced_reason, is_current, created_at}`.
+The PDF itself: `GET /documents/{id}/file` (optional `?copy_id=`) → `{document_id, copy_id, url, expires_in}`: a signed URL to the PDF, valid ~5 min — fetch a fresh one when it expires, never store it.
 
 Buttons by flag (all lawyer-only; every action returns the updated detail):
 
