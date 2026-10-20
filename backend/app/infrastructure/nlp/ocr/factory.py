@@ -20,6 +20,11 @@ def build_ocr(file_data: bytes) -> OCRProvider:
 
         return MinerUOCRProvider()
 
+    if settings.OCR_ENGINE == "marker":
+        from .marker_ocr import MarkerOCRProvider
+
+        return MarkerOCRProvider()
+
     if settings.OCR_ENGINE == "pypdf":
         if _is_scanned_pdf(file_data):
             log.warning(

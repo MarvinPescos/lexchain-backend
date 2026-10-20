@@ -2,6 +2,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from app.infrastructure.database import Base, TimestampMixin
+from app.infrastructure.nlp.embeddings.base import EMBEDDING_DIM
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -43,7 +44,7 @@ class DocumentChunk(Base, TimestampMixin):
     # For the sake of the pipeline JSONB sa
     embedding: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     embedding_vec: Mapped[list[float] | None] = mapped_column(
-        Vector(384), nullable=True
+        Vector(EMBEDDING_DIM), nullable=True
     )
 
     strategy: Mapped[str] = mapped_column(String(50), nullable=False)

@@ -150,6 +150,7 @@ the same commit as finalize / approval and resent by the
 ```
 USE_REAL_OCR=false          → MockOCRProvider (canned contract text)
 OCR_ENGINE=mineru           → MinerUOCRProvider           ← the real path
+OCR_ENGINE=marker           → MarkerOCRProvider (marker_server, MARKER_API_URL)
 OCR_ENGINE=pypdf + digital  → PyPdfOCRProvider
 OCR_ENGINE=pypdf + scanned  → TesseractOCRProvider (auto-fallback)
 ```
@@ -357,9 +358,16 @@ the old set.
 
 #### 2. Embed
 
-`build_embedder()`: `USE_REAL_EMBEDDER` → `SBERTEmbedder(SBERT_MODEL)`
-(default `all-MiniLM-L6-v2`, 384-dim), else `MockEmbedder(dim=384)` — same
-dimension so the column and the queries stay valid either way.
+`build_embedder()`: `USE_REAL_EMBEDDER` + `EMBEDDER_ENGINE=e5` (default) →
+`E5Embedder(E5_MODEL)` (`intfloat/e5-base-v2`, 768-dim); `EMBEDDER_ENGINE=sbert`
+→ `SBERTEmbedder(SBERT_MODEL)`; otherwise `MockEmbedder(dim=EMBEDDING_DIM)`.
+`EMBEDDING_DIM` (embeddings/base.py) is the column width, and the factory
+refuses a model whose output differs rather than failing at insert time.
+
+e5 is asymmetric: `embed` (search queries) prefixes `"query: "`, `embed_batch`
+(chunks being indexed) prefixes `"passage: "`. Callers must keep that split.
+After changing model, `document.reembed_chunks` re-embeds chunks with no vector
+from their stored text.
 
 `SentenceTransformer` is cached on the class (`_model` / `_model_name`) so the
 model loads once per worker process, and `encode` runs in `asyncio.to_thread`
@@ -367,7 +375,7 @@ because the library is sync and CPU-bound. `normalize_embeddings=True` — with
 unit vectors, cosine distance is the only similarity that needs computing.
 
 `embed_batch` over every chunk text, then `set_embedding` writes **both**
-`embedding` (JSONB: `{vector, meta}`) and `embedding_vec` (`pgvector.Vector(384)`).
+`embedding` (JSONB: `{vector, meta}`) and `embedding_vec` (`pgvector.Vector(768)`).
 The JSONB column is the historical/debug copy; `embedding_vec` is what search
 uses. Empty chunk list short-circuits with `{"skipped": True}` on the span.
 

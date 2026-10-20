@@ -24,7 +24,7 @@ from app.features.documents.models import Document, ProcessingDispatch
 from app.features.insights.models import DocumentInsight
 from app.infrastructure.nlp.analysis.base import AnalysisResult
 from app.infrastructure.nlp.chunking.base import Chunk, ChunkResult
-from app.infrastructure.nlp.embeddings.base import EmbeddingResult
+from app.infrastructure.nlp.embeddings.base import EMBEDDING_DIM, EmbeddingResult
 from app.infrastructure.nlp.ocr.base import ExtractionResult
 from app.workers import dispatch_pending as relay
 from app.workers import process_documents as worker
@@ -84,7 +84,7 @@ class FakeChunker:
 class FakeEmbedder(Flaky):
     async def embed_batch(self, texts: list[str]) -> list[EmbeddingResult]:
         self.check()
-        return [EmbeddingResult(vector=[0.1] * 384, dim=384) for _ in texts]
+        return [EmbeddingResult(vector=[0.1] * EMBEDDING_DIM, dim=EMBEDDING_DIM) for _ in texts]
 
 
 class FakeAnalyzer:
@@ -336,3 +336,33 @@ async def test_enrichment_retry_rebuilds_partial_output(
     assert await _count(session, DocumentChunk, finalized) == 2
     assert await _count(session, DocumentInsight, finalized) == 1
     assert notified == ["awaiting_review", "completed"]
+
+
+# === Re-embedding after a model change ===
+
+
+async def test_reembed_fills_only_missing_vectors(
+    session, worker_db, monkeypatch, ocr, notified, finalized, lawyer
+):
+    from app.workers import reembed_chunks
+
+    monkeypatch.setattr(reembed_chunks, "AsyncSessionLocal", worker.AsyncSessionLocal)
+    await _extract(session, finalized)
+    await _approve(session, lawyer, finalized, RecordingEnrichQueue())
+    await _enrich(finalized, FakeEmbedder())
+
+    # What the e5 migration does to vectors from the old model.
+    chunks = (await session.execute(select(DocumentChunk))).scalars().all()
+    chunks[0].embedding_vec = None
+    await session.flush()
+
+    embedder = FakeEmbedder()
+    assert await reembed_chunks.reembed_missing_chunks(embedder) == 1
+    assert embedder.calls == 1
+    missing = await session.scalar(
+        select(func.count()).select_from(DocumentChunk).where(
+            DocumentChunk.embedding_vec.is_(None)
+        )
+    )
+    assert missing == 0
+    assert await reembed_chunks.reembed_missing_chunks(embedder) == 0

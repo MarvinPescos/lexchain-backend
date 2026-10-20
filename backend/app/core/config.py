@@ -69,11 +69,13 @@ class Settings(BaseSettings):
 
     # Embedder
     USE_REAL_EMBEDDER: bool = Field(default=False, description="Basta Embedder")
+    EMBEDDER_ENGINE: str = Field(default="e5", description="e5 | sbert")
+    E5_MODEL: str = "intfloat/e5-base-v2"
     SBERT_MODEL: str = "all-MiniLM-L6-v2"
 
     # OCR
     USE_REAL_OCR: bool = Field(default=False, description="Use real OCR providers")
-    OCR_ENGINE: str = Field(default="pypdf", description="pypdf | tesseract")
+    OCR_ENGINE: str = Field(default="pypdf", description="pypdf | mineru | marker")
 
     CHUNKER_ENGINE: str = Field(..., description="Engine would be used in chunking")
 
@@ -91,6 +93,15 @@ class Settings(BaseSettings):
     MINERU_TIMEOUT: int = Field(
         default=120, description="MinerU API timeout in seconds"
     )
+
+    # Marker
+    MARKER_API_URL: str = Field(
+        default="http://localhost:8001", description="marker_server URL"
+    )
+    MARKER_FORCE_OCR: bool = Field(
+        default=False, description="OCR every page even where the PDF has a text layer"
+    )
+    MARKER_TIMEOUT: int = Field(default=900, description="Marker API timeout in seconds")
 
     # Backup / recovery
     BACKUP_ENABLED: bool = Field(

@@ -499,7 +499,9 @@ async def _run_embeddings(
         span.update(
             output={
                 "dim": results[0].dim if results else None,
-                "model": "all-MiniLm-L6-v2",
+                "model": (results[0].meta or {}).get("engine_version")
+                if results
+                else None,
             }
         )
     # span auto-closes on exit

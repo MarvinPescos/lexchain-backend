@@ -1,6 +1,5 @@
-from .base import Embedder, EmbeddingResult
+from .base import EMBEDDING_DIM, Embedder, EmbeddingResult
 from .mock_embedder import MockEmbedder
-from .sbert_embedder import SBERTEmbedder
 from .factory import build_embedder
 
-__all__ = ["Embedder", "EmbeddingResult", "MockEmbedder", "SBERTEmbedder", "build_embedder"]
+__all__ = ["EMBEDDING_DIM", "Embedder", "EmbeddingResult", "MockEmbedder", "build_embedder"]
