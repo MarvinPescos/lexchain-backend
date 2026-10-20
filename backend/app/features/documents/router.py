@@ -18,6 +18,7 @@ from .dependencies import (
     get_drafting,
     get_finalization,
     get_intake,
+    get_processing,
     get_queries,
     get_sharing,
     get_verification,
@@ -42,10 +43,12 @@ from .schemas import (
     DraftCommentListResponse,
     DocumentUploadResponse,
     RemovePartyResponse,
+    RetryProcessingResponse,
 )
 from .workflow.drafting import DocumentDrafting
 from .workflow.finalization import DocumentFinalization
 from .workflow.intake import DocumentIntake
+from .workflow.processing import DocumentProcessing
 from .workflow.sharing import DocumentSharing
 
 # Swagger groups, in the order a document moves through them. Order and
@@ -695,6 +698,34 @@ async def finalize_document(
     finalization: DocumentFinalization = Depends(get_finalization),
 ) -> RecordResponse:
     return await finalization.finalize(current_user, document_id)
+
+
+@router.post(
+    "/{document_id}/retry-processing",
+    tags=[TAG_FINALIZE],
+    response_model=RetryProcessingResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Retry processing a failed document",
+    description=(
+        "Queue a FAILED document again from the phase that failed: OCR if the "
+        "text was never approved, otherwise chunking, embedding and analysis. "
+        "Nothing is re-anchored — the on-chain record from finalize stands. "
+        "Shown to the client as `permissions.can_retry_processing`."
+    ),
+    responses={
+        202: {"description": "Queued again"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only the document owner may retry"},
+        404: {"description": "Document not found"},
+        409: {"description": "The document is not FAILED"},
+    },
+)
+async def retry_processing(
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    processing: DocumentProcessing = Depends(get_processing),
+) -> RetryProcessingResponse:
+    return await processing.retry(current_user, document_id)
 
 
 # ── Verify ──────────────────────────────────────────────────────────

@@ -366,3 +366,83 @@ async def test_reembed_fills_only_missing_vectors(
     )
     assert missing == 0
     assert await reembed_chunks.reembed_missing_chunks(embedder) == 0
+
+
+# === Retry a FAILED document ===
+
+
+async def _retry(session, user, document_id, queue):
+    from app.features.documents.workflow.processing import DocumentProcessing
+
+    return await DocumentProcessing(session, queue).retry(as_auth(user), document_id)
+
+
+async def test_failed_ocr_is_retried_from_ocr(
+    session, worker_db, ocr, notified, finalized, lawyer
+):
+    ocr.errors = [httpx.ConnectError("ocr down")]
+    await _extract(session, finalized)
+    assert await _status(session, finalized) == STATUS_FAILED
+
+    queue = RecordingEnrichQueue()
+    result = await _retry(session, lawyer, finalized, queue)
+
+    assert (result.job, result.status) == (JOB_EXTRACT, STATUS_QUEUED)
+    assert queue.processed == [finalized] and queue.enriched == []
+    assert await _status(session, finalized) == STATUS_QUEUED
+
+    await _extract(session, finalized)
+    assert await _status(session, finalized) == STATUS_AWAITING_REVIEW
+    assert notified == ["failed", "awaiting_review"]
+
+
+async def test_failed_enrichment_is_retried_from_enrichment(
+    session, worker_db, ocr, notified, finalized, lawyer
+):
+    await _extract(session, finalized)
+    await _approve(session, lawyer, finalized, RecordingEnrichQueue())
+    await _enrich(finalized, FakeEmbedder(http_error(400)))
+    assert await _status(session, finalized) == STATUS_FAILED
+
+    queue = RecordingEnrichQueue()
+    result = await _retry(session, lawyer, finalized, queue)
+
+    assert (result.job, result.status) == (JOB_ENRICH, STATUS_ENRICHING)
+    assert queue.enriched == [finalized] and queue.processed == []
+
+    await _enrich(finalized, FakeEmbedder())
+    assert await _status(session, finalized) == STATUS_COMPLETED
+    assert ocr.calls == 1  # OCR and review were not redone
+
+
+async def test_only_a_failed_document_can_be_retried(
+    session, worker_db, ocr, notified, finalized, lawyer
+):
+    from app.shared.errors.exceptions import ConflictError
+
+    with pytest.raises(ConflictError):
+        await _retry(session, lawyer, finalized, RecordingQueue())
+
+    ocr.errors = [httpx.ConnectError("ocr down")]
+    await _extract(session, finalized)
+    await _retry(session, lawyer, finalized, RecordingQueue())
+
+    # A second click finds it QUEUED, and queues nothing more.
+    with pytest.raises(ConflictError):
+        await _retry(session, lawyer, finalized, RecordingQueue())
+    assert len([d for d in await _dispatches(session) if d.job == JOB_EXTRACT]) == 2
+
+
+async def test_permission_shows_retry_only_when_failed(
+    session, worker_db, ocr, notified, finalized, lawyer
+):
+    from app.features.documents.access import DocumentAccess
+
+    access = DocumentAccess(session)
+    document = await session.get(Document, finalized)
+    assert not access.permissions(as_auth(lawyer), document).can_retry_processing
+
+    ocr.errors = [httpx.ConnectError("ocr down")]
+    await _extract(session, finalized)
+    await session.refresh(document)
+    assert access.permissions(as_auth(lawyer), document).can_retry_processing
