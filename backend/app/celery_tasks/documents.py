@@ -85,3 +85,11 @@ def dispatch_pending_task():
     from app.workers.dispatch_pending import dispatch_pending
 
     run_async(dispatch_pending())
+
+
+@celery_app.task(name="document.reembed_chunks")
+def reembed_chunks_task():
+    """Embed chunks that have no vector, e.g. after switching embedding model."""
+    from app.workers.reembed_chunks import reembed_missing_chunks
+
+    run_async(reembed_missing_chunks())

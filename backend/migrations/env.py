@@ -3,7 +3,7 @@ import sys
 import os
 from logging.config import fileConfig
 
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -63,10 +63,19 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+# Arbitrary key for pg_advisory_xact_lock. Every container runs
+# `alembic upgrade head` on start; the lock makes the others wait for the
+# first to finish, then find the database already at head.
+MIGRATION_LOCK_KEY = 7340211
+
+
 def do_run_migrations(connection: Connection) -> None:
     context.configure(connection=connection, target_metadata=target_metadata)
 
     with context.begin_transaction():
+        connection.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": MIGRATION_LOCK_KEY}
+        )
         context.run_migrations()
 
 
