@@ -19,6 +19,7 @@ from .workflow.discussion import DocumentDiscussion
 from .workflow.drafting import DocumentDrafting
 from .workflow.finalization import DocumentFinalization
 from .workflow.intake import DocumentIntake
+from .workflow.processing import DocumentProcessing
 from .workflow.sharing import DocumentSharing
 
 
@@ -63,6 +64,13 @@ def get_finalization(
     provider: BlockchainProvider = Depends(get_blockchain_provider),
 ) -> DocumentFinalization:
     return DocumentFinalization(db, queue, provider)
+
+
+def get_processing(
+    db: AsyncSession = Depends(get_db),
+    queue: DocumentQueue = Depends(get_document_queue),
+) -> DocumentProcessing:
+    return DocumentProcessing(db, queue)
 
 
 def get_verification(

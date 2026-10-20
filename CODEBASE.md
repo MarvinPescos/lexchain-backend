@@ -145,6 +145,12 @@ Jobs reach the queue through `ProcessingDispatch` rows (outbox), recorded in
 the same commit as finalize / approval and resent by the
 `document.dispatch_pending` beat task until the broker accepts them.
 
+A `FAILED` document is retried by its owner via
+`POST /documents/{id}/retry-processing` (`workflow/processing.py`). It locks
+the row, requires `FAILED`, and picks the phase from the extraction: approved
+text → `JOB_ENRICH` / `ENRICHING`, otherwise `JOB_EXTRACT` / `QUEUED`; the
+dispatch goes through the same outbox. The chain anchor is never redone.
+
 #### Engine selection — `infrastructure/nlp/ocr/factory.py`
 
 ```

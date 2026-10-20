@@ -28,6 +28,7 @@ from .constants import (
     ACTION_REOPEN,
     ACTION_REPLACE_SIGNED_COPY,
     ACTION_VIEW,
+    STATUS_FAILED,
 )
 from .models import Document
 from .repository import DocumentRepository
@@ -77,6 +78,7 @@ class DocumentAccess:
             can_correct_entry=allowed(ACTION_CORRECT_ENTRY),
             can_cancel=allowed(ACTION_CANCEL),
             can_finalize=allowed(ACTION_FINALIZE),
+            can_retry_processing=is_owner and document.status == STATUS_FAILED,
             can_share=is_owner,
             can_revoke=is_owner,
         )

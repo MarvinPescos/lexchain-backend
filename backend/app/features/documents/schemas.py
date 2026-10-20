@@ -87,6 +87,9 @@ class DocumentPermissions(BaseModel):
     can_correct_entry: bool = Field(..., description="May correct Doc. No. / Page No.")
     can_cancel: bool = Field(..., description="May cancel the document")
     can_finalize: bool = Field(..., description="May snapshot and anchor on-chain")
+    can_retry_processing: bool = Field(
+        ..., description="May send a FAILED document back through processing"
+    )
     can_share: bool = Field(..., description="May whitelist other users")
     can_revoke: bool = Field(..., description="May remove whitelisted users")
 
@@ -342,3 +345,12 @@ class DraftCommentListResponse(BaseModel):
     synced_at: datetime | None = Field(None, description="Last sync from Google Docs")
     unresolved: int = Field(..., description="Open threads; Ready is refused while > 0")
     comments: list[DraftCommentResponse]
+
+
+class RetryProcessingResponse(BaseModel):
+    """A FAILED document queued again."""
+
+    document_id: uuid.UUID
+    status: str = Field(..., description="QUEUED (OCR again) or ENRICHING")
+    job: str = Field(..., description="extract | enrich — the phase that failed")
+    message: str
