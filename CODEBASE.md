@@ -463,12 +463,15 @@ Then:
    `tx_hash / onchain_document_id / data_hash / onchain_timestamp / issued_by`,
    and `document.on_chain = True`.
 3. `finalized_by`, `finalized_at`, `lifecycle = FINALIZED`. Commit.
-4. `_archive_document` — **after** the anchor, never before: the document is
-   provably attested at that point, and a failed upload must not undo it.
-   Copies the PDF plus a self-describing `manifest.json` (hashes, version,
-   timestamps) to the backup bucket, then sets `backed_up_at` / `backup_key`.
-   Failures are logged, not raised; the audit query for gaps is
-   *finalized AND `backed_up_at IS NULL`*.
+4. Archive — **before** the anchor (`SnapshotArchive.archive`): the frozen PDF
+   is written to the backup bucket at `{document_id}/{file_sha256}.pdf`, read
+   back, and checked against the snapshot's SHA-256 and size before
+   `backup_key` / `backed_up_at` are set. A failed write or read-back raises
+   503 and rolls back, so nothing is anchored without recoverable bytes.
+   Archives are write-once: a retry reuses an existing object that checks out
+   and never overwrites one that doesn't. Legacy snapshots with a NULL
+   `backup_key` are archived by `POST /admin/backups/verify?repair=true` only
+   when the snapshot hash matches the chain and the live copy matches it.
 
 **Three hashes, do not confuse them:**
 

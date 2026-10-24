@@ -132,8 +132,9 @@ async def set_user_active(
     summary="Verify document backups",
     description=(
         "Downloads every finalized document's archive and checks it against the "
-        "hash anchored on-chain. With `repair=true`, a missing or bad archive is "
-        "rewritten from the live signed copy, if that still matches the anchor. "
+        "hash anchored on-chain. With `repair=true`, a missing archive is written "
+        "from the live signed copy, if the snapshot matches the on-chain hash and "
+        "the live copy still matches it. A bad archive is reported, never overwritten. "
         "Also runs daily without repair."
     ),
     responses={200: {"description": "Verification summary"}, 403: {"description": "Not a lawyer"}},

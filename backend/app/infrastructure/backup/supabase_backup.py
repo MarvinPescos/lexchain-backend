@@ -35,10 +35,9 @@ class SupabaseBackupProvider:
             client.storage.from_(self.bucket_name).upload(
                 path=key,
                 file=data,
-                # Archives are written once at finalize. Upsert is enabled only so
-                # a retry after a partial failure can complete rather than dying
-                # on a half-written key.
-                file_options={"content-type": content_type, "x-upsert": "true"},
+                # Write-once: a retry reuses an existing object after checking
+                # it (SnapshotArchive.archive) and never overwrites it.
+                file_options={"content-type": content_type, "x-upsert": "false"},
             )
 
         # The supabase client is synchronous; keep it off the event loop.

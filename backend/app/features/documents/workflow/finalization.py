@@ -1,8 +1,9 @@
 """Finalize: the lawyer confirms the signed copy, and it becomes permanent.
 
-Freeze the current signed copy, archive it, anchor the SHA-256 of its bytes
-on-chain, then hand it to the OCR pipeline through a durable dispatch. Moves to an `attestation/` feature once chain
-anchoring becomes its own background job.
+Freeze the current signed copy, archive it (read back and checked), anchor the
+SHA-256 of its bytes on-chain, then hand it to the OCR pipeline through a
+durable dispatch. Moves to an `attestation/` feature once chain anchoring
+becomes its own background job.
 """
 
 import hashlib
@@ -19,7 +20,7 @@ from app.infrastructure.clients.supabase_storage import get_storage_client
 from app.infrastructure.observability.logging_setup import log
 from app.infrastructure.queue import DocumentQueue
 from app.infrastructure.security.dependencies import AuthenticatedUser
-from app.shared.errors.exceptions import ConflictError
+from app.shared.errors.exceptions import ConflictError, ServiceUnavailableError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import lifecycle
@@ -43,7 +44,8 @@ class DocumentFinalization:
         self.access = DocumentAccess(session)
         self.snapshot_service = DocumentSnapshotService(session)
         self.snapshot_repo = DocumentSnaphotRepository(session)
-        # None when BACKUP_ENABLED is off: finalize then leaves no archive.
+        # None when BACKUP_ENABLED is off: finalize then leaves no archive, and
+        # the document is not recoverable until backup verification repairs it.
         self.archive = SnapshotArchive(session, backup) if backup else None
         from app.features.blockchain.service import BlockchainService
 
@@ -86,7 +88,13 @@ class DocumentFinalization:
         )
         if self.archive:
             snapshot = await self.snapshot_repo.get_by_document_id(document_id)
-            await self.archive.archive(snapshot, content)
+            # Nothing is anchored without a verified archive. The raise rolls
+            # back the snapshot; the archive key is content-addressed, so a
+            # retry checks and reuses an object an earlier attempt left.
+            if not await self.archive.archive(snapshot, content):
+                raise ServiceUnavailableError(
+                    "The finalized copy could not be archived. Try finalizing again."
+                )
         record = await self.blockchain_service.record_document(document, file_sha256)
 
         change = lifecycle.transition(ACTION_FINALIZE, document, user_id)
