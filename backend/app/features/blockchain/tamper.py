@@ -141,7 +141,8 @@ def diff_blocks(
     Same shape as `diff_text`, plus the page coordinates of each change, so a
     client can outline the tampered region on the page instead of only naming a
     line number. `bbox` comes from the *current* document — that is where the
-    altered text physically sits now — with the attested position alongside it.
+    altered text physically sits now — except for a delete, whose text is only
+    in the attested document; `location` says which one.
     """
     a_blocks = _editable_blocks(original_blocks)
     b_blocks = _editable_blocks(current_blocks)
@@ -149,9 +150,15 @@ def diff_blocks(
     b = [(b.get("text") or "").strip() for b in b_blocks]
 
     segments: list[dict[str, Any]] = []
-    counts = {"replaced": 0, "inserted": 0, "deleted": 0}
+    counts = {"replace": 0, "insert": 0, "delete": 0}
+    truncated = False
 
     def emit(tag: str, i1: int, i2: int, j1: int, j2: int) -> None:
+        nonlocal truncated
+        counts[tag] += 1
+        if len(segments) >= max_segments:
+            truncated = True
+            return
         original_block = "\n".join(a[i1:i2])
         current_block = "\n".join(b[j1:j2])
 
@@ -181,6 +188,7 @@ def diff_blocks(
                 "current_line_end": j2,
                 "block_index": pos.get("index"),
                 "original_block_index": (original_anchor or {}).get("index"),
+                "location": "current" if anchor else "original",
                 "page_idx": pos.get("page_idx"),
                 "bbox": pos.get("bbox"),
                 "word_diff": _word_diff(original_block, current_block),
@@ -190,29 +198,14 @@ def diff_blocks(
     for tag, i1, i2, j1, j2 in SequenceMatcher(None, a, b).get_opcodes():
         if tag == "equal":
             continue
-
-        if tag == "replace":
-            counts["replaced"] += 1
-            # [reconstructed] equal-length replacements are reported block by
-            # block, skipping blocks that did not change.
-            if i2 - i1 == j2 - j1:
-                for k in range(i2 - i1):
-                    if a[i1 + k] == b[j1 + k]:
-                        continue
+        # Equal-length replacements are reported block by block, skipping
+        # blocks that did not change, so each segment outlines one region.
+        if tag == "replace" and i2 - i1 == j2 - j1:
+            for k in range(i2 - i1):
+                if a[i1 + k] != b[j1 + k]:
                     emit("replace", i1 + k, i1 + k + 1, j1 + k, j1 + k + 1)
-                    if len(segments) >= max_segments:
-                        break
-            else:
-                emit("replace", i1, i2, j1, j2)
-        elif tag == "insert":
-            counts["inserted"] += 1
-            emit("insert", i1, i2, j1, j2)
-        elif tag == "delete":
-            counts["deleted"] += 1
-            emit("delete", i1, i2, j1, j2)
-
-        if len(segments) >= max_segments:
-            break
+        else:
+            emit(tag, i1, i2, j1, j2)
 
     order = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 1, SEVERITY_MINOR: 2}
     segments.sort(key=lambda s: (order[s["severity"]], s["original_line_start"]))
@@ -223,10 +216,11 @@ def diff_blocks(
         "segments": segments,
         "total_changes": len(segments),
         "critical_changes": sum(1 for s in segments if s["severity"] == SEVERITY_CRITICAL),
-        "replaced": counts["replaced"],
-        "inserted": counts["inserted"],
-        "deleted": counts["deleted"],
+        "replaced": counts["replace"],
+        "inserted": counts["insert"],
+        "deleted": counts["delete"],
         "similarity": round(similarity, 4),
+        "truncated": truncated,
         "localized": True,
     }
 

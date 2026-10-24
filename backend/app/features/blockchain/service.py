@@ -1,15 +1,20 @@
 import hashlib
 import uuid
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from storage3.utils import StorageException
 
 from app.features.documents.constants import LIFECYCLE_FINALIZED
+from app.features.documents.extraction.blocks import blocks_from_text
 from app.features.documents.models import Document
 from app.features.documents.repository import DocumentRepository
+from app.features.snapshot.models import DocumentSnapshot
 from app.features.snapshot.repository import DocumentSnaphotRepository
+from app.infrastructure.backup import BackupProvider
 from app.infrastructure.blockchain import BlockchainProvider, ChainRecord
+from app.infrastructure.nlp.ocr import OCRProvider, build_ocr
 from app.infrastructure.observability.logging_setup import log
 from app.shared.errors.exceptions import NotFoundError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +23,9 @@ from .repository import OnChainRecordRepository
 from .schemas import (
     DocumentVerificationResponse,
     RecordResponse,
+    TamperReport,
 )
+from .tamper import diff_blocks
 
 if TYPE_CHECKING:
     from app.infrastructure.security.dependencies import AuthenticatedUser
@@ -30,9 +37,19 @@ def _normalise_hash(value: str) -> str:
 
 
 class BlockchainService:
-    def __init__(self, session: AsyncSession, provider: BlockchainProvider) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        provider: BlockchainProvider,
+        backup: BackupProvider | None = None,
+        ocr_for: Callable[[bytes], OCRProvider] = build_ocr,
+    ) -> None:
         self.session = session
         self.provider = provider
+        # The archive is the only diff baseline; without it a TAMPERED verdict
+        # comes with no tamper report.
+        self.backup = backup
+        self.ocr_for = ocr_for
         self.onchain_repo = OnChainRecordRepository(session)
         self.doc_repo = DocumentRepository(session)
         self.snapshot_repo = DocumentSnaphotRepository(session)
@@ -202,4 +219,71 @@ class BlockchainService:
             message="The stored file does NOT match the hash anchored on-chain.",
             **common,
             **chain,
+            **await self._tamper_report(snapshot, onchain_hash, current),
         )
+
+    async def _tamper_report(
+        self, snapshot: DocumentSnapshot, onchain_hash: str, current: bytes
+    ) -> dict[str, Any]:
+        """Diff the archived original against the current file, both extracted fresh.
+
+        Best-effort: the TAMPERED verdict is already decided by the hashes, so
+        any failure here only marks the report UNAVAILABLE. The stored
+        extraction is never used — it may not describe either file's bytes.
+        """
+        document_id = str(snapshot.document_id)
+
+        def unavailable(reason: str) -> dict[str, Any]:
+            log.warning(
+                "blockchain.verify.tamper_report_unavailable",
+                document_id=document_id,
+                reason=reason,
+            )
+            return {
+                "tamper_report_status": "UNAVAILABLE",
+                "tamper_report_unavailable_reason": reason,
+            }
+
+        if self.backup is None or snapshot.backup_key is None:
+            return unavailable("No archived original to compare against.")
+        try:
+            original = await self.backup.fetch(snapshot.backup_key)
+        except Exception as e:
+            log.error(
+                "blockchain.verify.archive_fetch_failed",
+                document_id=document_id,
+                error=f"{type(e).__name__}: {e}",
+            )
+            return unavailable("The archived original could not be read.")
+        if hashlib.sha256(original).hexdigest() != onchain_hash:
+            log.error("blockchain.verify.archive_mismatch", document_id=document_id)
+            return unavailable("The archived original does not match the chain.")
+
+        try:
+            # One engine for both sides: `build_ocr` picks by content, and two
+            # engines split text into blocks differently, which would read as
+            # changes that are not there.
+            ocr = self.ocr_for(original)
+            original_result = await ocr.extract(original)
+            current_result = await ocr.extract(current)
+            diff = diff_blocks(
+                original_result.blocks or blocks_from_text(original_result.ingestion_text),
+                current_result.blocks or blocks_from_text(current_result.ingestion_text),
+            )
+            report = TamperReport.model_validate(
+                {**diff, "localized": bool(original_result.blocks and current_result.blocks)}
+            )
+        except Exception as e:
+            log.error(
+                "blockchain.verify.tamper_diff_failed",
+                document_id=document_id,
+                error=f"{type(e).__name__}: {e}",
+            )
+            return unavailable("The text of the documents could not be compared.")
+
+        if not report.segments:
+            return unavailable(
+                "The file changed, but its extracted text did not; the change is "
+                "outside the text and cannot be located."
+            )
+        return {"tamper_report_status": "AVAILABLE", "tamper_report": report}

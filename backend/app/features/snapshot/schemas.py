@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -21,3 +22,29 @@ class DocumentSnapshotResponse(BaseModel):
     )
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class BackupCheck(BaseModel):
+    document_id: uuid.UUID
+    status: Literal["ok", "missing", "mismatch", "repaired", "unrecoverable"] = Field(
+        ...,
+        description=(
+            "ok: archive present and matches the anchored hash. missing: no "
+            "archive. mismatch: the archive's bytes differ from the anchored "
+            "hash. repaired: re-archived from the live copy. unrecoverable: no "
+            "good archive and the live copy no longer matches either."
+        ),
+    )
+    backup_key: str | None = None
+
+
+class BackupVerificationResponse(BaseModel):
+    checked: int = Field(..., description="Finalized snapshots checked")
+    ok: int
+    missing: int
+    mismatch: int
+    repaired: int
+    unrecoverable: int
+    problems: list[BackupCheck] = Field(
+        default_factory=list, description="Every snapshot whose status is not ok"
+    )

@@ -482,17 +482,18 @@ Then:
 
 `BlockchainService.verify_document` runs three steps in a deliberate order:
 
-1. **Detect** — `_extract_current`: fetch the file with `fetch_uncached` (never
-   through the CDN — a cached copy would be compared against the chain and
-   produce a confident wrong verdict), re-run OCR, rebuild
-   `blocks_to_text(blocks)`, hash it. Cached text is never used: it lives in the
-   same database an attacker would have altered, so it would happily agree with
-   the tampered copy. MinerU is deterministic, so an untouched file re-extracts
-   identically.
-2. **Prove the baseline** — hash the stored snapshot and compare it to the chain
-   *before* diffing. An attacker with DB access could edit the snapshot too, and
-   diffing against a doctored baseline gives a confident, wrong answer.
-3. **Localize** — diff attested vs current.
+1. **Detect** — download the stored signed copy (never through the CDN — a
+   cached copy would be compared against the chain and produce a confident wrong
+   verdict) and hash its bytes against the anchored hash. The verdict comes from
+   the hashes alone.
+2. **Prove the baseline** — compare the snapshot hash to the chain *before*
+   diffing. An attacker with DB access could edit the snapshot too, and diffing
+   against a doctored baseline gives a confident, wrong answer.
+3. **Localize** (TAMPERED only) — fetch the archived original, re-hash it against
+   the chain, then OCR it and the current file fresh and `diff_blocks` them.
+   The stored extraction is never used: it may describe neither file's bytes.
+   Any failure here sets `tamper_report_status` to `UNAVAILABLE`; the TAMPERED
+   verdict stands.
 
 Verdicts:
 
@@ -514,9 +515,10 @@ dependency.
 
 `diff_blocks` (preferred) compares editable blocks and carries `page_idx` +
 `bbox`, so a client outlines the altered region on the page. `bbox` comes from
-the **current** document — where the altered text physically sits now — with the
-attested position alongside. Snapshots taken before block layout was stored fall
-back to `diff_text`, which is line-level.
+the **current** document — where the altered text physically sits now — except
+for a delete, whose text exists only in the original; `location` says which PDF
+the coordinates refer to. Engines with no layout fall back to paragraph blocks
+(`blocks_from_text`), so the text diff still works with null coordinates.
 
 `_classify` ranks each change by what it would do to the agreement, checked in
 this order:

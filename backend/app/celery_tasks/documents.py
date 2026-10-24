@@ -93,3 +93,11 @@ def reembed_chunks_task():
     from app.workers.reembed_chunks import reembed_missing_chunks
 
     run_async(reembed_missing_chunks())
+
+
+@celery_app.task(name="document.verify_backups")
+def verify_backups_task():
+    """Check every archive against its anchored hash; problems are logged."""
+    from app.workers.verify_backups import verify_backups
+
+    run_async(verify_backups())
