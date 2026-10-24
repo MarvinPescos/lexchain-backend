@@ -14,6 +14,13 @@ class DocumentSnapshotResponse(BaseModel):
         ..., description="SHA-256 of the final PDF bytes — the hash anchored on-chain"
     )
     size_bytes: int
+    backed_up_at: datetime | None = Field(
+        None,
+        description=(
+            "When the finalized bytes were archived and verified against the "
+            "anchored hash. Null means no recoverable archive."
+        ),
+    )
     created_at: datetime = Field(
         ..., description="When the document snapshot was created"
     )

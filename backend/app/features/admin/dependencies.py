@@ -5,6 +5,8 @@ from .service import AdminService
 from app.infrastructure.email import build_email_provider, EmailProvider
 from app.infrastructure.backup import build_backup
 from app.features.snapshot.backups import SnapshotArchive
+from app.features.blockchain.dependencies import get_blockchain_provider
+from app.infrastructure.blockchain import BlockchainProvider
 
 
 def get_email_provider() -> EmailProvider:
@@ -18,5 +20,8 @@ def get_admin_service(
     return AdminService(db, email)
 
 
-def get_snapshot_archive(db: AsyncSession = Depends(get_db)) -> SnapshotArchive:
-    return SnapshotArchive(db, build_backup())
+def get_snapshot_archive(
+    db: AsyncSession = Depends(get_db),
+    provider: BlockchainProvider = Depends(get_blockchain_provider),
+) -> SnapshotArchive:
+    return SnapshotArchive(db, build_backup(), provider)
