@@ -82,4 +82,5 @@ def get_verification(
     # Imported here: blockchain.service imports the documents package.
     from app.features.blockchain.service import BlockchainService
 
-    return BlockchainService(db, provider)
+    backup = build_backup() if settings.BACKUP_ENABLED else None
+    return BlockchainService(db, provider, backup)

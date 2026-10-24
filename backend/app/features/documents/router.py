@@ -739,11 +739,19 @@ async def retry_processing(
     summary="Verify a document against the chain",
     description=(
         "Hashes the stored signed copy as it is now and compares it with the "
-        "hash anchored on-chain. The verdict is computed server-side."
+        "hash anchored on-chain. The verdict is computed server-side. When the "
+        "status is TAMPERED, the archived original (re-hashed against the chain) "
+        "and the current file are both extracted and diffed: `tamper_report` "
+        "lists the changed segments with page and bbox where the OCR engine "
+        "reports layout. If that diff cannot be produced, `tamper_report_status` "
+        "is UNAVAILABLE and the TAMPERED verdict still stands."
     ),
     responses={
         200: {
-            "description": "Verification result, with a tamper report when applicable"
+            "description": (
+                "Verification result; `tamper_report` is present only when "
+                "status is TAMPERED and `tamper_report_status` is AVAILABLE"
+            )
         },
         401: {"description": "Not authenticated — missing or invalid bearer token"},
         404: {"description": "Document not found, or it has no on-chain record"},
