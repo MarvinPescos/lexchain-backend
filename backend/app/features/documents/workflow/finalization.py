@@ -1,7 +1,7 @@
 """Finalize: the lawyer confirms the signed copy, and it becomes permanent.
 
-Freeze the current signed copy, anchor the SHA-256 of its bytes on-chain, then
-hand it to the OCR pipeline through a durable dispatch. Moves to an `attestation/` feature once chain
+Freeze the current signed copy, archive it, anchor the SHA-256 of its bytes
+on-chain, then hand it to the OCR pipeline through a durable dispatch. Moves to an `attestation/` feature once chain
 anchoring becomes its own background job.
 """
 
@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 
 from app.features.blockchain.schemas import RecordResponse
 from app.features.snapshot import DocumentSnapshotService
+from app.features.snapshot.backups import SnapshotArchive
+from app.features.snapshot.repository import DocumentSnaphotRepository
+from app.infrastructure.backup import BackupProvider
 from app.infrastructure.blockchain import BlockchainProvider
 from app.infrastructure.clients.supabase_storage import get_storage_client
 from app.infrastructure.observability.logging_setup import log
@@ -28,13 +31,20 @@ from ..repository import DocumentRepository
 
 class DocumentFinalization:
     def __init__(
-        self, session: AsyncSession, queue: DocumentQueue, provider: BlockchainProvider
+        self,
+        session: AsyncSession,
+        queue: DocumentQueue,
+        provider: BlockchainProvider,
+        backup: BackupProvider | None = None,
     ) -> None:
         self.session = session
         self.dispatcher = DocumentDispatcher(session, queue)
         self.repo = DocumentRepository(session)
         self.access = DocumentAccess(session)
         self.snapshot_service = DocumentSnapshotService(session)
+        self.snapshot_repo = DocumentSnaphotRepository(session)
+        # None when BACKUP_ENABLED is off: finalize then leaves no archive.
+        self.archive = SnapshotArchive(session, backup) if backup else None
         from app.features.blockchain.service import BlockchainService
 
         self.blockchain_service = BlockchainService(session, provider)
@@ -74,6 +84,9 @@ class DocumentFinalization:
         await self.snapshot_service.create_snapshot(
             document_id, copy.id, file_sha256, len(content)
         )
+        if self.archive:
+            snapshot = await self.snapshot_repo.get_by_document_id(document_id)
+            await self.archive.archive(snapshot, content)
         record = await self.blockchain_service.record_document(document, file_sha256)
 
         change = lifecycle.transition(ACTION_FINALIZE, document, user_id)

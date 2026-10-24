@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.features.blockchain.dependencies import get_blockchain_provider
+from app.infrastructure.backup import build_backup
 from app.infrastructure.blockchain import BlockchainProvider
 from app.features.google.service import GoogleConnectionService
 from app.infrastructure.database import get_db
@@ -63,7 +64,8 @@ def get_finalization(
     queue: DocumentQueue = Depends(get_document_queue),
     provider: BlockchainProvider = Depends(get_blockchain_provider),
 ) -> DocumentFinalization:
-    return DocumentFinalization(db, queue, provider)
+    backup = build_backup() if settings.BACKUP_ENABLED else None
+    return DocumentFinalization(db, queue, provider, backup)
 
 
 def get_processing(

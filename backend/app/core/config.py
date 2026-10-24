@@ -118,6 +118,11 @@ class Settings(BaseSettings):
     BACKUP_BUCKET: str = Field(
         default="DocumentBackups", description="Bucket holding archived originals"
     )
+    BACKUP_VERIFY_SECONDS: int = Field(
+        default=86400,
+        ge=3600,
+        description="How often every archive is checked against its anchored hash",
+    )
 
     WEB_RPC_URL: str = Field(..., description="")
     CONTRACT_ADDRESS: str = Field(..., description="")

@@ -44,5 +44,9 @@ celery_app.conf.update(
             "task": "document.retry_draft_revocations",
             "schedule": settings.DRAFT_REVOCATION_RETRY_SECONDS,
         },
+        "verify-backups": {
+            "task": "document.verify_backups",
+            "schedule": settings.BACKUP_VERIFY_SECONDS,
+        },
     },
 )

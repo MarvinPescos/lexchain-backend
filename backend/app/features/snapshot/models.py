@@ -1,8 +1,9 @@
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from app.infrastructure.database import Base, TimestampMixin
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -27,6 +28,13 @@ class DocumentSnapshot(Base, TimestampMixin):
     )
     file_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Where the frozen PDF was archived. NULL means no archive yet (backups
+    # disabled, or the store failed at finalize) — backup verification reports
+    # it as missing and can archive it from the live copy.
+    backup_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    backed_up_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # relationship
 

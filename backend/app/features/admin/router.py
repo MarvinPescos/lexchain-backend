@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, status, Request
+from fastapi import APIRouter, Depends, Query, status, Request
 import uuid
 from app.infrastructure.security.dependencies import AuthenticatedUser, require_lawyer
 from .service import AdminService
-from .dependencies import get_admin_service
+from .dependencies import get_admin_service, get_snapshot_archive
+from app.features.snapshot.backups import SnapshotArchive
+from app.features.snapshot.schemas import BackupVerificationResponse
 from .schemas import (
     CreateInvitationRequest, InvitationResponse,
     InvitationListResponse, AdminDashboardResponse, AdminUserListResponse,
@@ -121,3 +123,24 @@ async def set_user_active(
     return await service.set_user_active(
         current_user.user_id, user_id, body.is_active
     )
+
+
+@router.post(
+    "/backups/verify",
+    response_model=BackupVerificationResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Verify document backups",
+    description=(
+        "Downloads every finalized document's archive and checks it against the "
+        "hash anchored on-chain. With `repair=true`, a missing or bad archive is "
+        "rewritten from the live signed copy, if that still matches the anchor. "
+        "Also runs daily without repair."
+    ),
+    responses={200: {"description": "Verification summary"}, 403: {"description": "Not a lawyer"}},
+)
+async def verify_backups(
+    repair: bool = Query(False, description="Re-archive missing or bad backups"),
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    archive: SnapshotArchive = Depends(get_snapshot_archive),
+) -> BackupVerificationResponse:
+    return await archive.verify(repair=repair)
