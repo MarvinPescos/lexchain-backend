@@ -20,6 +20,7 @@ from .constants import (
     ACTION_RENAME,
     ACTION_REOPEN,
     ACTION_REPLACE_SIGNED_COPY,
+    ACTION_RESTORE,
     ACTION_UPLOAD_SIGNED,
     LIFECYCLE_CANCELLED,
     LIFECYCLE_FINALIZED,
@@ -49,6 +50,7 @@ TRANSITIONS: dict[str, tuple[tuple[str | None, ...], str | None]] = {
         (LIFECYCLE_PREPARING, LIFECYCLE_READY_FOR_SIGNATURE, LIFECYCLE_SIGNED),
         None,
     ),
+    ACTION_RESTORE: ((LIFECYCLE_FINALIZED,), None),
 }
 
 # What to tell the lawyer when an action is refused from a given stage.

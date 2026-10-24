@@ -252,6 +252,10 @@ class DocumentStageChange(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Set only by a restore: the hash of the file found in place of the signed
+    # copy, and of the archived bytes that replaced it.
+    from_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    to_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.clock_timestamp(),

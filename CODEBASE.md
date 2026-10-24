@@ -546,21 +546,25 @@ word-level `_word_diff` (`equal/added/removed`) for inline highlighting. Output:
 segments sorted critical→minor, plus `total_changes`, `critical_changes`,
 per-op counts, and a `similarity` ratio.
 
-### 3.13 Restore
+### 3.13 Restore (`documents/workflow/restoration.py`)
 
-`POST /documents/{id}/restore` — manual, run after `verify` reports tampering:
+`POST /documents/{id}/restore` — owner only, from FINALIZED, run after `verify`
+reports TAMPERED:
 
-1. Finalized + `backup_key` required.
-2. Fetch the archived copy, **re-OCR it and check its hash against the chain**.
-   A backup that doesn't match is refused, not restored — never trust the archive
-   blindly.
-3. Preserve the current (tampered) file to
-   `documents/{id}/v{n}/tampered/{timestamp}.pdf` first — on a notarised document
-   the tampered copy is potentially evidence. A failure here downgrades to a
-   warning, since a missing current file is itself the damage being repaired.
-4. Overwrite the exact object the document's `storage_url` points at (via
-   `object_path_from_url`, not a path rebuilt from `file_name`, which would write
-   a new object and leave the tampered one live).
+1. Lock the document, then verify (no tamper report). AUTHENTIC → nothing is
+   changed and `restored` is false, so a retry is safe. SNAPSHOT_COMPROMISED →
+   409; VERIFICATION_UNAVAILABLE → 503.
+2. Fetch the archive (`snapshot.backup_key`) and check it against the snapshot,
+   which TAMPERED guarantees equals the on-chain hash. No archive → 409,
+   mismatch → 409, unreadable → 503. Never trust the archive blindly, and never
+   copy from the active file.
+3. Keep the tampered file as its own `SignedCopy` (its real hash) — on a
+   notarised document it is potentially evidence. If it can no longer be read
+   as the file that was judged, the restore goes ahead without it.
+4. Write the archived bytes as a new `SignedCopy` and make it current. Nothing
+   is overwritten; the snapshot, chain record and lifecycle are untouched.
+5. A `restore` stage change records actor, time, `from_hash` and `to_hash`.
+   Any storage failure rolls back and deletes what was uploaded.
 
 ---
 

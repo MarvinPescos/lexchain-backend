@@ -33,7 +33,7 @@ def _normalise(value: str) -> str:
     return value.lower().removeprefix("0x")
 
 
-def _matches(snapshot: DocumentSnapshot, data: bytes) -> bool:
+def matches_snapshot(snapshot: DocumentSnapshot, data: bytes) -> bool:
     return (
         len(data) == snapshot.size_bytes
         and hashlib.sha256(data).hexdigest() == snapshot.file_sha256
@@ -71,7 +71,7 @@ class SnapshotArchive:
                 error=str(e),
             )
             return False
-        if not _matches(snapshot, stored):
+        if not matches_snapshot(snapshot, stored):
             log.error(
                 "backup.archive.readback_mismatch",
                 document_id=str(snapshot.document_id),
@@ -131,7 +131,7 @@ class SnapshotArchive:
                 error=str(e),
             )
             return "missing"
-        if not _matches(snapshot, data):
+        if not matches_snapshot(snapshot, data):
             log.error(
                 "backup.verify.mismatch",
                 document_id=str(snapshot.document_id),
@@ -153,7 +153,7 @@ class SnapshotArchive:
                 error=str(e),
             )
             return "unrecoverable"
-        if not _matches(snapshot, content):
+        if not matches_snapshot(snapshot, content):
             log.error(
                 "backup.repair.live_copy_changed", document_id=str(snapshot.document_id)
             )
