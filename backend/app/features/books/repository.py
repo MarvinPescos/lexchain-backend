@@ -118,9 +118,9 @@ class BookRepository(UserScopeRepository[Book]):
         )
         return {row[0]: (row[1], row[2], row[3]) for row in result.all()}
 
-    # Added 2026-10-25 — the register list for one book, a page at a time.
-    # Document id breaks ties so paging stays stable even if two entries ever
-    # share a Doc. No. (nothing in the database forbids it).
+    # Added 2026-10-25 20:39 PST — the register list for one book, a page at a time.
+    # Doc. No. is unique per book (UQ_DOCUMENT_REGISTER_ENTRY), so document id
+    # never decides the order today; it keeps paging stable if that ever changes.
     async def list_entries(
         self, book_id: uuid.UUID, limit: int = 50, offset: int = 0
     ) -> list["Document"]:

@@ -104,7 +104,7 @@ async def get_book(
 
 
 # ── Entries ─────────────────────────────────────────────────────────
-# Added 2026-10-25 — the register list for one book, paged in the query so the
+# Added 2026-10-25 20:39 PST — the register list for one book, paged in the query so the
 # frontend need not fetch every document and filter by book itself.
 
 

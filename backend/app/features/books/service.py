@@ -58,14 +58,10 @@ class BookService:
         offset: int = 0,
     ) -> BookEntriesResponse:
         """The book and one page of the documents filed in it."""
-        book = await self.repo.get_one(user_id, book_id)
-        if not book:
-            raise NotFoundError("Book not found")
-        log.info("book.fetch.entries", user_id=str(user_id), book_id=str(book_id))
-        stats = await self.repo.register_stats([book.id])
+        book = await self.get_book(user_id, book_id)
         entries = await self.repo.list_entries(book.id, limit, offset)
         return BookEntriesResponse(
-            book=self._to_response(book, stats.get(book.id)),
+            book=book,
             entries=[BookEntryResponse.model_validate(d) for d in entries],
         )
 

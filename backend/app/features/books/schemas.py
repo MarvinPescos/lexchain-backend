@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.features.documents.schemas import LIFECYCLE_DESCRIPTION
+
 from .constants import BOOK_OPEN
 
 
@@ -53,16 +55,14 @@ class BookResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Added 2026-10-25 — one line of the register list in the Books view.
+# Added 2026-10-25 20:39 PST — one line of the register list in the Books view.
 # Enough to show the line and open the existing document details by id.
 class BookEntryResponse(BaseModel):
     id: uuid.UUID = Field(..., description="Document ID — opens /documents/{id}")
     file_name: str = Field(..., description="Display name")
     doc_no: int = Field(..., description="Doc. No. in the register")
     page_no: int = Field(..., description="Page No. in the register")
-    lifecycle: str = Field(
-        ..., description="PREPARING | READY_FOR_SIGNATURE | SIGNED | FINALIZED | CANCELLED"
-    )
+    lifecycle: str = Field(..., description=LIFECYCLE_DESCRIPTION)
     status: str | None = Field(
         None, description="Processing status; null until the document is finalized"
     )

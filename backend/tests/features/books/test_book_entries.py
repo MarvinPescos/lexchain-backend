@@ -8,6 +8,7 @@ import pytest
 from app.features.books.models import Book
 from app.features.documents.constants import (
     LIFECYCLE_FINALIZED,
+    LIFECYCLE_PREPARING,
     LIFECYCLE_SIGNED,
     STATUS_COMPLETED,
 )
@@ -107,7 +108,7 @@ async def test_only_this_books_documents_are_listed(
 ):
     mine = await _file(session, open_book, 1, 1)
     await _file(session, closed_book, 1, 1)
-    session.add(Document(user_id=lawyer.id, file_name="Unfiled", lifecycle="PREPARING"))
+    session.add(Document(user_id=lawyer.id, file_name="Unfiled", lifecycle=LIFECYCLE_PREPARING))
     await session.flush()
 
     r = await http(lawyer, f"/books/{open_book.id}/entries")
@@ -144,6 +145,16 @@ async def test_entries_are_paginated(session, http, lawyer, open_book):
     assert past_end.json()["entries"] == []
     # The total stays the whole book's, whatever page was asked for.
     assert {r.json()["book"]["entry_count"] for r in (first, second, past_end)} == {5}
+
+
+async def test_page_size_defaults_to_50(session, http, lawyer, open_book):
+    for n in range(1, 52):
+        await _file(session, open_book, n, (n - 1) // 5 + 1)
+
+    r = await http(lawyer, f"/books/{open_book.id}/entries")
+
+    assert len(r.json()["entries"]) == 50
+    assert r.json()["book"]["entry_count"] == 51
 
 
 async def test_empty_book_has_no_entries(http, lawyer, open_book):
@@ -185,3 +196,19 @@ async def test_non_lawyer_is_forbidden(http, client, open_book):
     r = await http(client, f"/books/{open_book.id}/entries")
 
     assert r.status_code == 403
+
+
+async def test_missing_token_is_unauthorized(session, open_book):
+    async def same_session():
+        yield session
+
+    app.dependency_overrides[get_db] = same_session
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t"
+        ) as c:
+            r = await c.get(f"/books/{open_book.id}/entries")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert r.status_code == 401
