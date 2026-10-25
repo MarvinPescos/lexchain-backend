@@ -21,7 +21,7 @@ from app.features.notifications import router as notification_router
 from app.features.retrieval import router as retrieval_router
 from app.features.users import router as user_router
 from app.core import settings
-from app.infrastructure.database import close_db
+from app.infrastructure.database import async_engine, check_schema_revision, close_db
 from app.infrastructure.observability.logging_setup import log
 from app.shared.errors.exceptions import HTTP_ERROR_TYPES, BaseAppException
 from app.shared.utils.to_dict import build_error_response
@@ -32,8 +32,11 @@ from app.shared.utils.to_dict import build_error_response
 # called: the process just exited and left the OS to drop the sockets, so
 # Postgres kept the sessions until it noticed. lifespan, not the older
 # @app.on_event("shutdown") — FastAPI deprecated on_event in favour of this.
+# Startup checks the schema revision first — see database/schema.py (issue #25).
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    async with async_engine.connect() as connection:
+        await check_schema_revision(connection)
     yield
     await close_db()
 
