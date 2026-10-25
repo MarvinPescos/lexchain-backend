@@ -2,6 +2,7 @@ import uuid
 
 from sqlalchemy import delete, or_, select
 
+from app.features.books.models import Book
 from app.infrastructure.database import UserScopeRepository
 from app.shared.constants import (
     PARTY_STATUS_ACCEPTED,
@@ -10,6 +11,7 @@ from app.shared.constants import (
 )
 
 from .constants import LIFECYCLE_CANCELLED, LIFECYCLE_READY_FOR_SIGNATURE
+from .schemas import RegisterReference
 from .models import (
     Document,
     DocumentParty,
@@ -18,6 +20,16 @@ from .models import (
     DraftRevocation,
     SignedCopy,
 )
+
+
+def _readable_by(user_id: uuid.UUID):
+    """Documents the user owns or is an accepted party of."""
+    # A pending invitation is not access — it must be accepted first.
+    shared_subq = select(DocumentParty.document_id).where(
+        DocumentParty.user_id == user_id,
+        DocumentParty.status == PARTY_STATUS_ACCEPTED,
+    )
+    return or_(Document.user_id == user_id, Document.id.in_(shared_subq))
 
 
 class DocumentRepository(UserScopeRepository[Document]):
@@ -36,16 +48,10 @@ class DocumentRepository(UserScopeRepository[Document]):
         lifecycle: str | None = None,
     ) -> list[Document]:
         """Return document the user owns OR is a party of"""
-        # A pending invitation is not access — it must be accepted first.
-        shared_subq = select(DocumentParty.document_id).where(
-            DocumentParty.user_id == user_id,
-            DocumentParty.status == PARTY_STATUS_ACCEPTED,
-        )
-
         stmt = (
             select(Document)
             .where(
-                or_(Document.user_id == user_id, Document.id.in_(shared_subq)),
+                _readable_by(user_id),
                 *([Document.lifecycle == lifecycle] if lifecycle else []),
             )
             .order_by(Document.created_at.desc())
@@ -55,6 +61,27 @@ class DocumentRepository(UserScopeRepository[Document]):
 
         result = await self.session.execute(stmt)
 
+        return list(result.scalars().all())
+
+    async def find_by_register_reference(
+        self, user_id: uuid.UUID, reference: RegisterReference
+    ) -> list[Document]:
+        """Documents the user may read filed under exactly this register entry.
+
+        Book numbers are only unique per lawyer, so more than one can match.
+        """
+        result = await self.session.execute(
+            select(Document)
+            .join(Book, Book.id == Document.book_id)
+            .where(
+                _readable_by(user_id),
+                Document.doc_no == reference.doc_no,
+                Document.page_no == reference.page_no,
+                Book.book_number == reference.book_number,
+                Book.series_year == reference.series_year,
+            )
+            .order_by(Document.created_at.asc())
+        )
         return list(result.scalars().all())
 
     async def find_current_signed_file(

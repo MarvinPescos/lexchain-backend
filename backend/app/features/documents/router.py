@@ -43,6 +43,8 @@ from .schemas import (
     DocumentResponse,
     DraftCommentListResponse,
     DocumentUploadResponse,
+    RegisterLookupResponse,
+    RegisterReference,
     RemovePartyResponse,
     RestoreResponse,
     RetryProcessingResponse,
@@ -93,6 +95,50 @@ async def get_all_user_documents(
         limit,
         offset,
         lifecycle,
+    )
+
+
+# ── Register lookup ─────────────────────────────────────────────────
+
+
+@router.get(
+    "/register-lookup",
+    tags=[TAG_DOCUMENTS],
+    response_model=RegisterLookupResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Find a document by its register reference",
+    description=(
+        "Exact lookup by a complete notarial register reference: Doc. No., "
+        "Page No., Book No. and Series year must all match. Searches every "
+        "document the user owns or was accepted onto, filed in an open or "
+        "closed book, whether or not it has been processed.\n\n"
+        "Book numbers are per lawyer, so more than one document can match; "
+        "each is returned. No match is an empty `results` list."
+    ),
+    responses={
+        200: {"description": "Matching documents; empty if none"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        422: {"description": "A number is missing, not an integer, or out of range"},
+    },
+)
+async def lookup_register_reference(
+    doc_no: int = Query(..., ge=1, description="Doc. No. in the register"),
+    page_no: int = Query(..., ge=1, description="Page No. in the register"),
+    book_number: int = Query(
+        ..., ge=1, le=1000, description="Book No. of the physical register"
+    ),
+    series_year: int = Query(..., ge=2000, description="Series year of the book"),
+    current_user: AuthenticatedUser = Depends(require_auth),
+    queries: DocumentQueries = Depends(get_queries),
+) -> RegisterLookupResponse:
+    return await queries.lookup_register_reference(
+        current_user.user_id,
+        RegisterReference(
+            doc_no=doc_no,
+            page_no=page_no,
+            book_number=book_number,
+            series_year=series_year,
+        ),
     )
 
 

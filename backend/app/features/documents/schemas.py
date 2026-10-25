@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from app.features.blockchain.schemas import DocumentVerificationResponse
 
@@ -37,6 +37,40 @@ class DocumentUploadResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class RegisterReference(BaseModel):
+    """Where a document sits in the notarial register, with its book's numbers."""
+
+    doc_no: int = Field(..., description="Doc. No. in the register")
+    page_no: int = Field(..., description="Page No. in the register")
+    book_number: int = Field(..., description="Book No. of the register book")
+    series_year: int = Field(..., description="Series year of the register book")
+
+    @computed_field(description="The entry as written in the notarial block")  # type: ignore[prop-decorator]
+    @property
+    def label(self) -> str:
+        return (
+            f"Doc. No. {self.doc_no}, Page No. {self.page_no}, "
+            f"Book No. {self.book_number}, Series of {self.series_year}"
+        )
+
+
+class RegisterLookupHit(BaseModel):
+    """A document found by its register reference."""
+
+    document_id: uuid.UUID
+    file_name: str = Field(..., description="Display name of the document")
+    created_at: datetime = Field(..., description="When the document was created")
+    register_reference: RegisterReference = Field(
+        ..., description="Where the document is filed"
+    )
+
+
+class RegisterLookupResponse(BaseModel):
+    results: list[RegisterLookupHit] = Field(
+        ..., description="Every accessible document with this reference; empty if none"
+    )
 
 
 class SignedCopyResponse(BaseModel):
