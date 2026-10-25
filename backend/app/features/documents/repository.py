@@ -2,6 +2,7 @@ import uuid
 
 from sqlalchemy import delete, or_, select
 
+from app.features.books.models import Book
 from app.infrastructure.database import UserScopeRepository
 from app.shared.constants import (
     PARTY_STATUS_ACCEPTED,
@@ -56,6 +57,36 @@ class DocumentRepository(UserScopeRepository[Document]):
         result = await self.session.execute(stmt)
 
         return list(result.scalars().all())
+
+    async def find_by_register_reference(
+        self,
+        user_id: uuid.UUID,
+        doc_no: int,
+        page_no: int,
+        book_number: int,
+        series_year: int,
+    ) -> list[tuple[Document, Book]]:
+        """Documents the user may read filed under exactly this register entry.
+
+        Book numbers are only unique per lawyer, so more than one can match.
+        """
+        shared_subq = select(DocumentParty.document_id).where(
+            DocumentParty.user_id == user_id,
+            DocumentParty.status == PARTY_STATUS_ACCEPTED,
+        )
+        result = await self.session.execute(
+            select(Document, Book)
+            .join(Book, Book.id == Document.book_id)
+            .where(
+                or_(Document.user_id == user_id, Document.id.in_(shared_subq)),
+                Document.doc_no == doc_no,
+                Document.page_no == page_no,
+                Book.book_number == book_number,
+                Book.series_year == series_year,
+            )
+            .order_by(Document.created_at.asc())
+        )
+        return [(document, book) for document, book in result.all()]
 
     async def find_current_signed_file(
         self, user_id: uuid.UUID, sha256: str

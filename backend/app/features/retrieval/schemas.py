@@ -1,6 +1,8 @@
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field
 import uuid
 from datetime import datetime
+
+from app.features.documents.schemas import RegisterReference
 
 
 class SearchRequest(BaseModel):
@@ -21,23 +23,6 @@ class SearchResponse(BaseModel):
 
 class AskRequest(BaseModel):
     question: str
-
-
-class RegisterReference(BaseModel):
-    """Where a document sits in the notarial register, with its book's numbers."""
-
-    doc_no: int = Field(..., description="Doc. No. in the register")
-    page_no: int = Field(..., description="Page No. in the register")
-    book_number: int = Field(..., description="Book No. of the register book")
-    series_year: int = Field(..., description="Series year of the register book")
-
-    @computed_field(description="The entry as written in the notarial block")  # type: ignore[prop-decorator]
-    @property
-    def label(self) -> str:
-        return (
-            f"Doc. No. {self.doc_no}, Page No. {self.page_no}, "
-            f"Book No. {self.book_number}, Series of {self.series_year}"
-        )
 
 
 class GlobalSearchHit(BaseModel):

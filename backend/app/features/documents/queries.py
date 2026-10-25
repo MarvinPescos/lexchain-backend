@@ -21,6 +21,9 @@ from .schemas import (
     DocumentHistoryResponse,
     DocumentResponse,
     DocumentUploadResponse,
+    RegisterLookupHit,
+    RegisterLookupResponse,
+    RegisterReference,
     SignedCopyFileResponse,
     SignedCopyListResponse,
     StageChangeResponse,
@@ -89,6 +92,44 @@ class DocumentQueries:
                 )
             )
         return results
+
+    async def lookup_register_reference(
+        self,
+        user_id: uuid.UUID,
+        doc_no: int,
+        page_no: int,
+        book_number: int,
+        series_year: int,
+    ) -> RegisterLookupResponse:
+        """The documents this user may read filed under exactly this entry.
+
+        All four numbers must match; there is no partial fallback. A filed
+        document is found whatever its processing state.
+        """
+        rows = await self.repo.find_by_register_reference(
+            user_id, doc_no, page_no, book_number, series_year
+        )
+        log.info(
+            "document.register_lookup",
+            user_id=str(user_id),
+            returned=len(rows),
+        )
+        return RegisterLookupResponse(
+            results=[
+                RegisterLookupHit(
+                    document_id=d.id,
+                    file_name=d.file_name,
+                    created_at=d.created_at,
+                    register_reference=RegisterReference(
+                        doc_no=doc_no,
+                        page_no=page_no,
+                        book_number=book_number,
+                        series_year=series_year,
+                    ),
+                )
+                for d, _book in rows
+            ]
+        )
 
     async def get_document(
         self, user: AuthenticatedUser, document_id: uuid.UUID
