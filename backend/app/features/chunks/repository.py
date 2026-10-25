@@ -1,5 +1,6 @@
 from typing import Iterable
 
+from app.features.books.models import Book
 from app.features.documents.models import Document
 from app.infrastructure.database.base_repository import BaseRepository
 from sqlalchemy import delete, select
@@ -60,18 +61,24 @@ class DocumentChunkRepository(BaseRepository[DocumentChunk]):
         user_id,
         query_vector: list[float],
         top_k: int,
-    ) -> list[tuple[DocumentChunk, float]]:
+    ) -> list[tuple[DocumentChunk, Document, Book | None, float]]:
+        """Closest chunks across the user's documents, with each one's document
+        and register book (None when the document is not filed yet)."""
         distance = self.model.embedding_vec.cosine_distance(query_vector)
         stmt = (
-            select(self.model, distance.label("distance"))
+            select(self.model, Document, Book, distance.label("distance"))
             .join(Document, Document.id == self.model.document_id)
+            .outerjoin(Book, Book.id == Document.book_id)
             .where(Document.user_id == user_id)
             .where(self.model.embedding_vec.is_not(None))
             .order_by(distance.asc())
             .limit(top_k)
         )
         rows = (await self.session.execute(stmt)).all()
-        return [(chunk, 1.0 - float(dist)) for chunk, dist in rows]
+        return [
+            (chunk, document, book, 1.0 - float(dist))
+            for chunk, document, book, dist in rows
+        ]
 
     async def search_public(
         self,
