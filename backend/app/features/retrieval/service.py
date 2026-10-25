@@ -10,7 +10,13 @@ from app.shared.errors.exceptions import NotFoundError
 from langfuse import get_client, observe, propagate_attributes
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .schemas import GlobalSearchHit, GlobalSearchResponse, SearchHit, SearchResponse
+from .schemas import (
+    GlobalSearchHit,
+    GlobalSearchResponse,
+    RegisterReference,
+    SearchHit,
+    SearchResponse,
+)
 
 
 class RetrievalService:
@@ -83,8 +89,19 @@ class RetrievalService:
                     document_id=c.document_id,
                     chunk_index=c.chunk_index,
                     score=float(score),
+                    file_name=doc.file_name,
+                    created_at=doc.created_at,
+                    # A document is filed with book, doc and page numbers or none (DB check).
+                    register_reference=RegisterReference(
+                        doc_no=doc.doc_no,
+                        page_no=doc.page_no,
+                        book_number=book.book_number,
+                        series_year=book.series_year,
+                    )
+                    if book and doc.doc_no is not None and doc.page_no is not None
+                    else None,
                 )
-                for c, score in top
+                for c, doc, book, score in top
             ],
         )
 
