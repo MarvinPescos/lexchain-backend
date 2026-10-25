@@ -10,7 +10,13 @@ from app.shared.errors.exceptions import BadRequestError, ConflictError, NotFoun
 from .constants import BOOK_CLOSED, BOOK_OPEN, MAX_ENTRIES_PER_PAGE, MAX_PAGES
 from .models import UQ_BOOK_NUMBER, UQ_BOOK_ONE_OPEN, Book
 from .repository import BookRepository
-from .schemas import BookCreateRequest, BookResponse, RegisterEntry
+from .schemas import (
+    BookCreateRequest,
+    BookEntriesResponse,
+    BookEntryResponse,
+    BookResponse,
+    RegisterEntry,
+)
 
 
 class BookService:
@@ -43,6 +49,25 @@ class BookService:
         log.info("book.fetch.one", user_id=str(user_id), book_id=str(book_id))
         stats = await self.repo.register_stats([book.id])
         return self._to_response(book, stats.get(book.id))
+
+    async def get_book_entries(
+        self,
+        user_id: uuid.UUID,
+        book_id: uuid.UUID,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> BookEntriesResponse:
+        """The book and one page of the documents filed in it."""
+        book = await self.repo.get_one(user_id, book_id)
+        if not book:
+            raise NotFoundError("Book not found")
+        log.info("book.fetch.entries", user_id=str(user_id), book_id=str(book_id))
+        stats = await self.repo.register_stats([book.id])
+        entries = await self.repo.list_entries(book.id, limit, offset)
+        return BookEntriesResponse(
+            book=self._to_response(book, stats.get(book.id)),
+            entries=[BookEntryResponse.model_validate(d) for d in entries],
+        )
 
     # == Write ==
 

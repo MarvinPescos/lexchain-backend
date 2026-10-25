@@ -53,6 +53,33 @@ class BookResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# Added 2026-10-25 — one line of the register list in the Books view.
+# Enough to show the line and open the existing document details by id.
+class BookEntryResponse(BaseModel):
+    id: uuid.UUID = Field(..., description="Document ID — opens /documents/{id}")
+    file_name: str = Field(..., description="Display name")
+    doc_no: int = Field(..., description="Doc. No. in the register")
+    page_no: int = Field(..., description="Page No. in the register")
+    lifecycle: str = Field(
+        ..., description="PREPARING | READY_FOR_SIGNATURE | SIGNED | FINALIZED | CANCELLED"
+    )
+    status: str | None = Field(
+        None, description="Processing status; null until the document is finalized"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BookEntriesResponse(BaseModel):
+    book: BookResponse = Field(
+        ..., description="The book; its entry_count is the total for paging"
+    )
+    entries: list[BookEntryResponse] = Field(
+        default_factory=list,
+        description="One page of entries, by Doc. No., then Page No.",
+    )
+
+
 class RegisterEntry(BaseModel):
     """Where a document sits in the notarial register."""
 

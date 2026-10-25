@@ -1,4 +1,5 @@
 import uuid
+from typing import TYPE_CHECKING
 
 from sqlalchemy import exists, func, select
 
@@ -6,6 +7,9 @@ from app.infrastructure.database import UserScopeRepository
 
 from .constants import BOOK_OPEN
 from .models import Book
+
+if TYPE_CHECKING:
+    from app.features.documents.models import Document
 
 
 class BookRepository(UserScopeRepository[Book]):
@@ -113,6 +117,24 @@ class BookRepository(UserScopeRepository[Book]):
             .group_by(Document.book_id)
         )
         return {row[0]: (row[1], row[2], row[3]) for row in result.all()}
+
+    # Added 2026-10-25 — the register list for one book, a page at a time.
+    # Document id breaks ties so paging stays stable even if two entries ever
+    # share a Doc. No. (nothing in the database forbids it).
+    async def list_entries(
+        self, book_id: uuid.UUID, limit: int = 50, offset: int = 0
+    ) -> list["Document"]:
+        """Documents filed in this book, in register order."""
+        from app.features.documents.models import Document
+
+        result = await self.session.execute(
+            select(Document)
+            .where(Document.book_id == book_id)
+            .order_by(Document.doc_no, Document.page_no, Document.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all())
 
     async def is_doc_no_taken(self, book_id: uuid.UUID, doc_no: int) -> bool:
         from app.features.documents.models import Document
