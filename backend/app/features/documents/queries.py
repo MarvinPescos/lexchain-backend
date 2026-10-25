@@ -1,7 +1,8 @@
 """Reading documents: the list, one document, its signed copies, its history.
 
-Every read goes through `access.authorize`, so a party sees what the owner
-sees and nobody else sees anything.
+Every read of one document goes through `access.authorize`, and every
+search applies the same owner-or-accepted-party rule in its query, so a
+party sees what the owner sees and nobody else sees anything.
 """
 
 import uuid
@@ -94,21 +95,14 @@ class DocumentQueries:
         return results
 
     async def lookup_register_reference(
-        self,
-        user_id: uuid.UUID,
-        doc_no: int,
-        page_no: int,
-        book_number: int,
-        series_year: int,
+        self, user_id: uuid.UUID, reference: RegisterReference
     ) -> RegisterLookupResponse:
         """The documents this user may read filed under exactly this entry.
 
         All four numbers must match; there is no partial fallback. A filed
         document is found whatever its processing state.
         """
-        rows = await self.repo.find_by_register_reference(
-            user_id, doc_no, page_no, book_number, series_year
-        )
+        rows = await self.repo.find_by_register_reference(user_id, reference)
         log.info(
             "document.register_lookup",
             user_id=str(user_id),
@@ -120,14 +114,10 @@ class DocumentQueries:
                     document_id=d.id,
                     file_name=d.file_name,
                     created_at=d.created_at,
-                    register_reference=RegisterReference(
-                        doc_no=doc_no,
-                        page_no=page_no,
-                        book_number=book_number,
-                        series_year=series_year,
-                    ),
+                    # Every match is filed under exactly this reference.
+                    register_reference=reference,
                 )
-                for d, _book in rows
+                for d in rows
             ]
         )
 

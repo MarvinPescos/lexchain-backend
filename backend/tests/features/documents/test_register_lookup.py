@@ -68,6 +68,19 @@ async def _file(session, book: Book, doc_no: int, page_no: int, **fields) -> Doc
     return document
 
 
+async def _same_numbers(session, book: Book, owner) -> Book:
+    """Another lawyer's book with the same Book No. and Series year."""
+    twin = Book(
+        user_id=owner.id,
+        book_number=book.book_number,
+        series_year=book.series_year,
+        status=BOOK_OPEN,
+    )
+    session.add(twin)
+    await session.flush()
+    return twin
+
+
 async def _invite(session, document: Document, user, status: str) -> None:
     session.add(
         DocumentParty(
@@ -86,15 +99,15 @@ async def test_complete_reference_finds_the_document(session, http, lawyer, open
     [hit] = r.json()["results"]
     assert datetime.fromisoformat(hit.pop("created_at")) == document.created_at
     assert hit == {
-            "document_id": str(document.id),
-            "file_name": "Deed of Sale",
-            "register_reference": {
-                "doc_no": 25,
-                "page_no": 10,
-                "book_number": 1,
-                "series_year": 2026,
-                "label": "Doc. No. 25, Page No. 10, Book No. 1, Series of 2026",
-            },
+        "document_id": str(document.id),
+        "file_name": "Deed of Sale",
+        "register_reference": {
+            "doc_no": 25,
+            "page_no": 10,
+            "book_number": 1,
+            "series_year": 2026,
+            "label": "Doc. No. 25, Page No. 10, Book No. 1, Series of 2026",
+        },
     }
 
 
@@ -226,14 +239,7 @@ async def test_same_reference_under_another_owner_stays_private(
     session, http, lawyer, other_lawyer, open_book
 ):
     mine = await _file(session, open_book, 25, 10)
-    their_book = Book(
-        user_id=other_lawyer.id,
-        book_number=open_book.book_number,
-        series_year=open_book.series_year,
-        status=BOOK_OPEN,
-    )
-    session.add(their_book)
-    await session.flush()
+    their_book = await _same_numbers(session, open_book, other_lawyer)
     theirs = await _file(session, their_book, 25, 10)
 
     mine_r = await http(lawyer, **_ref(open_book, 25, 10))
@@ -248,14 +254,7 @@ async def test_every_accessible_match_is_returned_once(
 ):
     # The same reference in another lawyer's register, shared with this lawyer.
     mine = await _file(session, open_book, 25, 10)
-    their_book = Book(
-        user_id=other_lawyer.id,
-        book_number=open_book.book_number,
-        series_year=open_book.series_year,
-        status=BOOK_OPEN,
-    )
-    session.add(their_book)
-    await session.flush()
+    their_book = await _same_numbers(session, open_book, other_lawyer)
     shared = await _file(session, their_book, 25, 10)
     await _invite(session, shared, lawyer, PARTY_STATUS_ACCEPTED)
 

@@ -44,6 +44,7 @@ from .schemas import (
     DraftCommentListResponse,
     DocumentUploadResponse,
     RegisterLookupResponse,
+    RegisterReference,
     RemovePartyResponse,
     RestoreResponse,
     RetryProcessingResponse,
@@ -131,7 +132,13 @@ async def lookup_register_reference(
     queries: DocumentQueries = Depends(get_queries),
 ) -> RegisterLookupResponse:
     return await queries.lookup_register_reference(
-        current_user.user_id, doc_no, page_no, book_number, series_year
+        current_user.user_id,
+        RegisterReference(
+            doc_no=doc_no,
+            page_no=page_no,
+            book_number=book_number,
+            series_year=series_year,
+        ),
     )
 
 
