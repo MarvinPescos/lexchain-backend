@@ -54,3 +54,6 @@ class DatabaseConnectionError(DatabaseError):
 class IntegrityConstraintError(DatabaseError):
     """Unique constraint, foreign key, check constraint violated."""
     ...
+class SchemaOutOfDateError(DatabaseError):
+    """The database is behind the migrations the code was written against."""
+    ...
