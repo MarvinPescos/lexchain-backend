@@ -51,6 +51,9 @@ ACTION_CORRECT_ENTRY = "correct_entry"
 ACTION_CANCEL = "cancel"
 ACTION_FINALIZE = "finalize"
 ACTION_RENAME = "rename"
+# A TAMPERED finalized document gets its archived, anchored bytes back.
+# The stage is unchanged and nothing is re-anchored.
+ACTION_RESTORE = "restore"
 
 # Where a new working draft comes from.
 DRAFT_SOURCE_BLANK = "blank"

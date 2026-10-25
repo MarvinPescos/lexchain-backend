@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.features.blockchain.schemas import DocumentVerificationResponse
+
 
 LIFECYCLE_DESCRIPTION = "PREPARING | READY_FOR_SIGNATURE | SIGNED | FINALIZED | CANCELLED"
 
@@ -189,6 +191,12 @@ class StageChangeResponse(BaseModel):
     to_stage: str
     action: str
     actor_id: uuid.UUID | None
+    from_hash: str | None = Field(
+        None, description="Restore only: SHA-256 of the file that was replaced"
+    )
+    to_hash: str | None = Field(
+        None, description="Restore only: SHA-256 of the archived bytes restored"
+    )
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -354,3 +362,26 @@ class RetryProcessingResponse(BaseModel):
     status: str = Field(..., description="QUEUED (OCR again) or ENRICHING")
     job: str = Field(..., description="extract | enrich — the phase that failed")
     message: str
+
+
+class RestoreResponse(BaseModel):
+    """The outcome of restoring a finalized document from its archive.
+
+    `restored` is false when the document was already authentic: nothing was
+    changed, so a retry is safe. Either way `verification` is a fresh check of
+    the current copy against the chain, to show the resulting integrity status.
+    """
+
+    document_id: uuid.UUID
+    restored: bool = Field(..., description="False if it was already authentic")
+    previous_hash: str | None = Field(
+        None, description="SHA-256 of the file that was replaced; null if none was"
+    )
+    restored_hash: str = Field(..., description="SHA-256 now current: the on-chain hash")
+    restored_copy_id: uuid.UUID = Field(..., description="The signed copy now current")
+    preserved_copy_id: uuid.UUID | None = Field(
+        None, description="The replaced file, kept in signed-copy history"
+    )
+    restored_by: uuid.UUID | None = None
+    restored_at: datetime | None = None
+    verification: DocumentVerificationResponse

@@ -21,6 +21,7 @@ from .workflow.drafting import DocumentDrafting
 from .workflow.finalization import DocumentFinalization
 from .workflow.intake import DocumentIntake
 from .workflow.processing import DocumentProcessing
+from .workflow.restoration import DocumentRestoration
 from .workflow.sharing import DocumentSharing
 
 
@@ -73,6 +74,14 @@ def get_processing(
     queue: DocumentQueue = Depends(get_document_queue),
 ) -> DocumentProcessing:
     return DocumentProcessing(db, queue)
+
+
+def get_restoration(
+    db: AsyncSession = Depends(get_db),
+    provider: BlockchainProvider = Depends(get_blockchain_provider),
+) -> DocumentRestoration:
+    backup = build_backup() if settings.BACKUP_ENABLED else None
+    return DocumentRestoration(db, provider, backup)
 
 
 def get_verification(

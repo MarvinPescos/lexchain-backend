@@ -142,7 +142,7 @@ class FakeChain:
 @pytest.fixture
 def storage(monkeypatch: pytest.MonkeyPatch) -> FakeStorage:
     fake = FakeStorage()
-    for module in ("intake", "finalization"):
+    for module in ("intake", "finalization", "restoration"):
         monkeypatch.setattr(
             f"app.features.documents.workflow.{module}.get_storage_client", lambda: fake
         )

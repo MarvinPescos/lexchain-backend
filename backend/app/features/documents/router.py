@@ -20,6 +20,7 @@ from .dependencies import (
     get_intake,
     get_processing,
     get_queries,
+    get_restoration,
     get_sharing,
     get_verification,
 )
@@ -43,12 +44,14 @@ from .schemas import (
     DraftCommentListResponse,
     DocumentUploadResponse,
     RemovePartyResponse,
+    RestoreResponse,
     RetryProcessingResponse,
 )
 from .workflow.drafting import DocumentDrafting
 from .workflow.finalization import DocumentFinalization
 from .workflow.intake import DocumentIntake
 from .workflow.processing import DocumentProcessing
+from .workflow.restoration import DocumentRestoration
 from .workflow.sharing import DocumentSharing
 
 # Swagger groups, in the order a document moves through them. Order and
@@ -766,6 +769,43 @@ async def verify_document(
     verification=Depends(get_verification),
 ) -> DocumentVerificationResponse:
     return await verification.verify_document(current_user, document_id)
+
+
+@router.post(
+    "/{document_id}/restore",
+    tags=[TAG_FINALIZE],
+    response_model=RestoreResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Restore a tampered document from its archive",
+    description=(
+        "For a FINALIZED document whose verification is TAMPERED. The archived "
+        "original is re-hashed against the on-chain hash, then becomes the "
+        "current signed copy; the tampered file is kept in /signed-copies and "
+        "the restore is recorded in /history with both hashes. The lifecycle "
+        "and the on-chain record are unchanged. If the document is already "
+        "AUTHENTIC nothing changes and `restored` is false, so a retry is safe. "
+        "`verification` is a fresh check of the result."
+    ),
+    responses={
+        200: {"description": "Restored, or already authentic"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only the document owner may restore"},
+        404: {"description": "Document not found, or it has no on-chain record"},
+        409: {
+            "description": (
+                "Not FINALIZED, SNAPSHOT_COMPROMISED, no archived original, or "
+                "the archive does not match the chain"
+            )
+        },
+        503: {"description": "Storage or the archive is unavailable; nothing changed"},
+    },
+)
+async def restore_document(
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    restoration: DocumentRestoration = Depends(get_restoration),
+) -> RestoreResponse:
+    return await restoration.restore(current_user, document_id)
 
 
 # ── OCR review (extraction/router.py) ───────────────────────────────

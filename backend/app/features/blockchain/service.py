@@ -96,7 +96,11 @@ class BlockchainService:
         )
 
     async def verify_document(
-        self, user: "AuthenticatedUser", document_id: uuid.UUID
+        self,
+        user: "AuthenticatedUser",
+        document_id: uuid.UUID,
+        *,
+        tamper_report: bool = True,
     ) -> DocumentVerificationResponse:
         """Verify a finalized document against its on-chain anchor.
 
@@ -104,6 +108,7 @@ class BlockchainService:
         the chain. The judgment is made here, server-side; a client is never
         trusted to decide whether something is authentic. The snapshot hash is
         checked too, so an edit to the frozen record in the database is reported.
+        `tamper_report=False` skips the diff for callers that need only the verdict.
         """
         from datetime import datetime, timezone
 
@@ -219,7 +224,11 @@ class BlockchainService:
             message="The stored file does NOT match the hash anchored on-chain.",
             **common,
             **chain,
-            **await self._tamper_report(snapshot, onchain_hash, current),
+            **(
+                await self._tamper_report(snapshot, onchain_hash, current)
+                if tamper_report
+                else {}
+            ),
         )
 
     async def _tamper_report(
