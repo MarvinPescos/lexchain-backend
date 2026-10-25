@@ -9,7 +9,7 @@ from app.infrastructure.security.dependencies import (
 )
 
 from .dependencies import get_book_service
-from .schemas import BookCreateRequest, BookResponse
+from .schemas import BookCreateRequest, BookEntriesResponse, BookResponse
 from .service import BookService
 
 router = APIRouter(prefix="/books", tags=["Books"])
@@ -101,6 +101,43 @@ async def get_book(
     service: BookService = Depends(get_book_service),
 ) -> BookResponse:
     return await service.get_book(current_user.user_id, book_id)
+
+
+# ── Entries ─────────────────────────────────────────────────────────
+# Added 2026-10-25 20:39 PST — the register list for one book, paged in the query so the
+# frontend need not fetch every document and filter by book itself.
+
+
+@router.get(
+    "/{book_id}/entries",
+    response_model=BookEntriesResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List a book's entries",
+    description=(
+        "Return the book and a page of the documents filed in it, ordered by "
+        "Doc. No., then Page No. The book's entry_count is the total number of "
+        "entries for paging. Only documents with a LexChain record are listed — "
+        "not paper-only lines of the physical register. Only the owner may access it."
+    ),
+    responses={
+        200: {"description": "Book and a page of its entries; empty past the last entry"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only lawyers may access books"},
+        404: {"description": "Book not found"},
+        422: {"description": "limit outside 1–100, or negative offset"},
+    },
+)
+async def get_book_entries(
+    request: Request,
+    book_id: uuid.UUID,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    service: BookService = Depends(get_book_service),
+) -> BookEntriesResponse:
+    return await service.get_book_entries(
+        current_user.user_id, book_id, limit, offset
+    )
 
 
 # ── Close ───────────────────────────────────────────────────────────
