@@ -1,0 +1,5 @@
+# Same rules as the backend; only the first-party package differs.
+extend = "../backend/ruff.toml"
+
+[lint.isort]
+known-first-party = ["ocr_service"]
