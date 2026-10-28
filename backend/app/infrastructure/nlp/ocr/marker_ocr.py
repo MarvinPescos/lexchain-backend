@@ -29,10 +29,12 @@ _NON_EDITABLE = {"Picture", "Figure", "PageHeader", "PageFooter"}
 
 class MarkerOCRProvider(OCRProvider):
     """
-    Marker OCR provider, calling a running `marker_server` over HTTP.
+    Marker OCR provider, calling the OCR service (`ocr-service/`) over HTTP.
 
     Asks for Marker's JSON output, whose leaf blocks carry both their HTML and
-    a bbox, so one call gives the review blocks and the document text.
+    a bbox, so one call gives the review blocks and the document text. The
+    service takes signatures and seals off the page before Marker reads it and
+    lists them as `metadata.removed_regions`; they become outlined image blocks.
     """
 
     def __init__(self) -> None:
@@ -63,10 +65,13 @@ class MarkerOCRProvider(OCRProvider):
         document = json.loads(output) if isinstance(output, str) else output
         pages = [p for p in document.get("children") or [] if isinstance(p, dict)]
 
+        removed_regions = (result.get("metadata") or {}).get("removed_regions") or []
+
         blocks = self._parse_blocks(pages)
         html = "\n\n".join(b["html"] for b in blocks if b["editable"])
         for b in blocks:
             del b["html"]
+        blocks = self._with_removed_regions(blocks, removed_regions, pages)
 
         ingestion_text = md(html, heading_style="ATX").strip()
         ingestion_text = re.sub(r"\n{3,}", "\n\n", ingestion_text)
@@ -78,9 +83,10 @@ class MarkerOCRProvider(OCRProvider):
             blocks=blocks,
             meta={
                 "engine": "marker-api",
-                "engine_version": "1.x",
+                "engine_version": "2.0.0",
                 "mode": "api",
                 "force_ocr": self.force_ocr,
+                "removed_regions": removed_regions,
             },
         )
 
@@ -106,22 +112,65 @@ class MarkerOCRProvider(OCRProvider):
                 if not editable and bbox is None:
                     continue
 
-                blocks.append(
-                    {
-                        "index": len(blocks),
-                        "editable": editable,
-                        "type": _BLOCK_TYPES.get(marker_type, "text"),
-                        "text": text if editable else "",
-                        "original_text": text if editable else "",
-                        "bbox": bbox,
-                        "page_idx": page_idx,
-                        "text_level": cls._heading_level(marker_type, block_html),
-                        "score": None,
-                        "is_html": is_table,
-                        "edited": False,
-                        "html": block_html,
-                    }
+                block = cls._block(
+                    _BLOCK_TYPES.get(marker_type, "text"),
+                    bbox,
+                    page_idx,
+                    text=text if editable else "",
+                    editable=editable,
+                    text_level=cls._heading_level(marker_type, block_html),
+                    is_html=is_table,
                 )
+                block["html"] = block_html
+                blocks.append(block)
+        return blocks
+
+    @staticmethod
+    def _block(
+        block_type: str,
+        bbox: list[int] | None,
+        page_idx: int,
+        *,
+        text: str = "",
+        editable: bool = False,
+        text_level: int | None = None,
+        is_html: bool = False,
+    ) -> dict:
+        """A review block in the shape MinerU's blocks have."""
+        return {
+            "index": 0,
+            "editable": editable,
+            "type": block_type,
+            "text": text,
+            "original_text": text,
+            "bbox": bbox,
+            "page_idx": page_idx,
+            "text_level": text_level,
+            "score": None,
+            "is_html": is_html,
+            "edited": False,
+        }
+
+    @classmethod
+    def _with_removed_regions(
+        cls, blocks: list[dict], regions: list[dict], pages: list[dict]
+    ) -> list[dict]:
+        """Add each removed signature or seal after its page's blocks, as an
+        outlined image that is not part of the approved text."""
+        for region in regions:
+            page_idx = region.get("page", 0)
+            page_box = (
+                pages[page_idx].get("bbox") if 0 <= page_idx < len(pages) else None
+            ) or [0, 0, 0, 0]
+            bbox = cls._normalize(region.get("bbox_pt"), page_box)
+            if bbox is None:
+                continue
+            block = cls._block("image", bbox, page_idx)
+            block["kind"] = region.get("kind")
+            blocks.append(block)
+        blocks.sort(key=lambda b: b["page_idx"])
+        for idx, b in enumerate(blocks):
+            b["index"] = idx
         return blocks
 
     @classmethod

@@ -43,6 +43,13 @@ DOCUMENT = {
 }
 
 
+# Signatures and seals the OCR service took off the page before reading it.
+REMOVED_REGIONS = [
+    {"page": 0, "bbox_pt": [60, 560, 300, 620], "kind": "signature", "image": "removed_page_0_0.png"},
+    {"page": 0, "bbox_pt": [420, 600, 540, 720], "kind": "coloured ink", "image": "removed_page_0_1.png"},
+]
+
+
 class FakeMarker(httpx.AsyncBaseTransport):
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
@@ -52,7 +59,13 @@ class FakeMarker(httpx.AsyncBaseTransport):
         self.requests.append(request)
         return httpx.Response(
             200,
-            json={"format": "json", "output": json.dumps(DOCUMENT), "success": True},
+            json={
+                "format": "json",
+                "output": json.dumps(DOCUMENT),
+                "images": {r["image"]: "iVBORw0KGgo=" for r in REMOVED_REGIONS},
+                "metadata": {"removed_regions": REMOVED_REGIONS},
+                "success": True,
+            },
         )
 
 
@@ -80,6 +93,8 @@ async def test_marker_json_becomes_review_blocks(marker):
         ("list", True),
         ("table", True),
         ("image", False),
+        ("image", False),  # removed signature
+        ("image", False),  # removed seal
     ]
     heading, table = result.blocks[1], result.blocks[4]
     assert heading["text"] == "DEED OF SALE" and heading["text_level"] == 2
@@ -91,7 +106,25 @@ async def test_marker_json_becomes_review_blocks(marker):
     assert "## DEED OF SALE" in result.ingestion_text
     assert "Page 1" not in result.ingestion_text
     assert "1,000,000" in result.ingestion_text
+    assert result.meta is not None
     assert result.meta["engine"] == "marker-api"
+    assert result.meta["engine_version"] == "2.0.0"
+
+
+async def test_removed_signatures_and_seals_become_outlined_image_blocks(marker):
+    result = await MarkerOCRProvider().extract(b"%PDF-1.4")
+
+    signature, seal = result.blocks[-2:]
+    assert signature["kind"] == "signature" and seal["kind"] == "coloured ink"
+    assert signature["bbox"] == [100, 700, 500, 775]
+    assert seal["bbox"] == [700, 750, 900, 900]
+    assert all(b["type"] == "image" and not b["editable"] for b in (signature, seal))
+    assert all(b["text"] == "" and b["page_idx"] == 0 for b in (signature, seal))
+    assert [b["index"] for b in result.blocks] == list(range(len(result.blocks)))
+
+    assert "signature" not in result.ingestion_text
+    assert result.meta is not None
+    assert result.meta["removed_regions"] == REMOVED_REGIONS
 
 
 async def test_marker_failure_raises(monkeypatch):

@@ -156,7 +156,7 @@ dispatch goes through the same outbox. The chain anchor is never redone.
 ```
 USE_REAL_OCR=false          → MockOCRProvider (canned contract text)
 OCR_ENGINE=mineru           → MinerUOCRProvider           ← the real path
-OCR_ENGINE=marker           → MarkerOCRProvider (marker_server, MARKER_API_URL)
+OCR_ENGINE=marker           → MarkerOCRProvider (ocr-service/, MARKER_API_URL)
 OCR_ENGINE=pypdf + digital  → PyPdfOCRProvider
 OCR_ENGINE=pypdf + scanned  → TesseractOCRProvider (auto-fallback)
 ```

@@ -1,0 +1,8 @@
+marker-pdf==2.0.0
+surya-ocr==0.22.1
+fastapi
+uvicorn
+python-multipart
+numpy
+Pillow
+pypdfium2
