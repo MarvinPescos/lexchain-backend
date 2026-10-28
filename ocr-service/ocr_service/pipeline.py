@@ -99,8 +99,10 @@ def build_response(
     base64-encoded; removed regions are added as PNGs."""
     images = dict(images)
     listed = []
-    for n, region in enumerate(removed):
-        name = f"removed_page_{region.page}_{n}.png"
+    names = []
+    for number, region in enumerate(removed):
+        name = f"removed_page_{region.page}_{number}.png"
+        names.append(name)
         buffer = io.BytesIO()
         region.image.save(buffer, format="PNG")
         images[name] = base64.b64encode(buffer.getvalue()).decode()
@@ -108,13 +110,14 @@ def build_response(
             {"page": region.page, "bbox_pt": region.bbox_pt, "kind": region.kind, "image": name}
         )
 
-    if listed and output_format == "markdown":
+    if removed and output_format == "markdown":
         output += "\n\n## Signatures and seals\n\n" + "\n\n".join(
-            f"![{_alt(r)}]({r['image']})" for r in listed
+            f"![{_alt(r)}]({name})" for r, name in zip(removed, names, strict=True)
         )
-    elif listed and output_format == "html":
+    elif removed and output_format == "html":
         output += "\n<h2>Signatures and seals</h2>\n" + "\n".join(
-            f"<p><img src=\"{r['image']}\" alt=\"{_alt(r)}\"/></p>" for r in listed
+            f'<p><img src="{name}" alt="{_alt(r)}"/></p>'
+            for r, name in zip(removed, names, strict=True)
         )
 
     return {
@@ -156,5 +159,5 @@ def _to_pdf(pages: list[np.ndarray]) -> bytes:
     return buffer.getvalue()
 
 
-def _alt(region: dict) -> str:
-    return f"{region['kind']}, page {region['page'] + 1}"
+def _alt(region: RemovedRegion) -> str:
+    return f"{region.kind}, page {region.page + 1}"

@@ -52,8 +52,8 @@ def remove_coloured_ink(page: np.ndarray) -> tuple[np.ndarray, list[Box]]:
     if not ink.any():
         return page.copy(), []
 
-    print_ = (saturation < _PRINT_MAX_SATURATION) & (value < _PRINT_MAX_VALUE)
-    removed = _grow(ink, _GROW_PX) & ~print_
+    neutral_print = (saturation < _PRINT_MAX_SATURATION) & (value < _PRINT_MAX_VALUE)
+    removed = _grow(ink, _GROW_PX) & ~neutral_print
 
     cleaned = page.copy()
     regions: list[Box] = []

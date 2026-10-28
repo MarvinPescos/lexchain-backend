@@ -26,8 +26,6 @@ _BLOCK_TYPES = {
 # carry no content of their own (images) or repeat on every page.
 _NON_EDITABLE = {"Picture", "Figure", "PageHeader", "PageFooter"}
 
-ENGINE_VERSION = "2.0.0"
-
 
 class MarkerOCRProvider(OCRProvider):
     """
@@ -85,7 +83,7 @@ class MarkerOCRProvider(OCRProvider):
             blocks=blocks,
             meta={
                 "engine": "marker-api",
-                "engine_version": ENGINE_VERSION,
+                "engine_version": "2.0.0",
                 "mode": "api",
                 "force_ocr": self.force_ocr,
                 "removed_regions": removed_regions,
@@ -114,23 +112,44 @@ class MarkerOCRProvider(OCRProvider):
                 if not editable and bbox is None:
                     continue
 
-                blocks.append(
-                    {
-                        "index": len(blocks),
-                        "editable": editable,
-                        "type": _BLOCK_TYPES.get(marker_type, "text"),
-                        "text": text if editable else "",
-                        "original_text": text if editable else "",
-                        "bbox": bbox,
-                        "page_idx": page_idx,
-                        "text_level": cls._heading_level(marker_type, block_html),
-                        "score": None,
-                        "is_html": is_table,
-                        "edited": False,
-                        "html": block_html,
-                    }
+                block = cls._block(
+                    _BLOCK_TYPES.get(marker_type, "text"),
+                    bbox,
+                    page_idx,
+                    text=text if editable else "",
+                    editable=editable,
+                    text_level=cls._heading_level(marker_type, block_html),
+                    is_html=is_table,
                 )
+                block["html"] = block_html
+                blocks.append(block)
         return blocks
+
+    @staticmethod
+    def _block(
+        block_type: str,
+        bbox: list[int] | None,
+        page_idx: int,
+        *,
+        text: str = "",
+        editable: bool = False,
+        text_level: int | None = None,
+        is_html: bool = False,
+    ) -> dict:
+        """A review block in the shape MinerU's blocks have."""
+        return {
+            "index": 0,
+            "editable": editable,
+            "type": block_type,
+            "text": text,
+            "original_text": text,
+            "bbox": bbox,
+            "page_idx": page_idx,
+            "text_level": text_level,
+            "score": None,
+            "is_html": is_html,
+            "edited": False,
+        }
 
     @classmethod
     def _with_removed_regions(
@@ -146,22 +165,9 @@ class MarkerOCRProvider(OCRProvider):
             bbox = cls._normalize(region.get("bbox_pt"), page_box)
             if bbox is None:
                 continue
-            blocks.append(
-                {
-                    "index": 0,
-                    "editable": False,
-                    "type": "image",
-                    "kind": region.get("kind"),
-                    "text": "",
-                    "original_text": "",
-                    "bbox": bbox,
-                    "page_idx": page_idx,
-                    "text_level": None,
-                    "score": None,
-                    "is_html": False,
-                    "edited": False,
-                }
-            )
+            block = cls._block("image", bbox, page_idx)
+            block["kind"] = region.get("kind")
+            blocks.append(block)
         blocks.sort(key=lambda b: b["page_idx"])
         for idx, b in enumerate(blocks):
             b["index"] = idx
