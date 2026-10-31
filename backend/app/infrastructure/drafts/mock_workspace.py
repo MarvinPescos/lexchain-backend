@@ -20,6 +20,13 @@ class MockDraftWorkspace:
             raise BadRequestError("LexChain cannot open that template. Pick it again from Drive.")
         return self._new(name, kind="doc")
 
+    async def upload(
+        self, access_token: str, name: str, content: bytes, content_type: str
+    ) -> DraftRef:
+        ref = self._new(name, kind="doc")
+        self.files[ref.file_id]["content"] = content
+        return ref
+
     async def get(self, access_token: str, file_id: str) -> DraftRef:
         file = self.files.get(file_id)
         if file is None:

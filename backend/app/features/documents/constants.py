@@ -59,7 +59,23 @@ ACTION_RESTORE = "restore"
 DRAFT_SOURCE_BLANK = "blank"
 DRAFT_SOURCE_TEMPLATE = "template"  # a Doc copied; the original is untouched
 DRAFT_SOURCE_EXISTING = "existing"  # a Doc the lawyer already started
-DRAFT_SOURCES = (DRAFT_SOURCE_BLANK, DRAFT_SOURCE_TEMPLATE, DRAFT_SOURCE_EXISTING)
+DRAFT_SOURCE_UPLOAD = "upload"  # a file the lawyer brings in, converted to a Doc
+DRAFT_SOURCES = (
+    DRAFT_SOURCE_BLANK,
+    DRAFT_SOURCE_TEMPLATE,
+    DRAFT_SOURCE_EXISTING,
+    DRAFT_SOURCE_UPLOAD,
+)
+
+# Word-processor files Drive converts to a Google Doc: extension -> the MIME
+# types browsers send for it, the first being the one Drive is told.
+DRAFT_UPLOAD_TYPES = {
+    ".docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document",),
+    ".doc": ("application/msword",),
+    ".odt": ("application/vnd.oasis.opendocument.text",),
+    ".rtf": ("application/rtf", "text/rtf", "application/x-rtf"),
+}
+MAX_DRAFT_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
 
 # Actions that are not lifecycle transitions, for access checks.
 ACTION_VIEW = "view"

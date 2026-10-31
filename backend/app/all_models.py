@@ -1,5 +1,5 @@
 from app.features.admin import Invitation
-from app.features.blockchain import OnChainRecord
+from app.features.blockchain import OnChainRecord, VerificationResult
 from app.features.books import Book
 from app.features.chunks import DocumentChunk
 from app.features.documents import (

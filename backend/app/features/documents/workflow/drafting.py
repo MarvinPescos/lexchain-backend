@@ -8,6 +8,10 @@ draft's content: the signed PDF attached later is the legal document.
 
 import uuid
 from datetime import datetime, timezone
+from pathlib import PurePath
+
+from fastapi import UploadFile
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.features.google.service import GoogleConnectionService
 from app.infrastructure.drafts import (
@@ -20,7 +24,6 @@ from app.infrastructure.observability.logging_setup import log
 from app.infrastructure.security.dependencies import AuthenticatedUser
 from app.shared.constants import PARTY_ROLE_EDITOR, PARTY_STATUS_ACCEPTED
 from app.shared.errors.exceptions import BadRequestError, ConflictError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import lifecycle
 from ..access import DocumentAccess
@@ -32,8 +35,11 @@ from ..constants import (
     DRAFT_SOURCE_BLANK,
     DRAFT_SOURCE_EXISTING,
     DRAFT_SOURCE_TEMPLATE,
+    DRAFT_SOURCE_UPLOAD,
+    DRAFT_UPLOAD_TYPES,
     LIFECYCLE_PREPARING,
     LIFECYCLE_READY_FOR_SIGNATURE,
+    MAX_DRAFT_UPLOAD_SIZE,
 )
 from ..models import Document, DocumentParty, DraftRevocation
 from ..presenters import document_response
@@ -75,24 +81,38 @@ class DocumentDrafting:
         document_id: uuid.UUID,
         source: str = DRAFT_SOURCE_BLANK,
         file_id: str | None = None,
+        file: UploadFile | None = None,
     ) -> DocumentResponse:
         """Create the working draft and share it with the document's clients.
 
         `blank` makes an empty Doc, `template` copies `file_id`, `existing`
-        uses `file_id` itself. `file_id` comes from the Google Picker, which is
-        also what grants LexChain access to that file.
+        uses `file_id` itself, `upload` converts `file` (say, a Word file the
+        client handed over) to a Doc. `file_id` comes from the Google Picker,
+        which is also what grants LexChain access to that file.
         """
         document = await self.access.authorize(user, document_id, ACTION_CREATE_DRAFT)
         if document.draft_file_id:
             raise ConflictError("This document already has a working draft.")
-        if source != DRAFT_SOURCE_BLANK and not file_id:
+        if source in (DRAFT_SOURCE_TEMPLATE, DRAFT_SOURCE_EXISTING) and not file_id:
             raise BadRequestError("Pick the Google Doc to use for the draft.")
+        if source == DRAFT_SOURCE_UPLOAD and file is None:
+            raise BadRequestError("Choose the file to use for the draft.")
+        if source != DRAFT_SOURCE_UPLOAD and file is not None:
+            raise BadRequestError("A file is accepted only with source 'upload'.")
+        if file is not None:
+            content, content_type = await self._read_upload(file)
 
         token = await self.google.access_token(document.user_id)
         if source == DRAFT_SOURCE_TEMPLATE:
+            assert file_id is not None
             ref = await self.workspace.copy(token, file_id, document.file_name)
         elif source == DRAFT_SOURCE_EXISTING:
+            assert file_id is not None
             ref = await self.workspace.get(token, file_id)
+        elif source == DRAFT_SOURCE_UPLOAD:
+            ref = await self.workspace.upload(
+                token, document.file_name, content, content_type
+            )
         else:
             ref = await self.workspace.create(token, document.file_name)
 
@@ -263,6 +283,30 @@ class DocumentDrafting:
             document.draft_file_id, party.draft_permission_id
         )
         await self.session.flush()
+
+    async def _read_upload(self, file: UploadFile) -> tuple[bytes, str]:
+        """The uploaded file's bytes and the MIME type Drive converts from.
+
+        The extension and the declared type must agree: a renamed image is
+        not a Word file.
+        """
+        accepted = DRAFT_UPLOAD_TYPES.get(PurePath(file.filename or "").suffix.lower())
+        if not accepted or file.content_type not in accepted:
+            allowed = ", ".join(ext.lstrip(".") for ext in DRAFT_UPLOAD_TYPES)
+            raise BadRequestError(f"Unsupported file type. Allowed: {allowed}")
+        # One byte past the limit is enough to know it is too big; never buffer more.
+        too_big = BadRequestError(
+            f"File exceeds the maximum allowed size of "
+            f"{MAX_DRAFT_UPLOAD_SIZE // (1024 * 1024)} MB"
+        )
+        if file.size is not None and file.size > MAX_DRAFT_UPLOAD_SIZE:
+            raise too_big
+        content = await file.read(MAX_DRAFT_UPLOAD_SIZE + 1)
+        if len(content) > MAX_DRAFT_UPLOAD_SIZE:
+            raise too_big
+        if not content:
+            raise BadRequestError("File is empty")
+        return content, accepted[0]
 
     async def _accepted_parties(self, document_id: uuid.UUID) -> list[DocumentParty]:
         return [

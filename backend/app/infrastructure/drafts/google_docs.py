@@ -1,3 +1,6 @@
+import json
+import uuid
+
 import httpx
 
 from app.shared.errors.exceptions import BadGatewayError, BadRequestError
@@ -6,6 +9,7 @@ from ..google.base import GoogleAuthError
 from .base import DraftRef, RemoteAuthor, RemoteComment, RemotePermission, RemoteReply
 
 FILES_URL = "https://www.googleapis.com/drive/v3/files"
+UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files"
 # 403s that mean "this token cannot do that" rather than "try again later".
 _AUTH_REASONS = {"ACCESS_TOKEN_SCOPE_INSUFFICIENT", "insufficientPermissions"}
 GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
@@ -44,6 +48,35 @@ class GoogleDocsWorkspace:
             not_found="LexChain cannot open that template. Pick it again from Drive.",
         )
         return self._ref(body)
+
+    async def upload(
+        self, access_token: str, name: str, content: bytes, content_type: str
+    ) -> DraftRef:
+        # Asking for a Google Doc while sending another type makes Drive convert it.
+        metadata = json.dumps({"name": name, "mimeType": GOOGLE_DOC_MIME})
+        boundary = uuid.uuid4().hex
+        body = b"".join(
+            [
+                f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode(),
+                metadata.encode(),
+                f"\r\n--{boundary}\r\nContent-Type: {content_type}\r\n\r\n".encode(),
+                content,
+                f"\r\n--{boundary}--".encode(),
+            ]
+        )
+        response = await self.client.post(
+            UPLOAD_URL,
+            params={"uploadType": "multipart", "fields": _FIELDS},
+            content=body,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": f"multipart/related; boundary={boundary}",
+            },
+            # Up to 10 MB in, then Drive converts it before answering.
+            timeout=120,
+        )
+        self._raise_for(response, None)
+        return self._ref(response.json())
 
     async def get(self, access_token: str, file_id: str) -> DraftRef:
         body = await self._call(

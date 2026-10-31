@@ -1,10 +1,12 @@
 import uuid
-from typing import List
+from datetime import datetime
+from typing import List, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
 
 from app.features.blockchain.schemas import (
     DocumentVerificationResponse,
+    IntegrityReportResponse,
     RecordResponse,
 )
 from app.infrastructure.security.dependencies import (
@@ -18,6 +20,7 @@ from .dependencies import (
     get_drafting,
     get_finalization,
     get_intake,
+    get_integrity_report,
     get_processing,
     get_queries,
     get_restoration,
@@ -31,7 +34,6 @@ from .schemas import (
     AddPartyRequest,
     CorrectEntryRequest,
     DocumentHistoryResponse,
-    CreateDraftRequest,
     OpenDocumentRequest,
     SignedCopyFileResponse,
     SignedCopyListResponse,
@@ -95,6 +97,51 @@ async def get_all_user_documents(
         limit,
         offset,
         lifecycle,
+    )
+
+
+# ── Integrity report ────────────────────────────────────────────────
+# Declared before /{document_id}: "verifications" is not a document id.
+
+
+@router.get(
+    "/verifications",
+    tags=[TAG_FINALIZE],
+    response_model=IntegrityReportResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Integrity report: stored verification results",
+    description=(
+        "Every check made through GET /documents/{document_id}/verify on a "
+        "document the lawyer owns, newest first. Range is on `verified_at` in "
+        "UTC: `verified_from` inclusive, `verified_to` exclusive; a time without "
+        "an offset is read as UTC; either may be omitted. `summary` counts every "
+        "result in the range, not just the page. Reads stored verdicts only — "
+        "nothing is re-verified. Parties to a document do not see its results."
+    ),
+    responses={
+        200: {"description": "One page of results and the totals for the range"},
+        400: {"description": "verified_from is not earlier than verified_to"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only lawyers have an integrity report"},
+        422: {"description": "limit outside 1–100, negative offset, or a malformed time"},
+    },
+)
+async def get_integrity_report_results(
+    request: Request,
+    verified_from: datetime | None = Query(
+        None, description="Inclusive lower bound on verified_at (ISO 8601; UTC if no offset)"
+    ),
+    verified_to: datetime | None = Query(
+        None, description="Exclusive upper bound on verified_at (ISO 8601; UTC if no offset)"
+    ),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    # Untyped: same circular import as get_verification.
+    report=Depends(get_integrity_report),
+) -> IntegrityReportResponse:
+    return await report.for_owner(
+        current_user.user_id, verified_from, verified_to, limit, offset
     )
 
 
@@ -285,14 +332,19 @@ async def rename_document(
         "Creates the draft in the lawyer's own Google Drive and shares it with "
         "every accepted client as a commenter (another lawyer on the document "
         "as an editor). Open `draft_url` in a new tab afterwards.\n\n"
-        "`source`: `blank` (new empty Doc), `template` (copy of `file_id`) or "
-        "`existing` (use `file_id` itself). `file_id` comes from the Google "
-        "Picker — see `GET /google/picker-token`.\n\n"
+        "Form fields. `source`: `blank` (new empty Doc), `template` (copy of "
+        "`file_id`), `existing` (use `file_id` itself) or `upload` (`file` — "
+        "say a Word file from the client — converted to a Doc). `file_id` comes "
+        "from the Google Picker — see `GET /google/picker-token`. `file`: "
+        "docx, doc, odt or rtf, at most 10 MB.\n\n"
         "Only while PREPARING, and only once per document."
     ),
     responses={
         201: {"description": "Draft created and shared"},
-        400: {"description": "No file picked, or the picked file is not a Google Doc"},
+        400: {
+            "description": "No file picked or chosen, the picked file is not a Google Doc, "
+            "or the uploaded file is the wrong type, empty or too large"
+        },
         403: {"description": "Forbidden — only the document owner may create the draft"},
         404: {"description": "Document not found"},
         409: {
@@ -303,13 +355,15 @@ async def rename_document(
 )
 async def create_draft(
     document_id: uuid.UUID,
-    body: CreateDraftRequest,
+    source: Literal["blank", "template", "existing", "upload"] = Form("blank"),
+    file_id: str | None = Form(
+        None, description="Drive file id from the Google Picker, for template / existing"
+    ),
+    file: UploadFile | None = File(None, description="The file to convert, for upload"),
     current_user: AuthenticatedUser = Depends(require_lawyer),
     drafting: DocumentDrafting = Depends(get_drafting),
 ) -> DocumentResponse:
-    return await drafting.create_draft(
-        current_user, document_id, body.source, body.file_id
-    )
+    return await drafting.create_draft(current_user, document_id, source, file_id, file)
 
 
 # ── Draft comments ──────────────────────────────────────────────────
@@ -793,7 +847,8 @@ async def retry_processing(
         "and the current file are both extracted and diffed: `tamper_report` "
         "lists the changed segments with page and bbox where the OCR engine "
         "reports layout. If that diff cannot be produced, `tamper_report_status` "
-        "is UNAVAILABLE and the TAMPERED verdict still stands."
+        "is UNAVAILABLE and the TAMPERED verdict still stands. Every check "
+        "that reaches a verdict is kept for the integrity report."
     ),
     responses={
         200: {
@@ -814,7 +869,7 @@ async def verify_document(
     # (blockchain.service imports the documents package).
     verification=Depends(get_verification),
 ) -> DocumentVerificationResponse:
-    return await verification.verify_document(current_user, document_id)
+    return await verification.verify_document(current_user, document_id, record=True)
 
 
 @router.post(

@@ -1,7 +1,11 @@
 """The working draft in Google Docs: create, share, lock, unlock."""
 
+import io
+
 import pytest
+from fastapi import UploadFile
 from sqlalchemy import select
+from starlette.datastructures import Headers
 
 from app.features.documents.models import DocumentParty, DraftRevocation
 from app.shared.constants import (
@@ -57,6 +61,87 @@ async def test_draft_from_template_and_existing_doc(drafting, drive, intake, law
     started = drive.add_existing("Santos affidavit (started)")
     existing = await drafting.create_draft(me, other.document_id, "existing", started)
     assert started in existing.draft_url
+
+
+DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def word_file(
+    name: str = "Deed of Sale (client's copy).docx",
+    content_type: str = DOCX,
+    content: bytes = b"PK\x03\x04 word",
+) -> UploadFile:
+    return UploadFile(
+        file=io.BytesIO(content),
+        filename=name,
+        headers=Headers({"content-type": content_type}),
+    )
+
+
+async def test_uploaded_word_file_becomes_the_draft(
+    drafting, drive, session, doc, lawyer, client
+):
+    await add_party(session, doc.document_id, client)
+
+    created = await drafting.create_draft(
+        as_auth(lawyer), doc.document_id, "upload", file=word_file()
+    )
+
+    file_id = created.draft_url.split("/d/")[1].split("/")[0]
+    assert drive.files[file_id]["name"] == "Deed of Sale – Cruz lot"
+    assert drive.files[file_id]["content"] == b"PK\x03\x04 word"
+    assert drive.roles(file_id) == {client.email: "commenter"}
+
+
+async def test_upload_needs_a_file(drafting, lawyer, doc):
+    with pytest.raises(BadRequestError, match="Choose the file"):
+        await drafting.create_draft(as_auth(lawyer), doc.document_id, "upload")
+
+
+async def test_a_file_is_only_for_upload(drafting, lawyer, doc):
+    with pytest.raises(BadRequestError, match="only with source 'upload'"):
+        await drafting.create_draft(as_auth(lawyer), doc.document_id, "blank", file=word_file())
+
+
+@pytest.mark.parametrize(
+    "upload",
+    [
+        word_file("deed.pdf", "application/pdf", b"%PDF-1.7"),
+        word_file("deed.docx", "image/png"),  # renamed, not a Word file
+        word_file("deed", DOCX),
+        word_file(content=b""),
+    ],
+)
+async def test_upload_must_be_a_word_processor_file(drafting, lawyer, doc, upload):
+    with pytest.raises(BadRequestError):
+        await drafting.create_draft(as_auth(lawyer), doc.document_id, "upload", file=upload)
+
+
+async def test_a_bad_file_is_refused_before_google_is_asked(intake, drafting, other_lawyer):
+    me = as_auth(other_lawyer)  # never connected Google
+    doc = await intake.open_document(me, "Deed")
+    with pytest.raises(BadRequestError, match="Unsupported file type"):
+        await drafting.create_draft(
+            me, doc.document_id, "upload", file=word_file("deed.pdf", "application/pdf")
+        )
+
+
+async def test_upload_over_10_mb_is_refused(drafting, lawyer, doc):
+    big = word_file(content=b"PK" + b"x" * (10 * 1024 * 1024))
+    with pytest.raises(BadRequestError, match="10 MB"):
+        await drafting.create_draft(as_auth(lawyer), doc.document_id, "upload", file=big)
+
+
+async def test_open_document_and_rtf_files_are_accepted(drafting, intake, lawyer, doc):
+    me = as_auth(lawyer)
+    await drafting.create_draft(
+        me, doc.document_id, "upload",
+        file=word_file("deed.odt", "application/vnd.oasis.opendocument.text"),
+    )
+    other = await intake.open_document(me, "Affidavit – Santos")
+    await drafting.create_draft(
+        me, other.document_id, "upload", file=word_file("affidavit.rtf", "text/rtf")
+    )
 
 
 async def test_existing_file_must_be_a_google_doc(drafting, drive, lawyer, doc):
