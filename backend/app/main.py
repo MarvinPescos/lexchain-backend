@@ -67,6 +67,11 @@ OPENAPI_TAGS = [
         "description": "After finalize: review the extracted text for search.",
     },
     {"name": "Documents · Sharing", "description": "Parties and invitations."},
+    {
+        "name": "Documents · E-copy requests",
+        "description": "A party asks for the unwatermarked signed copy; the "
+        "owner approves (and it is emailed) or declines.",
+    },
     {"name": "Retrieval"},
     {"name": "Notifications"},
     {"name": "Admin"},

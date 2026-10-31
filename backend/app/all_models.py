@@ -9,6 +9,8 @@ from app.features.documents import (
     DraftComment,
     DraftReply,
     DraftRevocation,
+    EcopyEvent,
+    EcopyRequest,
     ProcessingDispatch,
     SignedCopy,
 )

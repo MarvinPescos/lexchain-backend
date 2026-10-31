@@ -3,6 +3,9 @@
     view                     owner, or a party whose invitation was accepted
     every other action       owner only (a lawyer), and only if `lifecycle`
                              allows it from the document's current stage
+    the signed original      owner; a party only once their e-copy request
+                             was approved for the document's current file —
+                             otherwise a watermarked preview
 
 There is no super-user tier: admin and lawyer are one role, so no account can
 reach another lawyer's documents. Client confidentiality depends on it.
@@ -28,9 +31,10 @@ from .constants import (
     ACTION_REOPEN,
     ACTION_REPLACE_SIGNED_COPY,
     ACTION_VIEW,
+    LIFECYCLE_FINALIZED,
     STATUS_FAILED,
 )
-from .models import Document
+from .models import Document, SignedCopy
 from .repository import DocumentRepository
 from .schemas import DocumentPermissions
 
@@ -57,6 +61,22 @@ class DocumentAccess:
             lifecycle.ensure(action, document)
         return document
 
+    async def may_read_original(
+        self, user: AuthenticatedUser, document: Document, copy: SignedCopy
+    ) -> bool:
+        """Whether `user` may have the unwatermarked bytes of `copy`.
+
+        Call after `authorize`. An approval covers the bytes it was given
+        for, and only while they are still the document's current file.
+        """
+        if document.user_id == user.user_id:
+            return True
+        if document.document_hash is None or copy.sha256 != document.document_hash:
+            return False
+        return await self.repo.has_approved_ecopy(
+            document.id, user.user_id, document.document_hash
+        )
+
     def permissions(
         self, user: AuthenticatedUser, document: Document
     ) -> DocumentPermissions:
@@ -81,4 +101,8 @@ class DocumentAccess:
             can_retry_processing=is_owner and document.status == STATUS_FAILED,
             can_share=is_owner,
             can_revoke=is_owner,
+            can_request_ecopy=not is_owner
+            and document.lifecycle == LIFECYCLE_FINALIZED
+            and document.signed_copy_id is not None,
+            can_review_ecopy=is_owner,
         )

@@ -103,6 +103,13 @@ class SignedCopyFileResponse(BaseModel):
     copy_id: uuid.UUID
     url: str
     expires_in: int = Field(..., description="Seconds until `url` stops working")
+    watermarked: bool = Field(
+        False,
+        description=(
+            "True when `url` is a watermarked preview, not the signed original: "
+            "what a party gets until their e-copy request is approved for this file"
+        ),
+    )
 
 
 class DocumentPermissions(BaseModel):
@@ -127,6 +134,12 @@ class DocumentPermissions(BaseModel):
     )
     can_share: bool = Field(..., description="May whitelist other users")
     can_revoke: bool = Field(..., description="May remove whitelisted users")
+    can_request_ecopy: bool = Field(
+        False, description="May ask the owner for the unwatermarked signed copy"
+    )
+    can_review_ecopy: bool = Field(
+        False, description="May approve or decline e-copy requests"
+    )
 
 
 class DocumentResponse(BaseModel):
@@ -402,3 +415,86 @@ class RestoreResponse(BaseModel):
     restored_by: uuid.UUID | None = None
     restored_at: datetime | None = None
     verification: DocumentVerificationResponse
+
+
+# === E-copy requests ===
+
+ECOPY_STATUS_DESCRIPTION = "PENDING | APPROVED | DECLINED"
+DELIVERY_STATUS_DESCRIPTION = (
+    "Null until approved, then SENDING | SENT | FAILED. APPROVED with FAILED "
+    "means the email did not go out and the owner may retry it"
+)
+
+
+class DeclineEcopyRequest(BaseModel):
+    reason: str | None = Field(
+        None, max_length=1000, description="Optional; shown to the client"
+    )
+
+
+class EcopyEventResponse(BaseModel):
+    """One step in an e-copy request's audit trail."""
+
+    action: str = Field(
+        ...,
+        description=(
+            "requested | approved | declined | delivery_attempted | delivered "
+            "| delivery_failed"
+        ),
+    )
+    actor_id: uuid.UUID | None
+    detail: str | None = Field(
+        None, description="A delivery error code, or the address a copy went to"
+    )
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EcopyRequestResponse(BaseModel):
+    """A client's request for the unwatermarked signed copy, and how it went."""
+
+    id: uuid.UUID
+    document_id: uuid.UUID
+    file_name: str
+    client_id: uuid.UUID
+    client_name: str
+    client_email: str
+    status: str = Field(..., description=ECOPY_STATUS_DESCRIPTION)
+    requested_at: datetime
+    decided_at: datetime | None
+    decided_by: uuid.UUID | None
+    decline_reason: str | None
+    approved_copy_id: uuid.UUID | None = Field(
+        None, description="The signed copy the approval was given for"
+    )
+    delivery_status: str | None = Field(None, description=DELIVERY_STATUS_DESCRIPTION)
+    delivery_attempts: int
+    delivered_at: datetime | None
+    delivered_to: str | None = Field(
+        None, description="The verified account address the copy was sent to"
+    )
+    delivery_error: str | None = Field(
+        None,
+        description=(
+            "Why the last send failed: provider_error | attachment_too_large | "
+            "integrity_mismatch | storage_unavailable | access_revoked | "
+            "email_unverified"
+        ),
+    )
+    can_download: bool = Field(
+        ...,
+        description=(
+            "The client may read the unwatermarked copy in the app now: approved, "
+            "still a party, and the document's file is still the approved one"
+        ),
+    )
+    can_retry_delivery: bool = Field(
+        ..., description="The owner may send the email again now"
+    )
+    events: list[EcopyEventResponse]
+
+
+class EcopyRequestListResponse(BaseModel):
+    requests: list[EcopyRequestResponse]
+    total: int

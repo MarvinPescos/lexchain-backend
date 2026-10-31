@@ -7,7 +7,7 @@ import pytest
 from app.features.documents.models import DocumentParty
 from app.shared.constants import PARTY_STATUS_ACCEPTED
 from app.shared.errors.exceptions import ConflictError, ForbiddenError, NotFoundError
-from tests.conftest import as_auth, connect_google, pdf
+from tests.conftest import as_auth, connect_google, pdf, real_pdf
 
 
 
@@ -200,8 +200,10 @@ async def test_pdf_is_read_through_a_short_lived_link_after_an_access_check(
     queries, intake, sharing, session, lawyer, client, other_lawyer, open_book, storage
 ):
     me = as_auth(lawyer)
-    first = await intake.upload_signed(me, pdf("scan-1"), "Deed", open_book.id)
-    doc = await intake.replace_signed_copy(me, first.document_id, pdf("scan-2"), "Wrong scan")
+    first = await intake.upload_signed(me, real_pdf("scan-1"), "Deed", open_book.id)
+    doc = await intake.replace_signed_copy(
+        me, first.document_id, real_pdf("scan-2"), "Wrong scan"
+    )
     assert "storage_url" not in doc.signed_copy.model_dump()
 
     current = await queries.get_signed_copy_file(me, doc.document_id)
@@ -224,7 +226,8 @@ async def test_pdf_is_read_through_a_short_lived_link_after_an_access_check(
         )
     )
     await session.flush()
-    assert await queries.get_signed_copy_file(as_auth(client), doc.document_id)
+    # Unwatermarked only once an e-copy request is approved (test_ecopy).
+    assert (await queries.get_signed_copy_file(as_auth(client), doc.document_id)).watermarked
 
     await sharing.remove_party(me, doc.document_id, client.id)
     with pytest.raises(NotFoundError):

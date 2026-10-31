@@ -6,6 +6,8 @@ from .models import (
     DraftComment,
     DraftReply,
     DraftRevocation,
+    EcopyEvent,
+    EcopyRequest,
     ProcessingDispatch,
     SignedCopy,
 )
@@ -20,6 +22,8 @@ __all__ = [
     "DraftComment",
     "DraftReply",
     "DraftRevocation",
+    "EcopyEvent",
+    "EcopyRequest",
     "ProcessingDispatch",
     "SignedCopy",
 ]

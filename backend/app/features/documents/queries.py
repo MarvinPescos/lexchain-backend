@@ -5,6 +5,7 @@ search applies the same owner-or-accepted-party rule in its query, so a
 party sees what the owner sees and nobody else sees anything.
 """
 
+import asyncio
 import uuid
 from typing import List
 
@@ -12,10 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.clients.supabase_storage import get_storage_client
 from app.infrastructure.observability.logging_setup import log
+from app.infrastructure.pdf import watermark_pdf
 from app.infrastructure.security.dependencies import AuthenticatedUser
-from app.shared.errors.exceptions import NotFoundError
+from app.shared.errors.exceptions import NotFoundError, ServiceUnavailableError
 
 from .access import DocumentAccess
+from .models import SignedCopy
 from .presenters import copy_response, document_response
 from .repository import DocumentRepository
 from .schemas import (
@@ -34,6 +37,9 @@ from .schemas import (
 # Long enough for a viewer to load the PDF, short enough that a link copied
 # out of the app, or kept by someone since removed, soon stops working.
 SIGNED_URL_TTL_SECONDS = 300
+
+# Bump when the watermark changes, so stored previews are made again.
+PREVIEW_VERSION = "v1"
 
 
 class DocumentQueries:
@@ -151,7 +157,9 @@ class DocumentQueries:
         """A short-lived link to a signed copy's PDF (the current one by default).
 
         The only way to read the bytes: storage is private, so every read
-        passes the same access check as the document itself.
+        passes the same access check as the document itself. A party without
+        an approved e-copy gets a watermarked preview instead — for every copy,
+        current or older — so the original never reaches them by this path.
         """
         document = await self.access.authorize(user, document_id)
         copy_id = copy_id or document.signed_copy_id
@@ -161,21 +169,61 @@ class DocumentQueries:
         if copy is None:
             raise NotFoundError("Signed copy not found")
 
-        url = await get_storage_client().signed_url(
-            copy.storage_url, SIGNED_URL_TTL_SECONDS
-        )
+        original = await self.access.may_read_original(user, document, copy)
+        if original:
+            url = await get_storage_client().signed_url(
+                copy.storage_url, SIGNED_URL_TTL_SECONDS
+            )
+        else:
+            url = await self._preview_url(user, copy)
         log.info(
             "document.signed_copy.read",
             document_id=str(document_id),
             copy_id=str(copy.id),
             user_id=str(user.user_id),
+            watermarked=not original,
         )
         return SignedCopyFileResponse(
             document_id=document_id,
             copy_id=copy.id,
             url=url,
             expires_in=SIGNED_URL_TTL_SECONDS,
+            watermarked=not original,
         )
+
+    async def _preview_url(self, user: AuthenticatedUser, copy: SignedCopy) -> str:
+        """A signed link to this reader's watermarked preview of `copy`.
+
+        Made once per reader and copy and kept beside the originals; the mark
+        names the reader, so a leaked preview says whose it was.
+        """
+        storage = get_storage_client()
+        path = (
+            f"previews/{PREVIEW_VERSION}/{copy.document_id}/{copy.id}/{user.user_id}.pdf"
+        )
+        locator = storage.locator(path)
+        try:
+            return await storage.signed_url(locator, SIGNED_URL_TTL_SECONDS)
+        except Exception as e:
+            # Not made yet — the usual reason; anything else fails again below.
+            log.info("document.preview.missing", copy_id=str(copy.id), error=type(e).__name__)
+
+        content = await storage.download(copy.storage_url)
+        label = f"PREVIEW · NOT AN OFFICIAL COPY · {user.email or user.user_id}"
+        try:
+            marked = await asyncio.to_thread(watermark_pdf, content, label)
+        except Exception as e:
+            log.error("document.preview.failed", copy_id=str(copy.id), error=type(e).__name__)
+            raise ServiceUnavailableError(
+                "A preview of this file could not be made. Try again later."
+            ) from e
+        try:
+            await storage.upload_new(path, marked)
+        except Exception as e:
+            # Another request made it first; theirs is the same preview. If
+            # not, signing below fails and the caller sees the error.
+            log.info("document.preview.not_stored", copy_id=str(copy.id), error=type(e).__name__)
+        return await storage.signed_url(locator, SIGNED_URL_TTL_SECONDS)
 
     async def get_history(
         self, user: AuthenticatedUser, document_id: uuid.UUID

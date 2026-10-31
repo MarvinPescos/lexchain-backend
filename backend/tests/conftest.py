@@ -84,6 +84,9 @@ class FakeStorage:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
 
+    def locator(self, file_path: str) -> str:
+        return self.BASE_URL + file_path
+
     async def upload_new(
         self, file_path: str, file_bytes: bytes, content_type: str = "application/pdf"
     ) -> str:
@@ -142,7 +145,7 @@ class FakeChain:
 @pytest.fixture
 def storage(monkeypatch: pytest.MonkeyPatch) -> FakeStorage:
     fake = FakeStorage()
-    for module in ("intake", "finalization", "restoration"):
+    for module in ("intake", "finalization", "restoration", "ecopy"):
         monkeypatch.setattr(
             f"app.features.documents.workflow.{module}.get_storage_client", lambda: fake
         )
@@ -249,6 +252,23 @@ def pdf(body: str = "deed") -> UploadFile:
     content = b"%PDF-1.7\n" + body.encode() + b"\n%%EOF"
     return UploadFile(
         file=io.BytesIO(content),
+        filename=f"{body}.pdf",
+        headers=Headers({"content-type": "application/pdf"}),
+    )
+
+
+def real_pdf(body: str = "deed", pages: int = 1) -> UploadFile:
+    """Like `pdf`, but a PDF a renderer can open (for watermarked previews)."""
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for _ in range(pages):
+        writer.add_blank_page(612, 792)
+    writer.add_metadata({"/Title": body})
+    out = io.BytesIO()
+    writer.write(out)
+    return UploadFile(
+        file=io.BytesIO(out.getvalue()),
         filename=f"{body}.pdf",
         headers=Headers({"content-type": "application/pdf"}),
     )

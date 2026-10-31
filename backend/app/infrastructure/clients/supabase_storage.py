@@ -18,7 +18,7 @@ class SupabaseStorageClient:
     def _get_client(self) -> Client:
         return create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
 
-    def _locator(self, file_path: str) -> str:
+    def locator(self, file_path: str) -> str:
         return (
             f"{settings.SUPABASE_URL}/storage/v1/object/authenticated/"
             f"{self.bucket_name}/{file_path}"
@@ -39,7 +39,7 @@ class SupabaseStorageClient:
             file=file_bytes,
             file_options={"content-type": content_type, "x-upsert": "false"},
         )
-        return self._locator(file_path)
+        return self.locator(file_path)
 
     async def download(self, url: str) -> bytes:
         """Read a stored object from the origin with the service key.

@@ -18,6 +18,7 @@ from app.infrastructure.security.dependencies import (
 from .dependencies import (
     get_discussion,
     get_drafting,
+    get_ecopy,
     get_finalization,
     get_intake,
     get_integrity_report,
@@ -33,6 +34,9 @@ from .workflow.discussion import DocumentDiscussion
 from .schemas import (
     AddPartyRequest,
     CorrectEntryRequest,
+    DeclineEcopyRequest,
+    EcopyRequestListResponse,
+    EcopyRequestResponse,
     DocumentHistoryResponse,
     OpenDocumentRequest,
     SignedCopyFileResponse,
@@ -52,6 +56,7 @@ from .schemas import (
     RetryProcessingResponse,
 )
 from .workflow.drafting import DocumentDrafting
+from .workflow.ecopy import DocumentEcopy
 from .workflow.finalization import DocumentFinalization
 from .workflow.intake import DocumentIntake
 from .workflow.processing import DocumentProcessing
@@ -65,6 +70,7 @@ TAG_PREPARATION = "Documents · Preparation (Path 1)"
 TAG_SIGNED_COPY = "Documents · Signed copy & register"
 TAG_FINALIZE = "Documents · Finalize & verify"
 TAG_SHARING = "Documents · Sharing"
+TAG_ECOPY = "Documents · E-copy requests"
 
 router = APIRouter(prefix="/documents")
 
@@ -143,6 +149,59 @@ async def get_integrity_report_results(
     return await report.for_owner(
         current_user.user_id, verified_from, verified_to, limit, offset
     )
+
+
+# ── E-copy requests: queues ─────────────────────────────────────────
+# Declared before /{document_id}: "ecopy-requests" is not a document id.
+
+
+@router.get(
+    "/ecopy-requests",
+    tags=[TAG_ECOPY],
+    response_model=EcopyRequestListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Review queue: e-copy requests on my documents",
+    description=(
+        "Every e-copy request on a document the lawyer owns, newest first. "
+        "Filter with `status=PENDING` for what still needs a decision. Requests "
+        "on other lawyers' documents are never included."
+    ),
+    responses={
+        200: {"description": "Requests on the lawyer's documents"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only lawyers review e-copy requests"},
+    },
+)
+async def list_ecopy_review_queue(
+    status_filter: Literal["PENDING", "APPROVED", "DECLINED"] | None = Query(
+        None, alias="status"
+    ),
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    ecopy: DocumentEcopy = Depends(get_ecopy),
+) -> EcopyRequestListResponse:
+    return await ecopy.list_for_owner(current_user, status_filter)
+
+
+@router.get(
+    "/ecopy-requests/mine",
+    tags=[TAG_ECOPY],
+    response_model=EcopyRequestListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="My e-copy requests",
+    description=(
+        "Every e-copy request the caller made, newest first, on documents they "
+        "still have access to — with decision and delivery status."
+    ),
+    responses={
+        200: {"description": "The caller's requests"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+    },
+)
+async def list_my_ecopy_requests(
+    current_user: AuthenticatedUser = Depends(require_auth),
+    ecopy: DocumentEcopy = Depends(get_ecopy),
+) -> EcopyRequestListResponse:
+    return await ecopy.list_mine(current_user)
 
 
 # ── Register lookup ─────────────────────────────────────────────────
@@ -531,8 +590,18 @@ async def get_signed_copies(
     description=(
         "Checks the caller's current access, then returns a signed URL valid for "
         "`expires_in` seconds. Defaults to the current copy; pass `copy_id` for "
-        "an older one from /signed-copies. Ask again when it expires."
+        "an older one from /signed-copies. Ask again when it expires.\n\n"
+        "The owner always gets the signed original. Anyone else gets a "
+        "watermarked preview (`watermarked: true`) — for every copy, current or "
+        "older — unless their e-copy request was approved for the document's "
+        "current file, in which case that file comes unwatermarked."
     ),
+    responses={
+        200: {"description": "A link to the original, or to a watermarked preview"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        404: {"description": "Document or copy not found, or no access"},
+        503: {"description": "The watermarked preview could not be made"},
+    },
 )
 async def get_signed_copy_file(
     document_id: uuid.UUID,
@@ -907,6 +976,160 @@ async def restore_document(
     restoration: DocumentRestoration = Depends(get_restoration),
 ) -> RestoreResponse:
     return await restoration.restore(current_user, document_id)
+
+
+# ── E-copy requests ─────────────────────────────────────────────────
+
+
+@router.post(
+    "/{document_id}/ecopy-requests",
+    tags=[TAG_ECOPY],
+    response_model=EcopyRequestResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Request an e-copy of the signed document",
+    description=(
+        "A party asks the owner for the unwatermarked signed PDF of a FINALIZED "
+        "document. The owner is notified in LexChain. One PENDING request per "
+        "client and document; after a decline the client may ask again. Until "
+        "approved, GET /{document_id}/file gives the client a watermarked preview."
+    ),
+    responses={
+        201: {"description": "Request created, PENDING"},
+        400: {"description": "The caller owns the document"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        404: {"description": "Document not found or no access"},
+        409: {
+            "description": (
+                "Not FINALIZED, a request is already PENDING, or one was already "
+                "approved for the current file"
+            )
+        },
+    },
+)
+async def request_ecopy(
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_auth),
+    ecopy: DocumentEcopy = Depends(get_ecopy),
+) -> EcopyRequestResponse:
+    return await ecopy.request(current_user, document_id)
+
+
+@router.get(
+    "/{document_id}/ecopy-requests",
+    tags=[TAG_ECOPY],
+    response_model=EcopyRequestListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="E-copy requests on a document",
+    description=(
+        "The owner sees every request on the document; a party sees only their "
+        "own. Each carries its decision, delivery status and audit trail."
+    ),
+    responses={
+        200: {"description": "Requests, newest first"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        404: {"description": "Document not found or no access"},
+    },
+)
+async def list_document_ecopy_requests(
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_auth),
+    ecopy: DocumentEcopy = Depends(get_ecopy),
+) -> EcopyRequestListResponse:
+    return await ecopy.list_for_document(current_user, document_id)
+
+
+@router.post(
+    "/{document_id}/ecopy-requests/{request_id}/approve",
+    tags=[TAG_ECOPY],
+    response_model=EcopyRequestResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Approve an e-copy request and email the copy",
+    description=(
+        "Approves the document's current signed copy for this client, then "
+        "emails it as an attachment to the client's verified account address. "
+        "The approval stands whether or not the email goes out: check "
+        "`delivery_status` — FAILED (with `delivery_error`) can be retried with "
+        "/retry-delivery. Once approved the client can download the "
+        "unwatermarked file in the app while they keep access and the file is "
+        "unchanged."
+    ),
+    responses={
+        200: {"description": "Approved; delivery SENT or FAILED"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only the document owner decides"},
+        404: {"description": "Document or request not found"},
+        409: {
+            "description": (
+                "Already decided, the client no longer has access, or the "
+                "document has no finalized signed copy"
+            )
+        },
+    },
+)
+async def approve_ecopy_request(
+    document_id: uuid.UUID,
+    request_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    ecopy: DocumentEcopy = Depends(get_ecopy),
+) -> EcopyRequestResponse:
+    return await ecopy.approve(current_user, document_id, request_id)
+
+
+@router.post(
+    "/{document_id}/ecopy-requests/{request_id}/decline",
+    tags=[TAG_ECOPY],
+    response_model=EcopyRequestResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Decline an e-copy request",
+    description=(
+        "Declines the request, optionally with a reason shown to the client, "
+        "who is notified and may request again."
+    ),
+    responses={
+        200: {"description": "Declined"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only the document owner decides"},
+        404: {"description": "Document or request not found"},
+        409: {"description": "Already decided"},
+    },
+)
+async def decline_ecopy_request(
+    document_id: uuid.UUID,
+    request_id: uuid.UUID,
+    body: DeclineEcopyRequest,
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    ecopy: DocumentEcopy = Depends(get_ecopy),
+) -> EcopyRequestResponse:
+    return await ecopy.decline(current_user, document_id, request_id, body.reason)
+
+
+@router.post(
+    "/{document_id}/ecopy-requests/{request_id}/retry-delivery",
+    tags=[TAG_ECOPY],
+    response_model=EcopyRequestResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Send an approved e-copy again",
+    description=(
+        "For an APPROVED request whose `delivery_status` is FAILED, or stuck in "
+        "SENDING for over 10 minutes. Access, the verified address and the "
+        "file's fingerprint are checked again before sending; only one retry "
+        "runs at a time."
+    ),
+    responses={
+        200: {"description": "Attempted; delivery SENT or FAILED"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only the document owner may retry"},
+        404: {"description": "Document or request not found"},
+        409: {"description": "Not approved, already delivered, or a send is in progress"},
+    },
+)
+async def retry_ecopy_delivery(
+    document_id: uuid.UUID,
+    request_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    ecopy: DocumentEcopy = Depends(get_ecopy),
+) -> EcopyRequestResponse:
+    return await ecopy.retry_delivery(current_user, document_id, request_id)
 
 
 # ── OCR review (extraction/router.py) ───────────────────────────────

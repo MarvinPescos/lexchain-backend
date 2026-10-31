@@ -8,6 +8,7 @@ from app.infrastructure.blockchain import BlockchainProvider
 from app.features.google.service import GoogleConnectionService
 from app.infrastructure.database import get_db
 from app.infrastructure.drafts import build_draft_workspace
+from app.infrastructure.email import build_email_provider
 from app.infrastructure.google import build_google_oauth
 from app.infrastructure.queue import (
     CeleryDocumentQueue,
@@ -18,6 +19,7 @@ from app.infrastructure.queue import (
 from .queries import DocumentQueries
 from .workflow.discussion import DocumentDiscussion
 from .workflow.drafting import DocumentDrafting
+from .workflow.ecopy import DocumentEcopy
 from .workflow.finalization import DocumentFinalization
 from .workflow.intake import DocumentIntake
 from .workflow.processing import DocumentProcessing
@@ -67,6 +69,10 @@ def get_finalization(
 ) -> DocumentFinalization:
     backup = build_backup() if settings.BACKUP_ENABLED else None
     return DocumentFinalization(db, queue, provider, backup)
+
+
+def get_ecopy(db: AsyncSession = Depends(get_db)) -> DocumentEcopy:
+    return DocumentEcopy(db, build_email_provider())
 
 
 def get_processing(
