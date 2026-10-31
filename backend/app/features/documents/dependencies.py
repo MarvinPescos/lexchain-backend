@@ -93,3 +93,10 @@ def get_verification(
 
     backup = build_backup() if settings.BACKUP_ENABLED else None
     return BlockchainService(db, provider, backup)
+
+
+def get_integrity_report(db: AsyncSession = Depends(get_db)):
+    # Imported here: blockchain.report imports the documents package.
+    from app.features.blockchain.report import IntegrityReport
+
+    return IntegrityReport(db)

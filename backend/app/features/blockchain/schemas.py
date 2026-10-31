@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 import uuid
 from datetime import datetime
 from typing import Literal
@@ -156,4 +156,60 @@ class DocumentVerificationResponse(BaseModel):
     )
     tamper_report_unavailable_reason: str | None = Field(
         None, description="Why no diff, when `tamper_report_status` is UNAVAILABLE"
+    )
+
+
+class VerificationResultResponse(BaseModel):
+    """One stored check, as it was decided at `verified_at`."""
+
+    id: uuid.UUID
+    document_id: uuid.UUID
+    file_name: str | None = Field(None, description="Display name of the document now")
+    verified_at: datetime = Field(..., description="When the check ran (UTC)")
+    verified_by: uuid.UUID | None = Field(None, description="Who ran the check")
+    status: str = Field(
+        ...,
+        description=(
+            "AUTHENTIC | TAMPERED | SNAPSHOT_COMPROMISED | NOT_ANCHORED | "
+            "VERIFICATION_UNAVAILABLE — as on DocumentVerificationResponse. "
+            "VERIFICATION_UNAVAILABLE means integrity was unknown, not tampered"
+        ),
+    )
+    is_authentic: bool
+    baseline_trusted: bool = Field(
+        ..., description="Whether the stored original matched the chain at the time"
+    )
+    onchain_hash: str | None = None
+    snapshot_hash: str | None = None
+    current_hash: str | None = None
+    tx_hash: str | None = None
+    tamper_report_status: Literal["AVAILABLE", "UNAVAILABLE", "NOT_APPLICABLE"]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class IntegrityReportSummary(BaseModel):
+    """Counts over every result in the range, not just the returned page."""
+
+    total: int
+    authentic: int = 0
+    tampered: int = 0
+    snapshot_compromised: int = 0
+    not_anchored: int = 0
+    verification_unavailable: int = 0
+
+
+class IntegrityReportResponse(BaseModel):
+    verified_from: datetime | None = Field(
+        None, description="Inclusive lower bound on verified_at (UTC); null for no bound"
+    )
+    verified_to: datetime | None = Field(
+        None, description="Exclusive upper bound on verified_at (UTC); null for no bound"
+    )
+    limit: int
+    offset: int
+    summary: IntegrityReportSummary
+    results: list[VerificationResultResponse] = Field(
+        default_factory=list,
+        description="One page, newest first; ties on verified_at ordered by id",
     )

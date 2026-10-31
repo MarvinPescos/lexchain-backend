@@ -17,8 +17,17 @@ from app.infrastructure.blockchain import BlockchainProvider, ChainRecord
 from app.infrastructure.nlp.ocr import OCRProvider, build_ocr
 from app.infrastructure.observability.logging_setup import log
 from app.shared.errors.exceptions import NotFoundError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .constants import (
+    VERIFY_AUTHENTIC,
+    VERIFY_NOT_ANCHORED,
+    VERIFY_SNAPSHOT_COMPROMISED,
+    VERIFY_TAMPERED,
+    VERIFY_UNAVAILABLE,
+)
+from .models import VerificationResult
 from .repository import OnChainRecordRepository
 from .schemas import (
     DocumentVerificationResponse,
@@ -101,6 +110,55 @@ class BlockchainService:
         document_id: uuid.UUID,
         *,
         tamper_report: bool = True,
+        record: bool = False,
+    ) -> DocumentVerificationResponse:
+        """Verify, and with `record` keep the verdict in the verification history.
+
+        Only a check that reaches a verdict is kept; one that raises is not.
+        Internal checks (restore) leave `record` off: they are not report rows.
+        """
+        result = await self._verify(user, document_id, tamper_report=tamper_report)
+        if record:
+            await self._record(user, result)
+        return result
+
+    async def _record(
+        self, user: "AuthenticatedUser", result: DocumentVerificationResponse
+    ) -> None:
+        """Best-effort: the verdict is already decided, and a failed history
+        write must not turn it into an error for the caller."""
+        self.session.add(
+            VerificationResult(
+                document_id=result.document_id,
+                verified_by=user.user_id,
+                verified_at=result.verified_at,
+                status=result.status,
+                is_authentic=result.is_authentic,
+                baseline_trusted=result.baseline_trusted,
+                onchain_hash=result.onchain_hash,
+                snapshot_hash=result.snapshot_hash,
+                current_hash=result.current_hash,
+                tx_hash=result.tx_hash or None,
+                tamper_report_status=result.tamper_report_status,
+            )
+        )
+        try:
+            await self.session.commit()
+        except SQLAlchemyError as e:
+            await self.session.rollback()
+            log.error(
+                "blockchain.verify.record_failed",
+                document_id=str(result.document_id),
+                status=result.status,
+                error=f"{type(e).__name__}: {e}",
+            )
+
+    async def _verify(
+        self,
+        user: "AuthenticatedUser",
+        document_id: uuid.UUID,
+        *,
+        tamper_report: bool,
     ) -> DocumentVerificationResponse:
         """Verify a finalized document against its on-chain anchor.
 
@@ -128,7 +186,7 @@ class BlockchainService:
 
         if document.lifecycle != LIFECYCLE_FINALIZED:
             return DocumentVerificationResponse(
-                status="NOT_ANCHORED",
+                status=VERIFY_NOT_ANCHORED,
                 is_authentic=False,
                 baseline_trusted=False,
                 message=(
@@ -169,7 +227,7 @@ class BlockchainService:
                 error=f"{type(e).__name__}: {e}",
             )
             return DocumentVerificationResponse(
-                status="VERIFICATION_UNAVAILABLE",
+                status=VERIFY_UNAVAILABLE,
                 is_authentic=False,
                 baseline_trusted=baseline_trusted,
                 message=(
@@ -186,7 +244,7 @@ class BlockchainService:
         if current_hash == onchain_hash:
             log.info("blockchain.verify.authentic", document_id=str(document_id))
             return DocumentVerificationResponse(
-                status="AUTHENTIC",
+                status=VERIFY_AUTHENTIC,
                 is_authentic=True,
                 baseline_trusted=baseline_trusted,
                 current_hash=current_hash,
@@ -203,7 +261,7 @@ class BlockchainService:
                 snapshot_hash=snapshot.file_sha256,
             )
             return DocumentVerificationResponse(
-                status="SNAPSHOT_COMPROMISED",
+                status=VERIFY_SNAPSHOT_COMPROMISED,
                 is_authentic=False,
                 baseline_trusted=False,
                 current_hash=current_hash,
@@ -217,7 +275,7 @@ class BlockchainService:
 
         log.warning("blockchain.verify.tampered", document_id=str(document_id))
         return DocumentVerificationResponse(
-            status="TAMPERED",
+            status=VERIFY_TAMPERED,
             is_authentic=False,
             baseline_trusted=True,
             current_hash=current_hash,
