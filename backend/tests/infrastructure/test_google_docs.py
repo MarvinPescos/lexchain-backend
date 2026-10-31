@@ -45,6 +45,40 @@ async def test_create_posts_a_google_doc():
     }
 
 
+async def test_upload_converts_the_file_to_a_google_doc():
+    ws, seen = workspace(lambda r: httpx.Response(200, json=DOC))
+    docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ref = await ws.upload("tok", "Deed", b"PK\x03\x04 word", docx)
+
+    assert ref.file_id == "f1" and ref.url.endswith("/f1/edit")
+    request = seen[0]
+    assert request.method == "POST"
+    assert request.url.path == "/upload/drive/v3/files"
+    assert request.url.params["uploadType"] == "multipart"
+    assert request.headers["Authorization"] == "Bearer tok"
+    assert request.headers["Content-Type"].startswith("multipart/related; boundary=")
+
+    metadata, media = parts(request)
+    assert json.loads(metadata[1]) == {
+        "name": "Deed",
+        "mimeType": "application/vnd.google-apps.document",
+    }
+    assert media == (f"Content-Type: {docx}".encode(), b"PK\x03\x04 word")
+
+
+async def test_upload_failure_is_a_bad_gateway():
+    ws, _ = workspace(lambda r: httpx.Response(500))
+    with pytest.raises(BadGatewayError):
+        await ws.upload("tok", "Deed", b"PK", "application/msword")
+
+
+def parts(request: httpx.Request) -> list[tuple[bytes, bytes]]:
+    """The (headers, body) of each part of a multipart/related body."""
+    boundary = request.headers["Content-Type"].split("boundary=")[1].encode()
+    chunks = request.content.split(b"--" + boundary)[1:-1]
+    return [tuple(c.strip(b"\r\n").split(b"\r\n\r\n", 1)) for c in chunks]
+
+
 async def test_share_returns_the_permission_id():
     ws, seen = workspace(lambda r: httpx.Response(200, json={"id": "perm1"}))
     assert await ws.share("tok", "f1", "cruz@gmail.com", "commenter") == "perm1"

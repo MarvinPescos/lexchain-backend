@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
@@ -192,22 +191,6 @@ class UpdateDocumentRequest(BaseModel):
     """Rename the document."""
 
     file_name: str = Field(..., min_length=1, max_length=255)
-
-
-class CreateDraftRequest(BaseModel):
-    """Create the working draft in the lawyer's Google Drive."""
-
-    source: Literal["blank", "template", "existing"] = Field(
-        "blank",
-        description=(
-            "blank — a new empty Doc; template — a copy of `file_id`; "
-            "existing — `file_id` itself, a Doc the lawyer already started"
-        ),
-    )
-    file_id: str | None = Field(
-        None,
-        description="Drive file id from the Google Picker. Required unless source is blank",
-    )
 
 
 class CorrectEntryRequest(BaseModel):

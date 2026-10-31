@@ -71,6 +71,12 @@ class DraftWorkspace(Protocol):
 
     async def copy(self, access_token: str, source_file_id: str, name: str) -> DraftRef: ...
 
+    async def upload(
+        self, access_token: str, name: str, content: bytes, content_type: str
+    ) -> DraftRef:
+        """A file from the lawyer's computer, converted to a Google Doc."""
+        ...
+
     async def get(self, access_token: str, file_id: str) -> DraftRef:
         """An existing Doc the lawyer picked. Refuses anything not a Google Doc."""
         ...

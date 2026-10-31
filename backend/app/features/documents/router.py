@@ -1,5 +1,5 @@
 import uuid
-from typing import List
+from typing import List, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
 
@@ -31,7 +31,6 @@ from .schemas import (
     AddPartyRequest,
     CorrectEntryRequest,
     DocumentHistoryResponse,
-    CreateDraftRequest,
     OpenDocumentRequest,
     SignedCopyFileResponse,
     SignedCopyListResponse,
@@ -285,14 +284,19 @@ async def rename_document(
         "Creates the draft in the lawyer's own Google Drive and shares it with "
         "every accepted client as a commenter (another lawyer on the document "
         "as an editor). Open `draft_url` in a new tab afterwards.\n\n"
-        "`source`: `blank` (new empty Doc), `template` (copy of `file_id`) or "
-        "`existing` (use `file_id` itself). `file_id` comes from the Google "
-        "Picker — see `GET /google/picker-token`.\n\n"
+        "Form fields. `source`: `blank` (new empty Doc), `template` (copy of "
+        "`file_id`), `existing` (use `file_id` itself) or `upload` (`file` — "
+        "say a Word file from the client — converted to a Doc). `file_id` comes "
+        "from the Google Picker — see `GET /google/picker-token`. `file`: "
+        "docx, doc, odt or rtf, at most 10 MB.\n\n"
         "Only while PREPARING, and only once per document."
     ),
     responses={
         201: {"description": "Draft created and shared"},
-        400: {"description": "No file picked, or the picked file is not a Google Doc"},
+        400: {
+            "description": "No file picked or chosen, the picked file is not a Google Doc, "
+            "or the uploaded file is the wrong type, empty or too large"
+        },
         403: {"description": "Forbidden — only the document owner may create the draft"},
         404: {"description": "Document not found"},
         409: {
@@ -303,13 +307,15 @@ async def rename_document(
 )
 async def create_draft(
     document_id: uuid.UUID,
-    body: CreateDraftRequest,
+    source: Literal["blank", "template", "existing", "upload"] = Form("blank"),
+    file_id: str | None = Form(
+        None, description="Drive file id from the Google Picker, for template / existing"
+    ),
+    file: UploadFile | None = File(None, description="The file to convert, for upload"),
     current_user: AuthenticatedUser = Depends(require_lawyer),
     drafting: DocumentDrafting = Depends(get_drafting),
 ) -> DocumentResponse:
-    return await drafting.create_draft(
-        current_user, document_id, body.source, body.file_id
-    )
+    return await drafting.create_draft(current_user, document_id, source, file_id, file)
 
 
 # ── Draft comments ──────────────────────────────────────────────────
