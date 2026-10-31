@@ -23,6 +23,11 @@ class NotificationType(str, enum.Enum):
     DRAFT_REPLY = "draft_reply"
     DRAFT_RESOLVED = "draft_resolved"
     DRAFT_REOPENED = "draft_reopened"
+    # Requests for the unwatermarked signed copy.
+    ECOPY_REQUESTED = "ecopy_requested"
+    ECOPY_APPROVED = "ecopy_approved"
+    ECOPY_DECLINED = "ecopy_declined"
+    ECOPY_DELIVERY_FAILED = "ecopy_delivery_failed"
 
 
 class Notification(Base, TimestampMixin):

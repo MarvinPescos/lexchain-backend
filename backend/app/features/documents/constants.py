@@ -82,3 +82,48 @@ ACTION_VIEW = "view"
 ACTION_SHARE = "share"
 ACTION_REVIEW = "review"
 ACTION_RETRY_PROCESSING = "retry_processing"
+ACTION_REVIEW_ECOPY = "review_ecopy"
+
+# === E-copy requests ===
+# A party asks for the unwatermarked signed PDF of a FINALIZED document; the
+# owner decides. The decision and the email are tracked apart: an approved
+# request whose email failed is still owed a delivery.
+#
+#   PENDING ──approve──> APPROVED      delivery: SENDING → SENT | FAILED
+#           └─decline──> DECLINED      (FAILED → SENDING again on retry)
+ECOPY_PENDING = "PENDING"
+ECOPY_APPROVED = "APPROVED"
+ECOPY_DECLINED = "DECLINED"
+ECOPY_STATUSES = (ECOPY_PENDING, ECOPY_APPROVED, ECOPY_DECLINED)
+
+DELIVERY_SENDING = "SENDING"
+DELIVERY_SENT = "SENT"
+DELIVERY_FAILED = "FAILED"
+
+# Why a delivery failed. Codes, never provider text: the reason is shown to
+# the lawyer and kept in the audit trail.
+DELIVERY_ERROR_PROVIDER = "provider_error"
+DELIVERY_ERROR_TOO_LARGE = "attachment_too_large"
+DELIVERY_ERROR_INTEGRITY = "integrity_mismatch"
+DELIVERY_ERROR_STORAGE = "storage_unavailable"
+DELIVERY_ERROR_ACCESS = "access_revoked"
+DELIVERY_ERROR_EMAIL_UNVERIFIED = "email_unverified"
+
+# A send that never reported back (worker died mid-send) may be retried after
+# this long, so a crash cannot leave a request stuck in SENDING forever.
+DELIVERY_STALE_AFTER_SECONDS = 10 * 60
+
+# A send still running after this is recorded as failed. Well under the stale
+# window, so a hung send is given up before anyone may claim it again.
+ECOPY_SEND_TIMEOUT_SECONDS = 60
+
+# Resend refuses more than 40 MB per email after base64 (x4/3).
+ECOPY_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+# Audit trail actions on an e-copy request.
+ECOPY_EVENT_REQUESTED = "requested"
+ECOPY_EVENT_APPROVED = "approved"
+ECOPY_EVENT_DECLINED = "declined"
+ECOPY_EVENT_DELIVERY_ATTEMPTED = "delivery_attempted"
+ECOPY_EVENT_DELIVERED = "delivered"
+ECOPY_EVENT_DELIVERY_FAILED = "delivery_failed"

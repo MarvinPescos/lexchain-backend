@@ -188,3 +188,56 @@ def build_draft_activity_email(
 </body>
 </html>"""
     return html, text
+
+
+def build_ecopy_email(document_name: str, lawyer_name: str) -> tuple[str, str]:
+    """Returns (html, text) for an approved e-copy, sent with the PDF attached.
+
+    No link to the file: the copy travels as the attachment, and the app
+    serves it again only to a signed-in client who still has access.
+    """
+    from html import escape
+
+    text = (
+        f"{lawyer_name} approved your request for an e-copy of "
+        f"'{document_name}'.\n\n"
+        "The signed copy is attached. You can also download it in LexChain "
+        "while you have access to the document.\n"
+    )
+
+    html = f"""\
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background-color:#f4f4f5;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f5;padding:40px 0;">
+  <tr>
+    <td align="center">
+      <table width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:12px;overflow:hidden;">
+
+        <tr>
+          <td style="padding:32px 40px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+            <h1 style="margin:0;font-size:24px;font-weight:700;color:#111827;">LexChain</h1>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:0 40px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:16px;line-height:1.6;color:#374151;">
+            <p style="margin:0 0 16px;"><strong>{escape(lawyer_name)}</strong> approved your request for an e-copy of <strong>{escape(document_name)}</strong>.</p>
+            <p style="margin:0;">The signed copy is attached. You can also download it in LexChain while you have access to the document.</p>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:0 40px 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;line-height:1.5;color:#9ca3af;">
+            <p style="margin:0;">You are receiving this because you requested this copy in LexChain.</p>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>"""
+    return html, text

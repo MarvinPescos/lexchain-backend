@@ -7,5 +7,6 @@ class MockEmailProvider:
             "email.sent.mock",
             to=message.to,
             subject=message.subject,
+            attachments=[a.filename for a in message.attachments],
         )
         return True

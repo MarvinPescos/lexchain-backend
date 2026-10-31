@@ -1,4 +1,5 @@
 import asyncio
+import base64
 
 import resend
 from app.core import settings
@@ -13,7 +14,7 @@ class ResendEmailProvider:
 
     async def send(self, message: EmailMessage) -> bool:
         try:
-            payload = {
+            payload: resend.Emails.SendParams = {
                 "from": f"LexChain <{settings.RESEND_FROM_EMAIL}>",
                 "to": [message.to],
                 "subject": message.subject,
@@ -21,6 +22,15 @@ class ResendEmailProvider:
             }
             if message.text:
                 payload["text"] = message.text
+            if message.attachments:
+                payload["attachments"] = [
+                    {
+                        "filename": a.filename,
+                        "content": base64.b64encode(a.content).decode(),
+                        "content_type": a.content_type,
+                    }
+                    for a in message.attachments
+                ]
 
             # The SDK takes the params as one dict, not keyword arguments.
             await asyncio.to_thread(resend.Emails.send, payload)

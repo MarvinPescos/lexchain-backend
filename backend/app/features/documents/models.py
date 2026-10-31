@@ -21,7 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.infrastructure.database import Base, TimestampMixin, UserOwned
 from app.shared.constants import PARTY_STATUS_PENDING
 
-from .constants import LIFECYCLE_CANCELLED, LIFECYCLE_PREPARING
+from .constants import ECOPY_PENDING, LIFECYCLE_CANCELLED, LIFECYCLE_PREPARING
 
 if TYPE_CHECKING:
     from app.features.blockchain.models import OnChainRecord
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
 UQ_DOCUMENT_REGISTER_ENTRY = "uq_document_register_entry"
 UQ_DOCUMENT_SIGNED_FILE = "uq_document_signed_file"
+UQ_ECOPY_PENDING = "uq_ecopy_request_pending"
 
 
 class Document(UserOwned, TimestampMixin):
@@ -452,3 +453,111 @@ class ProcessingDispatch(Base, TimestampMixin):
             postgresql_where=text("dispatched_at IS NULL"),
         ),
     )
+
+
+class EcopyRequest(Base, TimestampMixin):
+    """A party asking for the unwatermarked signed PDF of a finalized document.
+
+    The decision (`status`) and the email (`delivery_status`) are separate:
+    approval is the lawyer's say-so, delivery is whether the email actually
+    went out. An approval is bound to the bytes it was given for
+    (`approved_sha256`), not to a copy row, so a restore that brings the same
+    bytes back keeps it valid and any other file does not.
+    """
+
+    __tablename__ = "ecopy_requests"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    client_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=ECOPY_PENDING
+    )
+
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    decline_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_copy_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("signed_copies.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    approved_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Null until approved.
+    delivery_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    delivery_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    delivery_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # The verified account address the last attempt went to.
+    delivered_to: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    delivery_error: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    events: Mapped[list["EcopyEvent"]] = relationship(
+        back_populates="request",
+        cascade="all, delete-orphan",
+        order_by="EcopyEvent.created_at",
+    )
+
+    __table_args__ = (
+        # One open request per client and document; a declined client may ask
+        # again, so only PENDING rows take part.
+        Index(
+            UQ_ECOPY_PENDING,
+            "document_id",
+            "client_id",
+            unique=True,
+            postgresql_where=text(f"status = '{ECOPY_PENDING}'"),
+        ),
+    )
+
+
+class EcopyEvent(Base):
+    """Audit trail of an e-copy request: who did what, and how each send went.
+
+    Never holds file bytes, links or provider messages.
+    """
+
+    __tablename__ = "ecopy_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    request_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ecopy_requests.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    action: Mapped[str] = mapped_column(String(30), nullable=False)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    detail: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.clock_timestamp(),
+        default=func.clock_timestamp(),
+    )
+
+    request: Mapped["EcopyRequest"] = relationship(back_populates="events")

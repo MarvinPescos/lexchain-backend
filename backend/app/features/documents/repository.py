@@ -1,6 +1,9 @@
 import uuid
 
-from sqlalchemy import delete, or_, select
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import delete, or_, select, update
+from sqlalchemy.orm import selectinload
 
 from app.features.books.models import Book
 from app.infrastructure.database import UserScopeRepository
@@ -10,7 +13,15 @@ from app.shared.constants import (
     PARTY_STATUS_PENDING,
 )
 
-from .constants import LIFECYCLE_CANCELLED, LIFECYCLE_READY_FOR_SIGNATURE
+from .constants import (
+    DELIVERY_FAILED,
+    DELIVERY_SENDING,
+    DELIVERY_STALE_AFTER_SECONDS,
+    ECOPY_APPROVED,
+    ECOPY_PENDING,
+    LIFECYCLE_CANCELLED,
+    LIFECYCLE_READY_FOR_SIGNATURE,
+)
 from .schemas import RegisterReference
 from .models import (
     Document,
@@ -18,6 +29,7 @@ from .models import (
     DocumentStageChange,
     DraftComment,
     DraftRevocation,
+    EcopyRequest,
     SignedCopy,
 )
 
@@ -281,6 +293,108 @@ class DocumentRepository(UserScopeRepository[Document]):
             return True
 
         return False
+
+    # === E-copy requests ===
+
+    async def get_ecopy_request(
+        self,
+        document_id: uuid.UUID,
+        request_id: uuid.UUID,
+        *,
+        for_update: bool = False,
+    ) -> EcopyRequest | None:
+        """One request on this document. `for_update` locks the row, so two
+        decisions on the same request run one after the other."""
+        stmt = select(EcopyRequest).where(
+            EcopyRequest.id == request_id, EcopyRequest.document_id == document_id
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_pending_ecopy(
+        self, document_id: uuid.UUID, client_id: uuid.UUID
+    ) -> EcopyRequest | None:
+        result = await self.session.execute(
+            select(EcopyRequest).where(
+                EcopyRequest.document_id == document_id,
+                EcopyRequest.client_id == client_id,
+                EcopyRequest.status == ECOPY_PENDING,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def has_approved_ecopy(
+        self, document_id: uuid.UUID, client_id: uuid.UUID, sha256: str
+    ) -> bool:
+        """Whether this client was approved a copy of exactly these bytes."""
+        result = await self.session.execute(
+            select(EcopyRequest.id)
+            .where(
+                EcopyRequest.document_id == document_id,
+                EcopyRequest.client_id == client_id,
+                EcopyRequest.status == ECOPY_APPROVED,
+                EcopyRequest.approved_sha256 == sha256,
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def list_ecopy_requests(
+        self,
+        *,
+        document_id: uuid.UUID | None = None,
+        client_id: uuid.UUID | None = None,
+        owner_id: uuid.UUID | None = None,
+        status: str | None = None,
+    ) -> list[EcopyRequest]:
+        """Requests matching every filter given, newest first."""
+        stmt = select(EcopyRequest).options(selectinload(EcopyRequest.events))
+        if document_id is not None:
+            stmt = stmt.where(EcopyRequest.document_id == document_id)
+        if client_id is not None:
+            stmt = stmt.where(EcopyRequest.client_id == client_id)
+        if owner_id is not None:
+            stmt = stmt.join(Document, Document.id == EcopyRequest.document_id).where(
+                Document.user_id == owner_id
+            )
+        if status is not None:
+            stmt = stmt.where(EcopyRequest.status == status)
+        result = await self.session.execute(
+            stmt.order_by(EcopyRequest.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def claim_ecopy_delivery(self, request_id: uuid.UUID) -> bool:
+        """Mark an approved request SENDING if it is owed a send; True if this
+        caller won it.
+
+        One conditional UPDATE, so of two concurrent retries only one sends.
+        A send stuck in SENDING (its worker died) can be claimed again once stale.
+        """
+        now = datetime.now(timezone.utc)
+        stale = now - timedelta(seconds=DELIVERY_STALE_AFTER_SECONDS)
+        result = await self.session.execute(
+            update(EcopyRequest)
+            .where(
+                EcopyRequest.id == request_id,
+                EcopyRequest.status == ECOPY_APPROVED,
+                or_(
+                    EcopyRequest.delivery_status == DELIVERY_FAILED,
+                    (EcopyRequest.delivery_status == DELIVERY_SENDING)
+                    & (EcopyRequest.delivery_started_at < stale),
+                ),
+            )
+            .values(
+                delivery_status=DELIVERY_SENDING,
+                delivery_started_at=now,
+                delivery_attempts=EcopyRequest.delivery_attempts + 1,
+                delivery_error=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        return result.rowcount == 1
 
     async def count_active(self) -> int:
         """Count documents that were not cancelled."""
