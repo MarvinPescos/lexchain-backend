@@ -129,6 +129,11 @@ def _words_to_number(phrase: str) -> int | None:
             seen = True
         elif tok in ("and", "only", "pesos", "peso"):
             continue
+        else:
+            # Any other word ends the amount: only the run of number words
+            # right before the figure counts ("ONE (1) YEAR … TEN THOUSAND").
+            total = current = 0
+            seen = False
 
     if not seen:
         return None
