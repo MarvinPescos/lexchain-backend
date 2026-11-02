@@ -1,0 +1,7 @@
+environment        = "production"
+aws_profile        = "lexchain"
+backup_bucket_name = "lexchain-production-backups-CHANGE-ME"
+
+gpu            = true
+instance_type  = "g4dn.xlarge"
+root_volume_gb = 100

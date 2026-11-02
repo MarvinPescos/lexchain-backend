@@ -1,0 +1,13 @@
+environment        = "staging"
+aws_profile        = "lexchain"
+backup_bucket_name = "lexchain-staging-backups-CHANGE-ME"
+
+# Day to day: no GPU, OCR via pypdf or MinerU.
+gpu            = false
+instance_type  = "t3.large"
+root_volume_gb = 40
+
+# Before a release, or when OCR code changes, test Marker for a few hours:
+# gpu            = true
+# instance_type  = "g4dn.xlarge"
+# root_volume_gb = 100

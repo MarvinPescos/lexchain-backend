@@ -1,0 +1,14 @@
+# State can hold secrets and is per-machine; never commit it.
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Real values (emails, account ids) stay local; the .example files are committed.
+*.tfvars
+!*.tfvars.example
+
+# Saved plans embed resolved values.
+tfplan
+*.tfplan
