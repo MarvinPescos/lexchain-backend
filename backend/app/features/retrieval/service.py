@@ -11,6 +11,7 @@ from langfuse import get_client, observe, propagate_attributes
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .schemas import (
+    ChatTurn,
     GlobalSearchHit,
     GlobalSearchResponse,
     RegisterReference,
@@ -117,9 +118,16 @@ class RAGService:
         user_id: uuid.UUID,
         document_id: uuid.UUID,
         question: str,
+        history: list[ChatTurn] | None = None,
         top_k: int = 2,
     ):
         langfuse = get_client()
+        history = history or []
+        log.info(
+            "rag.ask",
+            document_id=str(document_id),
+            history_turns=len(history),
+        )
 
         with propagate_attributes(
             user_id=str(user_id),
@@ -129,14 +137,15 @@ class RAGService:
             langfuse.update_current_span(input=question)
 
             hits = await self.retrieval.search_document(
-                user_id, document_id, question, top_k
+                user_id, document_id, self._search_query(question, history), top_k
             )
             context = "\n\n".join(
                 f"[chunk {h.chunk_index}]\n{h.text}" for h in hits.results
             )
 
             result = await self._answer(
-                question, context, hits.results, scoped_to_document=True
+                question, context, hits.results, scoped_to_document=True,
+                history=history,
             )
 
         await asyncio.to_thread(langfuse.flush)
@@ -155,7 +164,21 @@ class RAGService:
     #     )
     #     return await self._answer(question, context, hits.results, scoped_to_document=False)
 
-    async def _answer(self, question, context, hits, scoped_to_document: bool):
+    @staticmethod
+    def _search_query(question: str, history: list[ChatTurn]) -> str:
+        """Follow-ups like "state it again" embed to nothing useful on their own,
+        so the previous question rides along to keep retrieval on topic."""
+        previous = next((t.content for t in reversed(history) if t.role == "user"), None)
+        return f"{previous}\n{question}" if previous else question
+
+    async def _answer(
+        self,
+        question,
+        context,
+        hits,
+        scoped_to_document: bool,
+        history: list[ChatTurn] | None = None,
+    ):
         scope_note = (
             "You are a legal document assistant. Answer ONLY using the provided context."
             if scoped_to_document
@@ -165,10 +188,19 @@ class RAGService:
             f"{scope_note}\n\n"
             "Be a helpful, intelligent conversational assistant. "
             "If the user asks a factual question, rely strictly on the Context. If the answer is completely missing, say 'I cannot find this in your documents.' "
-            "If the user is just chatting, asking for overviews, or making general requests, engage politely and use the Context to help them."
+            "If the user is just chatting, asking for overviews, or making general requests, engage politely and use the Context to help them. "
+            "Earlier messages in this conversation are yours and the user's: use them to resolve follow-ups like 'state it again' or 'which of those', "
+            "and repeat or build on your earlier answers directly without saying you cannot find them. "
+            "A short or unclear reply such as 'what?', 'huh?' or 'I don't get it' means the user did not understand your last answer: "
+            "explain it again more simply. Only say 'I cannot find this in your documents.' for a real question the Context does not answer."
         )
 
         messages = [LLMMessage(role="system", content=system_prompt)]
+        # Earlier turns carry no context block: only the current question gets
+        # fresh chunks, and the model reads the history for what "it" refers to.
+        messages.extend(
+            LLMMessage(role=t.role, content=t.content) for t in history or []
+        )
 
         user_prompt = f"Context:\n{context}\n\nQuestion: {question}"
         messages.append(LLMMessage(role="user", content=user_prompt))

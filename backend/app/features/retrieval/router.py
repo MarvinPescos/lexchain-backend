@@ -45,6 +45,7 @@ async def ask_document(
         user_id=current_user.user_id,
         document_id=document_id,
         question=body.question,
+        history=body.history,
     )
 
 

@@ -27,7 +27,10 @@ class E5Embedder:
         self.model_name = model_name
         self._load_model()
         assert E5Embedder._model is not None
-        self.dim = E5Embedder._model.get_embedding_dimension()
+        dim = E5Embedder._model.get_embedding_dimension()
+        if dim is None:
+            raise ValueError(f"Model {model_name!r} has no embedding dimension")
+        self.dim = dim
 
     def _load_model(self) -> None:
         if E5Embedder._model is None or E5Embedder._model_name != self.model_name:

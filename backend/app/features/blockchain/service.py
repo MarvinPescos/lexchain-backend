@@ -208,10 +208,13 @@ class BlockchainService:
             raise NotFoundError("No stored original found for this document")
         baseline_trusted = snapshot.file_sha256 == onchain_hash
 
+        # The contract read carries no tx hash; it was stored when anchoring.
+        anchored = await self.onchain_repo.get_by_document_id(document_id)
+
         chain = dict(
             onchain_hash=onchain_hash,
             snapshot_hash=snapshot.file_sha256,
-            tx_hash=record.tx_hash,
+            tx_hash=record.tx_hash or (anchored.tx_hash if anchored else None),
             onchain_timestamp=record.timestamp,
             issued_by=record.issued_by,
         )

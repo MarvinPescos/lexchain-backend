@@ -6,10 +6,12 @@ from app.infrastructure.security.dependencies import (
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 
-# from app.infrastructure.cache import limiter, RateLimits
+from app.infrastructure.cache import RateLimits, limiter
 from .dependencies import get_auth_service
 from .schemas import (
     MessageResponse,
+    PasswordRecoveryRequest,
+    PasswordResetRequest,
     ResendVerificationRequest,
     SignInRequest,
     SignInResponse,
@@ -46,7 +48,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
         502: {"description": "Failed to connect to Supabase"},
     },
 )
-# @limiter.limit(RateLimits.AUTH_STRICT)
+@limiter.limit(RateLimits.AUTH_STRICT)
 async def sign_up(
     request: Request,
     data: SignUpRequest,
@@ -96,7 +98,7 @@ async def sign_up(
         502: {"description": "Failed to connect to Supabase"},
     },
 )
-# @limiter.limit(RateLimits.AUTH_STRICT)
+@limiter.limit(RateLimits.AUTH_STRICT)
 async def sign_in(
     request: Request,
     data: SignInRequest,
@@ -193,7 +195,7 @@ async def sign_out(
         },
     },
 )
-# @limiter.limit(RateLimits.PASSWORD)
+@limiter.limit(RateLimits.PASSWORD)
 async def resend_verification(
     request: Request,
     data: ResendVerificationRequest,
@@ -212,3 +214,102 @@ async def resend_verification(
         account.
     """
     return await service.resend_verification_email(data.email)
+
+
+@router.post(
+    "/password-recovery",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Request a password reset email",
+    description="""
+    Email a password-reset link to the address, if it has an account.
+
+    - **Response**: Always the same message, whether or not the address has an account.
+    - **Link**: Opens the frontend reset page with `?token_hash=...&type=recovery`.
+      Pass `token_hash` to `POST /auth/password-reset`.
+    - **Rate Limit**: 3 requests per minute.
+    """,
+    responses={
+        200: {"description": "Request accepted"},
+        429: {
+            "description": "Too Many Requests - Rate limit exceeded",
+            "content": {
+                "application/json": {"example": {"error": "Rate limit exceeded"}}
+            },
+        },
+    },
+)
+@limiter.limit(RateLimits.PASSWORD)
+async def request_password_recovery(
+    request: Request,
+    data: PasswordRecoveryRequest,
+    service: AuthService = Depends(get_auth_service),
+) -> MessageResponse:
+    """
+    Send a password-reset email.
+
+    Args:
+        request: The fastAPI request object.
+        data: Payload containing the target email.
+        service: The authentication service.
+
+    Returns:
+        A neutral message that does not reveal whether the address has an
+        account.
+    """
+    return await service.request_password_recovery(data.email)
+
+
+@router.post(
+    "/password-reset",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Set a new password from a reset link",
+    description="""
+    Set a new password using the `token_hash` from a password-reset link.
+
+    - **Single use**: A link works once and expires per the Supabase email OTP
+      expiry (default 1 hour). A 400 or 502 spends the link — request a new one.
+      A 422 (password policy) is rejected before the link is checked.
+    - **Sessions**: Every refresh token for the account is revoked; the user signs
+      in again. Access tokens already issued stay valid until they expire.
+    - **Password**: Same policy as sign-up (8+ characters, upper, lower, digit).
+    - **Rate Limit**: 5 requests per minute.
+    """,
+    responses={
+        200: {"description": "Password updated; all sessions revoked"},
+        400: {
+            "description": "Link invalid, expired or already used, or Supabase rejected the password"
+        },
+        422: {"description": "New password does not meet the policy"},
+        429: {
+            "description": "Too Many Requests - Rate limit exceeded",
+            "content": {
+                "application/json": {"example": {"error": "Rate limit exceeded"}}
+            },
+        },
+        502: {"description": "Failed to connect to Supabase"},
+    },
+)
+@limiter.limit(RateLimits.AUTH_STRICT)
+async def reset_password(
+    request: Request,
+    data: PasswordResetRequest,
+    service: AuthService = Depends(get_auth_service),
+) -> MessageResponse:
+    """
+    Set a new password from a recovery link.
+
+    Args:
+        request: The fastAPI request object.
+        data: Payload containing the link's token hash and the new password.
+        service: The authentication service.
+
+    Returns:
+        A message telling the user to sign in with the new password.
+
+    Raises:
+        BadRequestError: If the link is invalid, expired or already used.
+        BadGatewayError: If Supabase is unreachable.
+    """
+    return await service.reset_password(data.token_hash, data.new_password)

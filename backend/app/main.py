@@ -7,6 +7,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from langfuse import get_client
+from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import app.all_models  # Ensure all SQLAlchemy models are registered at startup
@@ -17,10 +18,12 @@ from app.features.auth import router as auth_router
 from app.features.books import router as book_router
 from app.features.documents import router as document_router
 from app.features.google import router as google_router
+from app.features.health import router as health_router
 from app.features.notifications import router as notification_router
 from app.features.retrieval import router as retrieval_router
 from app.features.users import router as user_router
 from app.core import settings
+from app.infrastructure.cache import limiter
 from app.infrastructure.database import async_engine, check_schema_revision, close_db
 from app.infrastructure.observability.logging_setup import log
 from app.shared.errors.exceptions import HTTP_ERROR_TYPES, BaseAppException
@@ -75,9 +78,11 @@ OPENAPI_TAGS = [
     {"name": "Retrieval"},
     {"name": "Notifications"},
     {"name": "Admin"},
+    {"name": "Health"},
 ]
 
 app = FastAPI(lifespan=lifespan, openapi_tags=OPENAPI_TAGS)
+app.state.limiter = limiter
 
 # The front-end runs on its own origin, so without this every browser call is
 # blocked. Bearer tokens travel in the Authorization header, not cookies.
@@ -94,6 +99,20 @@ async def langfuse_flush_middleware(request: Request, call_next):
     response = await call_next(request)  # full request runs, @observe closes span
     await asyncio.to_thread(get_client().flush)  # flush AFTER span is fully closed
     return response
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exception_handler(request: Request, exc: RateLimitExceeded):
+    log.warning("request.rate_limited", path=request.url.path, limit=str(exc.detail))
+    return JSONResponse(
+        status_code=429,
+        content=build_error_response(
+            error_type="TooManyRequests",
+            message="Too many requests. Try again in a minute.",
+            status_code=429,
+        ),
+        headers={"Retry-After": "60"},
+    )
 
 
 @app.exception_handler(BaseAppException)
@@ -183,3 +202,4 @@ app.include_router(admin_router)
 app.include_router(notification_router)
 app.include_router(book_router)
 app.include_router(google_router)
+app.include_router(health_router)

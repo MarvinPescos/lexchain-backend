@@ -70,6 +70,21 @@ class ResendVerificationRequest(BaseModel):
     email: EmailStr = Field(..., description="Email address to resend verification to")
 
 
+class PasswordRecoveryRequest(BaseModel):
+    email: EmailStr = Field(..., description="Address to send the reset link to")
+
+
+class PasswordResetRequest(BaseModel):
+    token_hash: str = Field(
+        ...,
+        min_length=1,
+        description="The `token_hash` query parameter from the reset link",
+    )
+    new_password: ValidatedPassword = Field(
+        ..., description="New password; same policy as sign-up"
+    )
+
+
 class MessageResponse(BaseModel):
     message: str = Field(..., description="Response message")
 
