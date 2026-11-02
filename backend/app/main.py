@@ -15,6 +15,7 @@ from app.features.auth import router as auth_router
 
 # from app.features.blockchain import router as blockchain_router
 from app.features.books import router as book_router
+from app.features.categories import router as category_router
 from app.features.documents import router as document_router
 from app.features.google import router as google_router
 from app.features.notifications import router as notification_router
@@ -47,6 +48,7 @@ OPENAPI_TAGS = [
     {"name": "Authentication"},
     {"name": "Users"},
     {"name": "Books", "description": "Notarial register books."},
+    {"name": "Categories", "description": "Lawyer-owned document categories."},
     {"name": "Documents", "description": "List, read, rename, history."},
     {
         "name": "Documents · Preparation (Path 1)",
@@ -182,4 +184,5 @@ app.include_router(retrieval_router)
 app.include_router(admin_router)
 app.include_router(notification_router)
 app.include_router(book_router)
+app.include_router(category_router)
 app.include_router(google_router)
