@@ -20,7 +20,10 @@ class SBERTEmbedder:
         self.model_name = model_name
         self._load_model()
         assert SBERTEmbedder._model is not None
-        self.dim = SBERTEmbedder._model.get_embedding_dimension()
+        dim = SBERTEmbedder._model.get_embedding_dimension()
+        if dim is None:
+            raise ValueError(f"Model {model_name!r} has no embedding dimension")
+        self.dim = dim
 
     # run only once.
     def _load_model(self) -> None:
