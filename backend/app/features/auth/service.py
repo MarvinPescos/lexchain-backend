@@ -1,5 +1,7 @@
 import asyncio
+from typing import Literal
 
+from app.core import settings
 from app.features.users.repository import UserRepository
 from app.infrastructure.clients import build_supabase_auth_client, get_supabase_admin
 from app.infrastructure.observability.logging_setup import log
@@ -29,6 +31,24 @@ _RESEND_MESSAGE = (
     "If that address has an unverified account, "
     "a verification email has been sent. Please check your inbox."
 )
+
+# Same rule as _RESEND_MESSAGE: one string for every outcome.
+_RECOVERY_MESSAGE = (
+    "If that address has an account, a password reset link has been sent. "
+    "Please check your inbox."
+)
+
+# Expired, already used and never-issued links are not told apart.
+_RESET_LINK_INVALID = (
+    "This reset link is invalid or has expired. Please request a new one."
+)
+# The link was good but GoTrue refused the password (e.g. its own strength or
+# leaked-password check). verify_otp has already spent the link by then.
+_RESET_PASSWORD_REJECTED = (
+    "That password could not be set. Please request a new link "
+    "and choose a different password."
+)
+_RESET_UNAVAILABLE = "Password reset is unavailable right now. Please try again later."
 
 
 # Added 2026-09-07 00:01 PST — keep plaintext addresses out of the log stream.
@@ -426,6 +446,141 @@ class AuthService:
             )
 
         return MessageResponse(message=_RESEND_MESSAGE)
+
+    async def request_password_recovery(self, email: str) -> MessageResponse:
+        """
+        Email a password-reset link to the address, if it has an account.
+
+        Args:
+            email: The address to send the link to.
+
+        Returns:
+            A `MessageResponse` carrying a neutral message. The same message is
+            returned whether or not the address has an account, and whether or
+            not GoTrue was reachable — same reasoning as
+            `resend_verification_email`.
+        """
+        try:
+            # Blocking call — see the note in sign_up.
+            await asyncio.to_thread(
+                build_supabase_auth_client().auth.reset_password_for_email,
+                email,
+                {"redirect_to": settings.PASSWORD_RESET_REDIRECT},
+            )
+            log.info("auth.recovery.sent", email=_mask_email(email))
+        except AuthApiError as e:
+            log.warning("auth.recovery.failed", email=_mask_email(email), error=str(e))
+        except Exception as e:
+            log.error(
+                "auth.supabase.recovery.error", email=_mask_email(email), error=str(e)
+            )
+
+        return MessageResponse(message=_RECOVERY_MESSAGE)
+
+    async def reset_password(
+        self, token_hash: str, new_password: str
+    ) -> MessageResponse:
+        """
+        Set a new password from a recovery link, then end every session.
+
+        GoTrue owns the link: it is single-use and expires per the project's
+        email OTP expiry, so a replayed or stale link fails verification here.
+
+        Args:
+            token_hash: The `token_hash` carried by the reset link.
+            new_password: The new password, already policy-validated.
+
+        Returns:
+            A `MessageResponse` telling the user to sign in again.
+
+        Raises:
+            BadRequestError: If the link is invalid, expired or already used,
+                or GoTrue rejected the new password. Either way the link is
+                spent and the user must request a new one.
+            BadGatewayError: If Supabase is unreachable.
+        """
+        try:
+            # Blocking call — see the note in sign_up.
+            verified = await asyncio.to_thread(
+                build_supabase_auth_client().auth.verify_otp,
+                {"type": "recovery", "token_hash": token_hash},
+            )
+        except AuthApiError as e:
+            log.info("auth.reset.link_rejected", error=str(e))
+            raise BadRequestError(_RESET_LINK_INVALID)
+        except Exception as e:
+            log.error("auth.supabase.reset.error", step="verify", error=str(e))
+            raise BadGatewayError(_RESET_UNAVAILABLE)
+
+        if not verified.user or not verified.session:
+            raise BadRequestError(_RESET_LINK_INVALID)
+
+        # verify_otp opened a real session. On success every session goes
+        # (scope="global"): whoever triggered a reset may be locking someone
+        # out of a stolen session. On failure only the recovery session goes —
+        # the password did not change, so the user's other devices stay.
+        # Access tokens are verified locally and live until their `exp`; this
+        # revokes refresh tokens, so a stolen session dies within the hour.
+        revoke_scope: Literal["global", "local"] = "local"
+        # The admin API rather than update_user on a client: it takes the user
+        # id explicitly and does not need the recovery session loaded anywhere.
+        try:
+            await asyncio.to_thread(
+                self.supabase_admin.auth.admin.update_user_by_id,
+                verified.user.id,
+                {"password": new_password},
+            )
+            revoke_scope = "global"
+        except AuthApiError as e:
+            log.warning(
+                "auth.reset.password_rejected",
+                supabase_user_id=verified.user.id,
+                error=str(e),
+            )
+            raise BadRequestError(_RESET_PASSWORD_REJECTED)
+        except Exception as e:
+            log.error(
+                "auth.supabase.reset.error",
+                step="update",
+                supabase_user_id=verified.user.id,
+                error=str(e),
+            )
+            raise BadGatewayError(_RESET_UNAVAILABLE)
+        finally:
+            await self._revoke_recovery_sessions(
+                verified.session.access_token, verified.user.id, revoke_scope
+            )
+
+        log.info("auth.reset.succeeded", supabase_user_id=verified.user.id)
+        return MessageResponse(
+            message="Password updated. Please sign in with your new password."
+        )
+
+    async def _revoke_recovery_sessions(
+        self,
+        access_token: str,
+        supabase_user_id: str,
+        scope: Literal["global", "local"],
+    ) -> None:
+        """
+        Sign out after a reset attempt; logged, never raised.
+
+        If the password has changed the link is spent either way, so a 502
+        here would only send the user round a loop.
+        """
+        try:
+            # Blocking call — see the note in sign_up.
+            await asyncio.to_thread(
+                self.supabase_admin.auth.admin.sign_out, access_token, scope
+            )
+        except Exception as e:
+            log.error(
+                "auth.supabase.reset.error",
+                step="revoke_sessions",
+                scope=scope,
+                supabase_user_id=supabase_user_id,
+                error=str(e),
+            )
 
     async def _compensate_delete_supabase_user(self, supabase_user_id: str) -> None:
         """

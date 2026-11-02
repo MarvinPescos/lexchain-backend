@@ -185,6 +185,13 @@ class Settings(BaseSettings):
         default="http://localhost:3000/settings",
         description="Frontend page the lawyer lands on after connecting Google",
     )
+    # Must also be on Supabase's Redirect URLs allow-list, and the Reset
+    # Password email template must link to
+    # {{ .RedirectTo }}?token_hash={{ .TokenHash }}&type=recovery.
+    PASSWORD_RESET_REDIRECT: str = Field(
+        default="http://localhost:3000/reset-password",
+        description="Frontend page a password-recovery email links to",
+    )
 
     class Config:
         env_file = ".env"
