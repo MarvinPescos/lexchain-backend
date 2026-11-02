@@ -18,6 +18,7 @@ from app.features.auth import router as auth_router
 from app.features.books import router as book_router
 from app.features.documents import router as document_router
 from app.features.google import router as google_router
+from app.features.health import router as health_router
 from app.features.notifications import router as notification_router
 from app.features.retrieval import router as retrieval_router
 from app.features.users import router as user_router
@@ -77,6 +78,7 @@ OPENAPI_TAGS = [
     {"name": "Retrieval"},
     {"name": "Notifications"},
     {"name": "Admin"},
+    {"name": "Health"},
 ]
 
 app = FastAPI(lifespan=lifespan, openapi_tags=OPENAPI_TAGS)
@@ -200,3 +202,4 @@ app.include_router(admin_router)
 app.include_router(notification_router)
 app.include_router(book_router)
 app.include_router(google_router)
+app.include_router(health_router)
