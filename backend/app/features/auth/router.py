@@ -6,7 +6,7 @@ from app.infrastructure.security.dependencies import (
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 
-# from app.infrastructure.cache import limiter, RateLimits
+from app.infrastructure.cache import RateLimits, limiter
 from .dependencies import get_auth_service
 from .schemas import (
     MessageResponse,
@@ -46,7 +46,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
         502: {"description": "Failed to connect to Supabase"},
     },
 )
-# @limiter.limit(RateLimits.AUTH_STRICT)
+@limiter.limit(RateLimits.AUTH_STRICT)
 async def sign_up(
     request: Request,
     data: SignUpRequest,
@@ -96,7 +96,7 @@ async def sign_up(
         502: {"description": "Failed to connect to Supabase"},
     },
 )
-# @limiter.limit(RateLimits.AUTH_STRICT)
+@limiter.limit(RateLimits.AUTH_STRICT)
 async def sign_in(
     request: Request,
     data: SignInRequest,
@@ -193,7 +193,7 @@ async def sign_out(
         },
     },
 )
-# @limiter.limit(RateLimits.PASSWORD)
+@limiter.limit(RateLimits.PASSWORD)
 async def resend_verification(
     request: Request,
     data: ResendVerificationRequest,

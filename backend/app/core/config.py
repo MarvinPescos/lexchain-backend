@@ -168,6 +168,13 @@ class Settings(BaseSettings):
         ge=30,
         description="How often failed Google Docs permission revocations are retried",
     )
+    RATE_LIMIT_ENABLED: bool = Field(
+        default=True, description="Throttle sign-up, sign-in and verification resends"
+    )
+    RATE_LIMIT_STORAGE_URL: str = Field(
+        default="memory://",
+        description="Where rate-limit counters live, e.g. redis://redis:6379/1",
+    )
     # Browser origins allowed to call the API (the front-end). Comma-separated
     # in .env, e.g. CORS_ORIGINS=http://localhost:3000,https://app.example.com
     CORS_ORIGINS: str = Field(
