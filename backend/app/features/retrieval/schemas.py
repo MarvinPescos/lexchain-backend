@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from app.features.documents.schemas import RegisterReference
 
@@ -21,8 +22,22 @@ class SearchResponse(BaseModel):
     document_id: uuid.UUID
     results: list[SearchHit]
 
+# Bounds on what the client may send back, so one request cannot blow the
+# model's context window.
+MAX_HISTORY_TURNS = 10
+MAX_TURN_CHARS = 4_000
+
+
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=MAX_TURN_CHARS)
+
+
 class AskRequest(BaseModel):
     question: str
+    # The conversation so far, oldest first. The server keeps none of it: the
+    # client holds the chat in memory, so it is gone on reload or logout.
+    history: list[ChatTurn] = Field(default_factory=list, max_length=MAX_HISTORY_TURNS)
 
 
 class GlobalSearchHit(BaseModel):
