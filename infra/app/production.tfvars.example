@@ -2,6 +2,11 @@ environment        = "production"
 aws_profile        = "lexchain"
 backup_bucket_name = "lexchain-production-backups-CHANGE-ME"
 
-gpu            = true
-instance_type  = "g4dn.xlarge"
-root_volume_gb = 100
+# App box: everything except Marker.
+instance_type  = "m7i-flex.large"
+root_volume_gb = 40
+
+# Marker on its own GPU box.
+marker                = true
+marker_instance_type  = "g4dn.xlarge"
+marker_root_volume_gb = 100

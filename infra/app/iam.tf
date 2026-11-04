@@ -1,5 +1,6 @@
-# Two identities per environment, no long-lived keys anywhere:
-#   - the instance role, which the app's containers use (SSM shell + backups)
+# Three identities per environment, no long-lived keys anywhere:
+#   - the app instance role, which the app's containers use (SSM shell + backups)
+#   - the Marker instance role (SSM shell only)
 #   - the GitHub deploy role, which Actions assumes over OIDC to run a deploy
 
 data "aws_iam_policy_document" "ec2_assume" {
@@ -53,6 +54,23 @@ resource "aws_iam_instance_profile" "app" {
   role = aws_iam_role.app.name
 }
 
+# SSM only. Marker never touches backups. Created even when `marker` is off:
+# it's free, and keeps toggling the box from churning IAM.
+resource "aws_iam_role" "marker" {
+  name               = "${local.name}-marker"
+  assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "marker_ssm" {
+  role       = aws_iam_role.marker.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "marker" {
+  name = "${local.name}-marker"
+  role = aws_iam_role.marker.name
+}
+
 # Created once per account by infra/shared.
 data "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
@@ -92,10 +110,11 @@ resource "aws_iam_role" "github_deploy" {
 data "aws_iam_policy_document" "github_deploy" {
   statement {
     actions = ["ssm:SendCommand"]
-    resources = [
-      aws_instance.app.arn,
-      "arn:aws:ssm:${var.region}::document/AWS-RunShellScript",
-    ]
+    resources = concat(
+      [aws_instance.app.arn],
+      aws_instance.marker[*].arn,
+      ["arn:aws:ssm:${var.region}::document/AWS-RunShellScript"],
+    )
   }
 
   statement {
