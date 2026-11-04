@@ -13,7 +13,7 @@ Checked against the backend on branch `feat/document-lifecycle`, 2026-10-16.
   person. LexChain prepares the text (Path 1), files the signed PDF, and on
   *Finalize* records the PDF's sha256 on the blockchain (Base Sepolia).
 - **One document, two ways in.** Both paths end in the same record and the same
-  finalize → verify → OCR steps. Only the start differs.
+  OCR → risk check → finalize → verify steps. Only the start differs.
 - **Never compute permissions in the UI.** Every document response carries
   `permissions` (`can_mark_ready`, `can_finalize`, …). Show a button only when
   its flag is `true`. The stage rules below explain *why* a flag is on or off;
@@ -40,13 +40,15 @@ CANCELLED: only from PREPARING or READY_FOR_SIGNATURE (never after signing)
 |---|---|---|
 | `PREPARING` | Text being drafted in Google Docs with the client | create draft (once), invite clients, mark ready, rename, cancel |
 | `READY_FOR_SIGNATURE` | Text agreed and frozen; Doc is read-only; goes to print | attach signed copy, back to preparing, rename, cancel |
-| `SIGNED` | Signed PDF is filed with a register entry; not yet confirmed | replace signed copy (with reason), correct Doc./Page No., rename, finalize |
-| `FINALIZED` | PDF hash anchored on chain; frozen forever | verify, OCR review, search, ask |
+| `SIGNED` | Signed PDF is filed with a register entry and processed: OCR review, risk clauses | OCR review, replace signed copy (with reason), correct Doc./Page No., rename, search, ask, finalize (once `COMPLETED`) |
+| `FINALIZED` | PDF hash anchored on chain; frozen forever | verify, search, ask |
 | `CANCELLED` | Abandoned before signing; kept for the record | nothing |
 
-`status` is a separate field — the OCR/NLP pipeline. It is `null` until
-`FINALIZED`, then `QUEUED → PROCESSING → AWAITING_REVIEW → ENRICHING →
-COMPLETED` (or `FAILED`). Show it only on finalized documents.
+`status` is a separate field — the OCR/NLP pipeline for the current signed
+copy. It is `null` until a signed copy is attached or uploaded, then `QUEUED →
+PROCESSING → AWAITING_REVIEW → ENRICHING → COMPLETED` (or `FAILED`), all while
+`SIGNED`. Replacing the signed copy sets it back to `QUEUED`. Show it on
+`SIGNED` and `FINALIZED` documents.
 
 ---
 
@@ -159,7 +161,7 @@ signed, notarized paper and uploads the PDF.
 - `doc_no` / `page_no` = the Doc. No. / Page No. written in the notarial
   block. Optional for an `OPEN` book (next free entry is used), required for a
   `CLOSED` book.
-- Success → `SIGNED`, `signed_copy` set.
+- Success → `SIGNED`, `signed_copy` set, `status: QUEUED`.
 - 409 `DUPLICATE_FILE` → this PDF is already filed (`details.document_id` may
   link to it). Other 409s: Doc. No. taken, page full — show `message`.
 
@@ -184,7 +186,7 @@ Lawyer clicks **Upload signed document**. Form: name, book (from
 CLOSED one), PDF file.
 
 `POST /documents/upload?file_name=&book_id=&doc_no=&page_no=` multipart
-`file` → 201, `lifecycle: SIGNED`.
+`file` → 201, `lifecycle: SIGNED`, `status: QUEUED`.
 
 ### Step 1a — the wrong-path guard (409 `READY_FOR_SIGNATURE_EXISTS`)
 
@@ -212,14 +214,35 @@ Then → **Confirm and finalize**.
 
 ## Both paths — confirm and finalize
 
-### Review the signed copy (`SIGNED`)
+### Review the signed copy and its risks (`SIGNED`)
 
-Upload is not finalize: the lawyer confirms the right copy is in. Until
-finalize:
+Upload is not finalize. The signed copy is processed right away so the lawyer
+sees its risk clauses while it can still be replaced.
+
+Poll `GET /documents/{id}` while `status` is `QUEUED`/`PROCESSING`/`ENRICHING`.
+
+1. `AWAITING_REVIEW` → `GET /documents/{id}/extraction` (blocks + flags);
+   edits via `PATCH /documents/{id}/extraction` `{edits: [{index, text}]}`;
+   optional `POST …/extraction/analyze`; then `POST …/extraction/approve`.
+2. `ENRICHING → COMPLETED` → summary, labels, entities, `risk_flags` appear on
+   the detail; `POST /documents/{id}/search` `{query}` and
+   `POST /documents/{id}/ask` `{question}` work.
+3. `analysis_status: "partial"` → some sections could not be analyzed; warn
+   that `risk_flags` may be missing clauses. (A fully failed analysis shows as
+   `status: FAILED`, never as an empty risk list.)
+4. `FAILED` → `can_retry_processing` → `POST /documents/{id}/retry-processing`.
+
+If a risk clause needs action, replace the signed copy (re-signed). If it is a
+false positive or only needs awareness, finalize.
+
+Review edits only the searchable text — never the signed PDF or its on-chain
+hash.
+
+Until finalize:
 
 | Flag | Action | Call |
 |---|---|---|
-| `can_replace_signed_copy` | Wrong file → replace | `PUT /documents/{id}/signed-copy` multipart `file` + form `reason` (required). Old copy is kept. |
+| `can_replace_signed_copy` | Wrong file, or a clause needed re-signing → replace | `PUT /documents/{id}/signed-copy` multipart `file` + form `reason` (required). Old copy is kept in history; the old extraction, summary and risk flags are cleared and the new copy is processed from the start (`status: QUEUED`). |
 | `can_correct_entry` | Wrong Doc./Page No. or book | `PATCH /documents/{id}/entry` `{doc_no, page_no, book_id?}` |
 | `can_rename` | Rename | `PATCH /documents/{id}` `{file_name}` |
 
@@ -228,6 +251,10 @@ screen so the lawyer can check them. `GET /documents/{id}/signed-copies`
 lists every copy, newest first, with `replaced_reason`.
 
 ### Finalize
+
+`can_finalize` is `false` until `status` is `COMPLETED` — keep the button
+visible but disabled with *"Available once the risk check is complete"*. A
+finalize sent too early gets 409 `PROCESSING_NOT_COMPLETE` (`details.status`).
 
 `can_finalize` → confirm: *"This freezes the signed copy and records its
 fingerprint on the blockchain. It cannot be undone."* →
@@ -239,7 +266,7 @@ double-submit. A 503 means the chain was unreachable — the document stays
 `SIGNED`; let the lawyer retry.
 
 After success, re-fetch `GET /documents/{id}`: `lifecycle: FINALIZED`,
-`on_chain: true`, `status: QUEUED`. Link the tx:
+`on_chain: true`, `status: COMPLETED` (nothing is reprocessed). Link the tx:
 `https://sepolia.basescan.org/tx/0x{tx_hash}`.
 
 ### Verify
@@ -249,19 +276,10 @@ After success, re-fetch `GET /documents/{id}`: `lifecycle: FINALIZED`,
 tamper result — retry later). Compares the stored PDF's hash with the one on
 chain.
 
-### OCR, review, search (after finalize, lawyer)
+### Search and ask (after finalize)
 
-Poll `GET /documents/{id}` while `status` is `QUEUED`/`PROCESSING`.
-
-1. `AWAITING_REVIEW` → `GET /documents/{id}/extraction` (blocks + flags);
-   edits via `PATCH /documents/{id}/extraction` `{edits: [{index, text}]}`;
-   optional `POST …/extraction/analyze`; then `POST …/extraction/approve`.
-2. `ENRICHING → COMPLETED` → summary, labels, entities, risk flags appear on
-   the detail; `POST /documents/{id}/search` `{query}` and
-   `POST /documents/{id}/ask` `{question}` work.
-
-Review edits only the searchable text — never the signed PDF or its on-chain
-hash.
+The analysis from `SIGNED` carries over: summary, risk flags, search and ask
+work as before. OCR review is closed once finalized.
 
 ---
 
@@ -271,8 +289,8 @@ hash.
 |---|---|---|
 | PREPARING | Create draft ▾ / Open draft · Invite · Mark ready · Rename · Cancel | Parties, Comments (+ Refresh), History |
 | READY_FOR_SIGNATURE | Attach signed copy · Back to preparing · Open draft (read-only) · Rename · Cancel | "Waiting for signed copy", Comments (record), History |
-| SIGNED | Finalize · Replace signed copy · Correct entry · Rename | Signed copy preview + register entry, Signed copies, History |
-| FINALIZED | Verify · Review OCR (when `AWAITING_REVIEW`) · Search · Ask | Tx link, processing status, analysis, History |
+| SIGNED | Review OCR (when `AWAITING_REVIEW`) · Finalize (disabled until `COMPLETED`) · Replace signed copy · Correct entry · Rename · Retry (when `FAILED`) | Processing status, risk clauses + analysis, Signed copy preview + register entry, Signed copies, History |
+| FINALIZED | Verify · Search · Ask | Tx link, analysis, History |
 | CANCELLED | — | History |
 
 History panel: `GET /documents/{id}/history` → `{changes: [{from_stage,
@@ -297,6 +315,7 @@ document** (Path 1) and **Upload signed document** (Path 2).
 | `UNRESOLVED_COMMENTS` | mark ready | Show `details.unresolved`, link draft |
 | `READY_FOR_SIGNATURE_EXISTS` | Path 2 upload | "Attach instead?" dialog |
 | `DUPLICATE_FILE` | upload, attach, replace | Link to `details.document_id` if present |
+| `PROCESSING_NOT_COMPLETE` | finalize | Finalize waits for processing; show `message`, refresh the detail |
 
 Any other 409 is a stage rule or register conflict — show `message` (e.g.
 *"Mark the document Ready for signature before attaching the signed copy."*).

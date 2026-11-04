@@ -49,6 +49,7 @@ async def document_response(
         labels=(insight.labels or {}).get("items", []) if insight else [],
         entities=(insight.entities or {}).get("items", []) if insight else [],
         risk_flags=(insight.risk_flags or {}).get("items", []) if insight else [],
+        analysis_status=(insight.meta or {}).get("analysis_status") if insight else None,
         created_at=document.created_at,
         updated_at=document.updated_at,
     )

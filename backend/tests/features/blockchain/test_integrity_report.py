@@ -18,7 +18,7 @@ from app.features.snapshot.repository import DocumentSnaphotRepository
 from app.infrastructure.database import get_db
 from app.infrastructure.security.dependencies import get_current_user
 from app.main import app
-from tests.conftest import as_auth, pdf
+from tests.conftest import as_auth, pdf, mark_processed
 from tests.features.documents.test_drafting import add_party
 
 REPORT = "/documents/verifications"
@@ -51,7 +51,8 @@ async def finalized(session, intake, queue, chain, storage, lawyer, open_book):
     """A finalized deed; returns (document_id, stored url)."""
     me = as_auth(lawyer)
     doc = await intake.upload_signed(me, pdf("deed"), "Deed", open_book.id)
-    await DocumentFinalization(session, queue, chain).finalize(me, doc.document_id)
+    await mark_processed(session, doc.document_id)
+    await DocumentFinalization(session, chain).finalize(me, doc.document_id)
     [url] = storage.objects
     return doc.document_id, url
 
@@ -153,6 +154,7 @@ async def test_a_document_never_finalized_is_kept_as_not_anchored(
 ):
     me = as_auth(lawyer)
     doc = await intake.upload_signed(me, pdf("deed"), "Deed", open_book.id)
+    await mark_processed(session, doc.document_id)
 
     await verification.verify_document(me, doc.document_id, record=True)
 

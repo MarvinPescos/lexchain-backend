@@ -25,6 +25,7 @@ class LoggingDocumentQueue:
         storage_url: str,
         content_type: str,
         document_hash: str,
+        signed_copy_id: uuid.UUID,
     ) -> None:
         from app.workers.process_documents import extract_document_job
 
@@ -32,6 +33,7 @@ class LoggingDocumentQueue:
             extract_document_job(
                 document_id=document_id,
                 storage_url=storage_url,
+                signed_copy_id=signed_copy_id,
             )
         )
 
@@ -44,12 +46,15 @@ class LoggingDocumentQueue:
             document_hash=document_hash,
         )
 
-    async def enqueue_enrich_document(self, document_id: uuid.UUID) -> None:
+    async def enqueue_enrich_document(
+        self, document_id: uuid.UUID, signed_copy_id: uuid.UUID
+    ) -> None:
         from app.workers.process_documents import enrich_document_job
 
         asyncio.create_task(
             enrich_document_job(
                 document_id=document_id,
+                signed_copy_id=signed_copy_id,
                 analyzer=LLMAnalysisProvider(),
                 chunker=build_chunker(),
                 embedder=build_embedder(),

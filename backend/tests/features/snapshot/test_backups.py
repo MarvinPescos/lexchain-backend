@@ -9,7 +9,7 @@ from app.features.documents.workflow.finalization import DocumentFinalization
 from app.features.snapshot.backups import SnapshotArchive
 from app.features.snapshot.repository import DocumentSnaphotRepository
 from app.shared.errors.exceptions import ServiceUnavailableError
-from tests.conftest import as_auth, pdf
+from tests.conftest import as_auth, pdf, mark_processed
 
 
 class FakeBackup:
@@ -49,7 +49,8 @@ def live_storage(monkeypatch, storage):
 async def _finalize(session, intake, queue, chain, backup, lawyer, book, body="deed"):
     me = as_auth(lawyer)
     doc = await intake.upload_signed(me, pdf(body), "Deed", book.id)
-    await DocumentFinalization(session, queue, chain, backup).finalize(me, doc.document_id)
+    await mark_processed(session, doc.document_id)
+    await DocumentFinalization(session, chain, backup).finalize(me, doc.document_id)
     return await DocumentSnaphotRepository(session).get_by_document_id(doc.document_id)
 
 
@@ -75,11 +76,12 @@ async def test_archive_failure_blocks_finalize(
 ):
     me = as_auth(lawyer)
     doc = await intake.upload_signed(me, pdf("deed"), "Deed", open_book.id)
+    await mark_processed(session, doc.document_id)
     await session.commit()
     setattr(backup, failure, True)
 
     with pytest.raises(ServiceUnavailableError):
-        await DocumentFinalization(session, queue, chain, backup).finalize(
+        await DocumentFinalization(session, chain, backup).finalize(
             me, doc.document_id
         )
     await session.rollback()
@@ -95,16 +97,17 @@ async def test_finalize_can_be_retried_after_an_archive_outage(
 ):
     me = as_auth(lawyer)
     doc = await intake.upload_signed(me, pdf("deed"), "Deed", open_book.id)
+    await mark_processed(session, doc.document_id)
     await session.commit()
     backup.down = True
     with pytest.raises(ServiceUnavailableError):
-        await DocumentFinalization(session, queue, chain, backup).finalize(
+        await DocumentFinalization(session, chain, backup).finalize(
             me, doc.document_id
         )
     await session.rollback()
 
     backup.down = False
-    await DocumentFinalization(session, queue, chain, backup).finalize(me, doc.document_id)
+    await DocumentFinalization(session, chain, backup).finalize(me, doc.document_id)
 
     snapshot = await DocumentSnaphotRepository(session).get_by_document_id(doc.document_id)
     assert hashlib.sha256(backup.objects[snapshot.backup_key]).hexdigest() == snapshot.file_sha256
@@ -116,6 +119,7 @@ async def test_retry_after_a_failed_anchor_reuses_the_archive(
 ):
     me = as_auth(lawyer)
     doc = await intake.upload_signed(me, pdf("deed"), "Deed", open_book.id)
+    await mark_processed(session, doc.document_id)
     await session.commit()
 
     async def chain_down(*a, **k):
@@ -124,13 +128,13 @@ async def test_retry_after_a_failed_anchor_reuses_the_archive(
     with monkeypatch.context() as m:
         m.setattr(chain, "store_document_hash", chain_down)
         with pytest.raises(ConnectionError):
-            await DocumentFinalization(session, queue, chain, backup).finalize(
+            await DocumentFinalization(session, chain, backup).finalize(
                 me, doc.document_id
             )
     await session.rollback()
     archived = dict(backup.objects)
 
-    await DocumentFinalization(session, queue, chain, backup).finalize(me, doc.document_id)
+    await DocumentFinalization(session, chain, backup).finalize(me, doc.document_id)
 
     snapshot = await DocumentSnaphotRepository(session).get_by_document_id(doc.document_id)
     assert snapshot.backup_key in archived
@@ -142,10 +146,11 @@ async def test_finalize_never_overwrites_a_bad_existing_archive(
 ):
     me = as_auth(lawyer)
     doc = await intake.upload_signed(me, pdf("deed"), "Deed", open_book.id)
+    await mark_processed(session, doc.document_id)
     await session.commit()
     backup.corrupt = True
     with pytest.raises(ServiceUnavailableError):
-        await DocumentFinalization(session, queue, chain, backup).finalize(
+        await DocumentFinalization(session, chain, backup).finalize(
             me, doc.document_id
         )
     await session.rollback()
@@ -153,7 +158,7 @@ async def test_finalize_never_overwrites_a_bad_existing_archive(
 
     backup.corrupt = False
     with pytest.raises(ServiceUnavailableError):
-        await DocumentFinalization(session, queue, chain, backup).finalize(
+        await DocumentFinalization(session, chain, backup).finalize(
             me, doc.document_id
         )
     await session.rollback()

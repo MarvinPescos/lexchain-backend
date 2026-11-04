@@ -7,12 +7,12 @@ import pytest
 from app.features.documents.models import DocumentParty
 from app.shared.constants import PARTY_STATUS_ACCEPTED
 from app.shared.errors.exceptions import ConflictError, ForbiddenError, NotFoundError
-from tests.conftest import as_auth, connect_google, pdf, real_pdf
+from tests.conftest import as_auth, connect_google, mark_processed, pdf, real_pdf
 
 
 
 async def test_path1_prepare_sign_attach_finalize(
-    queries, intake, drafting, finalization, google, lawyer, open_book, storage, queue
+    session, queries, intake, drafting, finalization, google, lawyer, open_book, storage, queue
 ):
     me = as_auth(lawyer)
     await connect_google(google, lawyer)
@@ -38,15 +38,19 @@ async def test_path1_prepare_sign_attach_finalize(
     )
     assert (doc.lifecycle, doc.doc_no, doc.page_no) == ("SIGNED", 1, 1)
     assert doc.signed_copy.is_current
-    assert queue.processed == []  # nothing is processed before finalize
+    # Processed while SIGNED, so the risks are seen before finalize.
+    assert doc.status == "QUEUED"
+    assert queue.processed == [doc.document_id]
+    assert not doc.permissions.can_finalize
 
+    await mark_processed(session, doc.document_id)
     record = await finalization.finalize(me, doc.document_id)
     [stored] = storage.objects.values()
     assert record.data_hash == hashlib.sha256(stored).hexdigest()
-    assert queue.processed == [doc.document_id]
+    assert queue.processed == [doc.document_id]  # finalize queues nothing
 
     doc = await queries.get_document(me, doc.document_id)
-    assert (doc.lifecycle, doc.status, doc.on_chain) == ("FINALIZED", "QUEUED", True)
+    assert (doc.lifecycle, doc.status, doc.on_chain) == ("FINALIZED", "COMPLETED", True)
 
     history = await queries.get_history(me, doc.document_id)
     assert [c.action for c in history.changes] == [
@@ -55,16 +59,19 @@ async def test_path1_prepare_sign_attach_finalize(
 
 
 async def test_path2_upload_then_finalize(
-    queries, intake, finalization, lawyer, closed_book, queue
+    session, queries, intake, finalization, lawyer, closed_book, queue
 ):
     me = as_auth(lawyer)
 
     doc = await intake.upload_signed(
         me, pdf("old-deed"), "Old deed (2025)", closed_book.id, doc_no=45, page_no=9
     )
-    assert (doc.lifecycle, doc.doc_no, doc.page_no, doc.status) == ("SIGNED", 45, 9, None)
-    assert queue.processed == []
+    assert (doc.lifecycle, doc.doc_no, doc.page_no, doc.status) == (
+        "SIGNED", 45, 9, "QUEUED",
+    )
+    assert queue.processed == [doc.document_id]
 
+    await mark_processed(session, doc.document_id)
     await finalization.finalize(me, doc.document_id)
     doc = await queries.get_document(me, doc.document_id)
     assert doc.lifecycle == "FINALIZED"
@@ -161,10 +168,11 @@ async def test_cancel_only_before_signing(intake, drafting, lawyer, open_book):
 
 
 async def test_verify_detects_a_changed_file(
-    intake, finalization, verification, lawyer, open_book, storage
+    session, intake, finalization, verification, lawyer, open_book, storage
 ):
     me = as_auth(lawyer)
     doc = await intake.upload_signed(me, pdf("deed"), "Deed", open_book.id)
+    await mark_processed(session, doc.document_id)
     await finalization.finalize(me, doc.document_id)
     verify = verification.verify_document
 

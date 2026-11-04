@@ -122,3 +122,64 @@ def test_restore_hashes_upgrade_keeps_existing_stage_changes(scratch_db):
 
     command.downgrade(config, BEFORE_RESTORE_HASHES)
     assert {"from_hash", "to_hash"}.isdisjoint(_columns(scratch_db))
+
+
+def test_unprocessed_signed_documents_are_queued_on_upgrade(scratch_db):
+    """Issue #43: finalize now waits for processing, so documents already
+    SIGNED must be queued, or they could never be finalized."""
+    config = _alembic_config()
+    command.upgrade(config, "b3d7e9f15a26")
+
+    user_id = uuid.uuid4()
+    _sql(
+        scratch_db,
+        "INSERT INTO users (id, email, supabase_user_id, f_name, l_name, role, "
+        "is_active, is_email_verified) "
+        "VALUES (:u, 'lawyer@migrations.test', 'sb-1', 'A', 'B', 'lawyer', true, true) "
+        "RETURNING id",
+        u=user_id,
+    )
+    signed, finalized, preparing = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    for document_id, lifecycle, status in (
+        (signed, "SIGNED", None),
+        (finalized, "FINALIZED", "COMPLETED"),
+        (preparing, "PREPARING", None),
+    ):
+        _sql(
+            scratch_db,
+            "INSERT INTO documents (id, user_id, file_name, lifecycle, status, on_chain) "
+            "VALUES (:d, :u, 'Deed', :l, :s, false) RETURNING id",
+            d=document_id,
+            u=user_id,
+            l=lifecycle,
+            s=status,
+        )
+    for document_id in (signed, finalized):
+        copy_id = uuid.uuid4()
+        _sql(
+            scratch_db,
+            "INSERT INTO signed_copies (id, document_id, storage_url, sha256, "
+            "content_type, size_bytes) "
+            "VALUES (:c, :d, 'https://storage.test/x.pdf', :h, 'application/pdf', 1) "
+            "RETURNING id",
+            c=copy_id,
+            d=document_id,
+            h=copy_id.hex * 2,
+        )
+        _sql(
+            scratch_db,
+            "UPDATE documents SET signed_copy_id = :c WHERE id = :d RETURNING id",
+            c=copy_id,
+            d=document_id,
+        )
+
+    command.upgrade(config, "head")
+
+    statuses = dict(_sql(scratch_db, "SELECT id, status FROM documents"))
+    assert statuses == {signed: "QUEUED", finalized: "COMPLETED", preparing: None}
+    # Pending, and old enough for the dispatch_pending beat task to send now.
+    assert _sql(
+        scratch_db,
+        "SELECT document_id, job, dispatched_at, created_at < now() - interval '1 minute' "
+        "FROM processing_dispatches",
+    ) == [(signed, "extract", None, True)]

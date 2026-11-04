@@ -6,7 +6,12 @@ from app.infrastructure.nlp.llm import build_llm
 from app.infrastructure.nlp.llm.base import LLMMessage
 from app.infrastructure.observability.logging_setup import log
 
-from .base import AnalysisResult
+from .base import (
+    ANALYSIS_STATUS_COMPLETE,
+    ANALYSIS_STATUS_PARTIAL,
+    AnalysisFailed,
+    AnalysisResult,
+)
 
 # ── The system prompt ────────────────────────────────────────────────
 # Unstructured.
@@ -14,7 +19,7 @@ from .base import AnalysisResult
 
 SYSTEM_PROMPT = """You are a document analysis and information extraction assistant.
 
-Given the full text of a document, extract structured metadata in JSON format.
+Given the text of a document (or one section of a longer document), extract structured metadata in JSON format.
 Base your answers ONLY on the document text provided. Do NOT fabricate, infer, or add information that is not supported by the text.
 
 Return ONLY valid JSON. Do not include markdown, comments, or explanations.
@@ -82,6 +87,37 @@ If a field has no relevant data, use an empty list [] for arrays or null for sum
 """
 
 
+# Llama 3.1 8B has an 8k context window. ~4 chars ≈ 1 token, so 24,000 chars
+# ≈ 6k tokens, leaving room for the system prompt and the output.
+MAX_SECTION_CHARS = 24_000
+
+# A section whose output is not valid JSON is asked again this many times.
+PARSE_RETRIES = 1
+
+
+def split_into_sections(text: str, max_chars: int = MAX_SECTION_CHARS) -> list[str]:
+    """Cut `text` into sections of at most `max_chars`, on paragraph breaks
+    where possible, so every clause is analyzed and none is cut silently."""
+    sections: list[str] = []
+    current = ""
+    for paragraph in text.split("\n\n"):
+        while len(paragraph) > max_chars:
+            if current:
+                sections.append(current)
+                current = ""
+            sections.append(paragraph[:max_chars])
+            paragraph = paragraph[max_chars:]
+        candidate = f"{current}\n\n{paragraph}" if current else paragraph
+        if len(candidate) > max_chars:
+            sections.append(current)
+            current = paragraph
+        else:
+            current = candidate
+    if current.strip():
+        sections.append(current)
+    return sections or [text]
+
+
 class LLMAnalysisProvider:
     """
     Real analysis provider powered by the configured LLM (OpenRouter).
@@ -89,70 +125,119 @@ class LLMAnalysisProvider:
     Accepts raw document text (from the OCR step), sends it to the LLM
     with a structured extraction prompt, and returns an AnalysisResult
     that matches the existing protocol and database schema.
+
+    A document longer than one model context is analyzed section by section
+    and the results merged, so later clauses are checked too. The result's
+    meta records whether every section was analyzed ("complete") or some
+    could not be read ("partial", with their indexes). If none could be
+    read, AnalysisFailed is raised rather than returning an empty result.
     """
 
     def __init__(self, model: str | None = None) -> None:
         self._llm = build_llm(model=model)
 
     async def analyze(self, text: str) -> AnalysisResult:
-        # ── Truncate to avoid token limits ──────────────────────────
-        # Llama 3.1 8B has an 8k context window.
-        # ~4 chars ≈ 1 token → 24,000 chars ≈ 6k tokens (leaves room
-        # for the system prompt + output).
-        max_chars = 24_000
-        truncated = text[:max_chars]
-        if len(text) > max_chars:
-            log.warning(
-                "analysis.text_truncated",
-                original_len=len(text),
-                truncated_len=max_chars,
-            )
+        sections = split_into_sections(text)
+        parsed: list[dict] = []
+        failed: list[int] = []
+        model = None
+        for index, section in enumerate(sections):
+            data, model = await self._analyze_section(section)
+            if data is None:
+                failed.append(index)
+            else:
+                parsed.append(data)
 
+        if not parsed:
+            raise AnalysisFailed(
+                f"The analysis output could not be read for any of {len(sections)} "
+                "section(s)"
+            )
+        if len(sections) > 1:
+            log.info(
+                "analysis.sectioned",
+                text_len=len(text),
+                sections=len(sections),
+                failed_sections=failed,
+            )
+        return self._merge(parsed, sections, failed, model)
+
+    async def _analyze_section(self, section: str) -> tuple[dict | None, str | None]:
+        """The parsed JSON for one section, or None if the model never gave any."""
         messages = [
             LLMMessage(role="system", content=SYSTEM_PROMPT),
-            LLMMessage(role="user", content=truncated),
+            LLMMessage(role="user", content=section),
         ]
+        model = None
+        for _ in range(1 + PARSE_RETRIES):
+            result = await self._llm.generate(
+                messages=messages,
+                temperature=0.1,  # low temperature = more deterministic
+                max_tokens=1024,  # enough for the structured output
+            )
+            model = result.model
+            data = self._parse(result.answer)
+            if data is not None:
+                return data, model
+        return None, model
 
-        result = await self._llm.generate(
-            messages=messages,
-            temperature=0.1,  # low temperature = more deterministic
-            max_tokens=1024,  # enough for the structured output
-        )
-
-        return self._parse(result.answer, result.model)
-
-    def _parse(self, raw_answer: str, model: str) -> AnalysisResult:
-        """
-        Parse the LLM's JSON response into an AnalysisResult.
-        Falls back gracefully if the LLM returns malformed JSON.
-        """
+    def _parse(self, raw_answer: str) -> dict | None:
         try:
             data = json.loads(raw_answer)
-            confidence = self._compute_confidence(data, raw_answer)
         except json.JSONDecodeError:
-            log.error(
-                "analysis.json_parse_failed",
-                raw_answer=raw_answer[:500],
-            )
-            return AnalysisResult(
-                summary="Analysis failed: could not parse LLM output.",
-                labels=[],
-                entities=[],
-                risk_flags=[],
-                confidence=0.0,
-                meta={"engine": "nvidia", "model": model, "error": "json_parse_failed"},
-            )
+            data = None
+        if not isinstance(data, dict):
+            log.error("analysis.json_parse_failed", raw_answer=raw_answer[:500])
+            return None
+        return data
 
+    def _merge(
+        self,
+        parsed: list[dict],
+        sections: list[str],
+        failed: list[int],
+        model: str | None,
+    ) -> AnalysisResult:
+        labels: list[str] = []
+        entities: list[dict] = []
+        risk_flags: list[dict] = []
+        for data in parsed:
+            for label in data.get("labels") or []:
+                if label not in labels:
+                    labels.append(label)
+            for entity in data.get("entities") or []:
+                if entity not in entities:
+                    entities.append(entity)
+            for flag in data.get("risk_flags") or []:
+                if flag not in risk_flags:
+                    risk_flags.append(flag)
+
+        meta: dict = {
+            "engine": "nvidia",
+            "engine_version": model,
+            "analysis_status": ANALYSIS_STATUS_PARTIAL
+            if failed
+            else ANALYSIS_STATUS_COMPLETE,
+            "sections": len(sections),
+        }
+        if failed:
+            meta["failed_sections"] = failed
+
+        # The opening section names the document, its parties and its date.
+        summary = next((d.get("summary") for d in parsed if d.get("summary")), None)
+        confidence = min(
+            self._compute_confidence(data, section)
+            for data, section in zip(
+                parsed, [s for i, s in enumerate(sections) if i not in failed]
+            )
+        )
         return AnalysisResult(
-            summary=data.get("summary"),
-            labels=data.get("labels", []),
-            entities=data.get("entities", []),
-            risk_flags=data.get("risk_flags", []),
+            summary=summary,
+            labels=labels,
+            entities=entities,
+            risk_flags=risk_flags,
             confidence=confidence,
-            meta={
-                "engine": "nvidia",
-                "engine_version": model,
-            },
+            meta=meta,
         )
 
     # Signal-Based Heuristic
@@ -164,9 +249,6 @@ class LLMAnalysisProvider:
 
         if not data.get("entities"):
             score -= 0.2
-
-        if len(text) > 24000:
-            score -= 0.1
 
         if len(text.strip()) < 200:
             score -= 0.2
