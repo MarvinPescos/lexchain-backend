@@ -1,5 +1,6 @@
 import uuid
 
+from app.core import settings
 from app.features.admin.repository import InvitationRepository
 from app.features.blockchain.repository import OnChainRecordRepository
 from app.features.documents.repository import DocumentRepository
@@ -123,7 +124,7 @@ class AdminService:
         else:
             invitation = await self.inv_repo.create(email=email, role=role)
 
-        magic_link = f"lexchain://sign-up?token={invitation.token}"
+        magic_link = f"{settings.SIGN_UP_URL}?token={invitation.token}"
 
         user = await self.user_repo.get_by_email(email)
         if user and user.role != role:

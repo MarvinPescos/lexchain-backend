@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 UQ_DOCUMENT_REGISTER_ENTRY = "uq_document_register_entry"
 UQ_DOCUMENT_SIGNED_FILE = "uq_document_signed_file"
 UQ_ECOPY_PENDING = "uq_ecopy_request_pending"
+UQ_DOCUMENT_PARTY_EMAIL_INVITE = "uq_document_party_email_invite"
 
 
 class Document(UserOwned, TimestampMixin):
@@ -359,10 +360,12 @@ class DocumentParty(Base, TimestampMixin):
         ForeignKey("documents.id", ondelete="CASCADE"),
         nullable=False,
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(
+    # Null while the invitee has no account yet: the invitation is held by
+    # `email` and claimed at their first verified sign-in.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(50), default="viewer")
@@ -377,13 +380,25 @@ class DocumentParty(Base, TimestampMixin):
     # The Drive permission giving this party access to the working draft.
     # Set once they accept and the document has a draft.
     draft_permission_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Email invitations only: past this, signing in no longer claims it.
+    invite_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # relasyon haha
     document: Mapped["Document"] = relationship(back_populates="parties")
-    user: Mapped["User"] = relationship(back_populates="parties")
+    user: Mapped["User | None"] = relationship(back_populates="parties")
 
     __table_args__ = (
         UniqueConstraint("document_id", "user_id", name="uq_document_party"),
+        # One open invitation per address per document while it has no account.
+        Index(
+            UQ_DOCUMENT_PARTY_EMAIL_INVITE,
+            "document_id",
+            text("lower(email)"),
+            unique=True,
+            postgresql_where=text("user_id IS NULL"),
+        ),
         # Every access check and the pending-invitation list filter on this pair.
         Index("ix_document_parties_user_status", "user_id", "status"),
     )

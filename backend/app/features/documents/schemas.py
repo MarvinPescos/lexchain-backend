@@ -289,16 +289,26 @@ class DocumentPartyResponse(BaseModel):
     """A single party record on a document"""
 
     id: uuid.UUID = Field(..., description="Party record ID.")
-    user_id: uuid.UUID = Field(..., description="User ID")
+    user_id: uuid.UUID | None = Field(
+        None, description="User ID; null while an email invitation has no account yet"
+    )
     email: str = Field(..., description="User's email")
     f_name: str = Field(..., description="User's first Name")
     l_name: str = Field(..., description="User's last name")
     role: str = Field(..., description="Role assigned")
     status: str = Field(
-        "accepted", description="pending | accepted | declined — the owner is always accepted"
+        "accepted",
+        description=(
+            "pending | accepted | declined | expired — the owner is always "
+            "accepted; expired only for an email invitation past its expiry"
+        ),
     )
     responded_at: datetime | None = Field(
         None, description="When this party accepted or declined"
+    )
+    expires_at: datetime | None = Field(
+        None,
+        description="Email invitations only: when the sign-up link stops adding them",
     )
     created_at: datetime
 

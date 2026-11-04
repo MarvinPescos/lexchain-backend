@@ -142,7 +142,8 @@ Needed for the book picker on upload/attach.
 - `GET /documents/{id}/parties` → `{document_id, issuer, parties: [{id,
   user_id, email, f_name, l_name, role, status, responded_at, created_at}]}`.
 - `POST /documents/{id}/parties` `{email, role: "viewer"}` → party, `status:
-  "pending"`. The email must belong to a LexChain user (`GET /users/search`).
+  "pending"`. Any email works: one with no account gets an emailed sign-up
+  link and joins on first sign-in. See `frontend-email-invites.md`.
 - `DELETE /documents/{id}/parties/{user_id}`.
 - Client: `GET /documents/invitations/mine` → `{invitations: [{invitation_id,
   document_id, file_name, role, status, invited_at}], total}`;

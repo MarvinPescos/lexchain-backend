@@ -61,7 +61,7 @@ from .workflow.finalization import DocumentFinalization
 from .workflow.intake import DocumentIntake
 from .workflow.processing import DocumentProcessing
 from .workflow.restoration import DocumentRestoration
-from .workflow.sharing import DocumentSharing
+from .workflow.sharing import DocumentSharing, party_response
 
 # Swagger groups, in the order a document moves through them. Order and
 # descriptions are set in main.py (`openapi_tags`).
@@ -795,17 +795,35 @@ async def add_document_party(
         body.email,
         body.role,
     )
-    return DocumentPartyResponse(
-        id=party.id,
-        user_id=party.user_id,
-        email=party.email,
-        f_name=party.user.f_name if party.user else "",
-        l_name=party.user.l_name if party.user else "",
-        role=party.role,
-        status=party.status,
-        responded_at=party.responded_at,
-        created_at=party.created_at,
-    )
+    return party_response(party)
+
+
+# ── Parties: resend an email invitation ─────────────────────────────
+
+
+@router.post(
+    "/{document_id}/parties/{party_id}/resend",
+    tags=[TAG_SHARING],
+    response_model=DocumentPartyResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Resend an email invitation",
+    description="Email the sign-up link again to someone invited before they had an account, and restart its 7-day expiry. Works on pending and expired email invitations. Only the document owner (or admin) may resend.",
+    responses={
+        200: {"description": "Invitation resent"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only the document owner may resend"},
+        404: {"description": "Document or email invitation not found"},
+    },
+)
+async def resend_party_invite(
+    request: Request,
+    document_id: uuid.UUID,
+    party_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    sharing: DocumentSharing = Depends(get_sharing),
+) -> DocumentPartyResponse:
+    party = await sharing.resend_invite(current_user, document_id, party_id)
+    return party_response(party)
 
 
 # ── Parties: remove ─────────────────────────────────────────────────

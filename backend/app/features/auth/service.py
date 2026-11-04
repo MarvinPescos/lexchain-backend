@@ -314,6 +314,9 @@ class AuthService:
 
         log.info("auth.signin.succeeded", email=_mask_email(data.email))
 
+        if supabase_user.email_confirmed_at is not None:
+            await self._claim_document_invites(user.id, supabase_user.email)
+
         return SignInResponse(
             access_token=auth_response.session.access_token,
             refresh_token=auth_response.session.refresh_token,
@@ -580,6 +583,28 @@ class AuthService:
                 scope=scope,
                 supabase_user_id=supabase_user_id,
                 error=str(e),
+            )
+
+    async def _claim_document_invites(self, user_id, email: str) -> None:
+        """Join the documents this address was invited to before it had an account.
+
+        Never fails the sign-in: an unclaimed invitation is picked up next time.
+        """
+        from app.features.documents.dependencies import get_drafting
+        from app.features.documents.workflow.sharing import DocumentSharing
+
+        # The sign-in sync is kept apart, so rolling back a failed claim
+        # cannot undo it.
+        await self.session.commit()
+        try:
+            sharing = DocumentSharing(self.session, get_drafting(self.session))
+            await sharing.claim_email_invites(user_id, email)
+        except Exception as e:
+            await self.session.rollback()
+            log.error(
+                "auth.signin.invite_claim_failed",
+                email=_mask_email(email),
+                error=f"{type(e).__name__}: {e}",
             )
 
     async def _compensate_delete_supabase_user(self, supabase_user_id: str) -> None:

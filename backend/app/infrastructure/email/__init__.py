@@ -2,6 +2,7 @@ from .base import EmailAttachment, EmailProvider, EmailMessage
 from .mock_provider import MockEmailProvider
 from .resend_provider import ResendEmailProvider
 from .templates import (
+    build_document_invite_email,
     build_draft_activity_email,
     build_ecopy_email,
     build_invitation_email,
@@ -21,6 +22,7 @@ __all__ = [
     "EmailMessage",
     "EmailAttachment",
     "build_email_provider",
+    "build_document_invite_email",
     "build_draft_activity_email",
     "build_ecopy_email",
     "build_invitation_email",

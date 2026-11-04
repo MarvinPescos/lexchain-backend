@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 # === Processing status ===
 # Null until the document is finalized — nothing is OCR'd before that.
 STATUS_QUEUED = "QUEUED"
@@ -127,3 +129,8 @@ ECOPY_EVENT_DECLINED = "declined"
 ECOPY_EVENT_DELIVERY_ATTEMPTED = "delivery_attempted"
 ECOPY_EVENT_DELIVERED = "delivered"
 ECOPY_EVENT_DELIVERY_FAILED = "delivery_failed"
+
+# === Sharing ===
+# How long an invitation to an address with no account stays claimable.
+# Resending it starts the window again.
+PARTY_INVITE_TTL = timedelta(days=7)

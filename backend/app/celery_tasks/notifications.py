@@ -117,3 +117,35 @@ def send_draft_activity_email(
     run_async(
         _send_draft_activity_email(user_id, subject, body, document_name, draft_url)
     )
+
+
+async def _send_document_invite_email(email, owner_name, document_name):
+    from urllib.parse import quote
+
+    from app.infrastructure.email import (
+        EmailMessage,
+        build_document_invite_email,
+        build_email_provider,
+    )
+    from app.infrastructure.observability.logging_setup import log
+
+    from app.core import settings
+
+    magic_link = f"{settings.SIGN_UP_URL}?email={quote(email)}"
+    html, text = build_document_invite_email(owner_name, document_name, magic_link)
+    sent = await build_email_provider().send(
+        EmailMessage(
+            to=email,
+            subject=f"{owner_name} invited you to a document on LexChain",
+            html=html,
+            text=text,
+        )
+    )
+    if not sent:
+        log.error("email.document_invite.failed", document_name=document_name)
+
+
+@celery_app.task(name="notifications.document_invite_email")
+def send_document_invite_email(email: str, owner_name: str, document_name: str):
+    """Email someone with no account that a document is waiting for them."""
+    run_async(_send_document_invite_email(email, owner_name, document_name))

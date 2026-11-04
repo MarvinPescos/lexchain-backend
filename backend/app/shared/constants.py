@@ -31,6 +31,8 @@ PRIVILEGED_PARTY_ROLES = (PARTY_ROLE_SIGNER, PARTY_ROLE_EDITOR)
 PARTY_STATUS_PENDING = "pending"
 PARTY_STATUS_ACCEPTED = "accepted"
 PARTY_STATUS_DECLINED = "declined"
+# Shown, never stored: a pending email invitation past its expiry.
+PARTY_STATUS_EXPIRED = "expired"
 
 PARTY_STATUSES = (
     PARTY_STATUS_PENDING,
