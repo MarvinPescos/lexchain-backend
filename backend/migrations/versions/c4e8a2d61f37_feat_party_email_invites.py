@@ -6,7 +6,7 @@ sign-in. One open email invitation per address per document. An email
 invitation lapses after `invite_expires_at` unless the owner resends it.
 
 Revision ID: c4e8a2d61f37
-Revises: b3d7e9f15a26
+Revises: d2f8a61c9b47
 Create Date: 2026-11-03 00:00:00.000000
 
 """
@@ -17,7 +17,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = 'c4e8a2d61f37'
-down_revision: str | Sequence[str] | None = 'b3d7e9f15a26'
+down_revision: str | Sequence[str] | None = 'd2f8a61c9b47'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

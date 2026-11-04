@@ -45,16 +45,19 @@ One **document**, two ways in:
 - **Path 1 — prepared in LexChain:** lawyer opens a record → works on a
   Google Docs draft with the client → marks it *Ready for signature* → it is
   printed, signed and notarized on paper → lawyer attaches the scanned signed
-  PDF → finalizes.
+  PDF → reviews its OCR text and risk clauses → finalizes.
 - **Path 2 — already signed:** lawyer uploads a signed/notarized PDF directly
-  → finalizes.
+  → reviews its OCR text and risk clauses → finalizes.
 
 `lifecycle` (stage): `PREPARING ⇄ READY_FOR_SIGNATURE → SIGNED → FINALIZED`,
 plus `CANCELLED`. Path 2 starts at `SIGNED`.
 
-`status` is the OCR/NLP pipeline and is **null until FINALIZED**, then
-`QUEUED → PROCESSING → AWAITING_REVIEW → ENRICHING → COMPLETED` (or `FAILED`).
-Show it only on finalized documents ("Processing…", "Needs review", …).
+`status` is the OCR/NLP pipeline for the current signed copy. It is **null
+until a signed copy is attached or uploaded**, then `QUEUED → PROCESSING →
+AWAITING_REVIEW → ENRICHING → COMPLETED` (or `FAILED`), all while `SIGNED`.
+Replacing the signed copy sets it back to `QUEUED`. Show it on `SIGNED` and
+`FINALIZED` documents ("Processing…", "Needs review", …). Details:
+`risk-before-finalize.md`.
 
 **Never compute what a user may do.** Every document response has
 `permissions` — render an action only when its flag is true:
@@ -83,7 +86,9 @@ book_id, doc_no, page_no, created_at}`. Split "My documents" (`is_owner`) from
 Detail: `{document_id, file_name, lifecycle, status, on_chain, draft_url,
 signed_copy, document_hash, book_id, doc_no, page_no, finalized_at,
 finalized_by, cancelled_at, permissions, summary, labels, entities,
-risk_flags, created_at, updated_at}`.
+risk_flags, analysis_status, created_at, updated_at}`. `analysis_status` is
+`complete`, or `partial` when some sections could not be analyzed — warn that
+`risk_flags` may be missing clauses.
 `signed_copy`: `{id, sha256, content_type, size_bytes,
 original_filename, uploaded_by, replaced_reason, is_current, created_at}`.
 The PDF itself: `GET /documents/{id}/file` (optional `?copy_id=`) → `{document_id, copy_id, url, expires_in}`: a signed URL to the PDF, valid ~5 min — fetch a fresh one when it expires, never store it.
@@ -99,7 +104,7 @@ Buttons by flag (all lawyer-only; every action returns the updated detail):
 | `can_attach_signed_copy` | Attach signed copy | `POST /documents/{id}/signed-copy?book_id=&doc_no=&page_no=` multipart `file` |
 | `can_replace_signed_copy` | Replace signed copy | `PUT /documents/{id}/signed-copy` multipart `file` + form `reason` (required) |
 | `can_correct_entry` | Correct Doc./Page No. | `PATCH /documents/{id}/entry` `{doc_no, page_no, book_id?}` |
-| `can_finalize` | Finalize | `POST /documents/{id}/finalize` → `{document_id, tx_hash, onchain_document_id, data_hash}` |
+| `can_finalize` | Finalize (false until `status == COMPLETED`: keep it visible, disabled, "Available once the risk check is complete") | `POST /documents/{id}/finalize` → `{document_id, tx_hash, onchain_document_id, data_hash}` |
 | `can_cancel` | Cancel | `POST /documents/{id}/cancel` |
 | `can_rename` | Rename | `PATCH /documents/{id}` `{file_name}` |
 | `can_share` | Invite / parties | see *Sharing* |
@@ -219,16 +224,19 @@ Poll `unread-count` (e.g. every 30–60 s). Draft types: `DRAFT_COMMENT`,
 `DRAFT_REPLY`, `DRAFT_RESOLVED`, `DRAFT_REOPENED`;
 `event_metadata.document_id` / `draft_url` for the link.
 
-## After finalize — OCR review (lawyer)
+## Before finalize — OCR review and risk clauses (lawyer, `SIGNED`)
 
 When `status == AWAITING_REVIEW`:
 `GET /documents/{id}/extraction` → `{blocks: [{index, editable, type, text,
 …}], flags: [{block_index, kind, severity, message, excerpt}], …}`;
 `PATCH /documents/{id}/extraction` `{edits: [{index, text}]}`;
 `POST /documents/{id}/extraction/analyze` (optional LLM pass);
-`POST /documents/{id}/extraction/approve`. Then `ENRICHING → COMPLETED`, and
+`POST /documents/{id}/extraction/approve`. Then `ENRICHING → COMPLETED`: the
+summary and `risk_flags` appear on the detail, `can_finalize` turns on, and
 `POST /documents/{id}/search` `{query}` / `POST /documents/{id}/ask`
-`{question}` work. The review edits searchable text only — never the signed
+`{question}` work. If a clause needs action, replace the signed copy
+(processing starts again); otherwise finalize. Finalize does not reprocess:
+`status` stays `COMPLETED`. The review edits searchable text only — never the signed
 PDF or its on-chain fingerprint.
 
 ## Verify — `GET /documents/{id}/verify`
@@ -249,6 +257,7 @@ tamper result — retry later). Link the tx:
 | `UNRESOLVED_COMMENTS` | 409 | Open threads on the draft → show count, link draft |
 | `GOOGLE_NOT_CONNECTED` | 409 | Lawyer must connect Google |
 | `GOOGLE_RECONNECT_REQUIRED` | 409 | Google access revoked/insufficient → reconnect |
+| `PROCESSING_NOT_COMPLETE` | 409 | Finalize before processing is `COMPLETED` → show `message`, refresh the detail |
 
 Other 409s are stage rules ("Mark the document Ready for signature before
 attaching…") — show `message`. 404 means unknown *or* not allowed (by design).
