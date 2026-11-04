@@ -1,8 +1,9 @@
 import uuid
 
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import CursorResult, delete, func, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from app.features.books.models import Book
@@ -450,7 +451,7 @@ class DocumentRepository(UserScopeRepository[Document]):
             )
             .execution_options(synchronize_session=False)
         )
-        return result.rowcount == 1
+        return cast(CursorResult, result).rowcount == 1
 
     async def lock_signed_copy_id(self, document_id: uuid.UUID) -> uuid.UUID | None:
         """The document's current signed copy, with its row locked until commit."""

@@ -1,8 +1,8 @@
 import uuid
-from typing import List
+from typing import List, cast
 
 from app.infrastructure.database.base_repository import BaseRepository
-from sqlalchemy import func, select, update
+from sqlalchemy import CursorResult, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import Notification
@@ -54,4 +54,4 @@ class NotificationRepository(BaseRepository[Notification]):
             .values(is_read=True)
         )
         await self.session.flush()
-        return result.rowcount or 0
+        return cast(CursorResult, result).rowcount or 0

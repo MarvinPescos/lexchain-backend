@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import DocumentSnapshot
-from .schemas import BackupCheck, BackupVerificationResponse
+from .schemas import BackupCheck, BackupStatus, BackupVerificationResponse
 
 
 def backup_key(snapshot: DocumentSnapshot) -> str:
@@ -118,7 +118,7 @@ class SnapshotArchive:
             checked=len(snapshots), problems=problems, **counts
         )
 
-    async def _check(self, snapshot: DocumentSnapshot) -> str:
+    async def _check(self, snapshot: DocumentSnapshot) -> BackupStatus:
         if snapshot.backup_key is None:
             return "missing"
         try:
@@ -140,11 +140,12 @@ class SnapshotArchive:
             return "mismatch"
         return "ok"
 
-    async def _repair(self, snapshot: DocumentSnapshot) -> str:
+    async def _repair(self, snapshot: DocumentSnapshot) -> BackupStatus:
         if not await self._anchored(snapshot):
             return "unrecoverable"
         copy = await self.session.get(SignedCopy, snapshot.signed_copy_id)
         try:
+            assert copy is not None
             content = await get_storage_client().download(copy.storage_url)
         except Exception as e:
             log.error(

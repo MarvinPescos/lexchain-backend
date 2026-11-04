@@ -99,8 +99,7 @@ class DocumentDrafting:
             raise BadRequestError("Choose the file to use for the draft.")
         if source != DRAFT_SOURCE_UPLOAD and file is not None:
             raise BadRequestError("A file is accepted only with source 'upload'.")
-        if file is not None:
-            content, content_type = await self._read_upload(file)
+        upload = await self._read_upload(file) if file is not None else None
 
         token = await self.google.access_token(document.user_id)
         if source == DRAFT_SOURCE_TEMPLATE:
@@ -110,9 +109,8 @@ class DocumentDrafting:
             assert file_id is not None
             ref = await self.workspace.get(token, file_id)
         elif source == DRAFT_SOURCE_UPLOAD:
-            ref = await self.workspace.upload(
-                token, document.file_name, content, content_type
-            )
+            assert upload is not None
+            ref = await self.workspace.upload(token, document.file_name, *upload)
         else:
             ref = await self.workspace.create(token, document.file_name)
 
@@ -214,6 +212,7 @@ class DocumentDrafting:
         """
         try:
             document = await self.repo.get_by_id(revocation.document_id)
+            assert document is not None
             token = await self.google.access_token(document.user_id)
             await self.workspace.unshare(
                 token, revocation.draft_file_id, revocation.permission_id
@@ -274,14 +273,14 @@ class DocumentDrafting:
     async def _grant(
         self, token: str, document: Document, party: DocumentParty, locked: bool
     ) -> None:
-        party.draft_permission_id = await self.workspace.share(
+        assert document.draft_file_id is not None
+        permission_id = await self.workspace.share(
             token, document.draft_file_id, party.email, draft_role(party, locked)
         )
+        party.draft_permission_id = permission_id
         # Drive reuses a person's permission id on a file. If they were removed
         # and are back, a pending revocation would take the new access away.
-        await self.repo.drop_draft_revocation(
-            document.draft_file_id, party.draft_permission_id
-        )
+        await self.repo.drop_draft_revocation(document.draft_file_id, permission_id)
         await self.session.flush()
 
     async def _read_upload(self, file: UploadFile) -> tuple[bytes, str]:

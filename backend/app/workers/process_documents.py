@@ -552,7 +552,7 @@ async def _run_embeddings(
     chunk_repo: DocumentChunkRepository,
     chunks_created,  # list[Chunk] with text
     stored_chunks,  # list[DocumentChunk] with id
-) -> None:
+) -> int | None:
     with langfuse.start_as_current_observation(
         as_type="span",
         name="embedding",

@@ -123,6 +123,7 @@ class DocumentFinalization:
         )
         if self.archive:
             snapshot = await self.snapshot_repo.get_by_document_id(document_id)
+            assert snapshot is not None
             # Nothing is anchored without a verified archive. The raise rolls
             # back the snapshot; the archive key is content-addressed, so a
             # retry checks and reuses an object an earlier attempt left.

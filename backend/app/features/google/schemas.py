@@ -11,7 +11,9 @@ class GoogleConnectResponse(BaseModel):
 
 class GoogleConnectionStatus(BaseModel):
     connected: bool
-    google_email: str | None = Field(None, description="The connected Google account")
+    google_email: str | None = Field(
+        default=None, description="The connected Google account"
+    )
     connected_at: datetime | None = None
 
 

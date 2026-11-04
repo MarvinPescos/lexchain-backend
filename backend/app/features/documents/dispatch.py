@@ -99,8 +99,10 @@ class DocumentDispatcher:
         # The job names the copy that is current now. A replace before the
         # job runs makes it stale, and the worker then does nothing.
         document = await self.repo.get_by_id(dispatch.document_id)
+        assert document is not None
         await self.session.refresh(document, ["signed_copy"])
         copy = document.signed_copy
+        assert copy is not None
         if dispatch.job != JOB_EXTRACT:
             await self.queue.enqueue_enrich_document(
                 document_id=document.id, signed_copy_id=copy.id

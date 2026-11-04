@@ -31,9 +31,12 @@ class DocumentSnapshotResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+BackupStatus = Literal["ok", "missing", "mismatch", "repaired", "unrecoverable"]
+
+
 class BackupCheck(BaseModel):
     document_id: uuid.UUID
-    status: Literal["ok", "missing", "mismatch", "repaired", "unrecoverable"] = Field(
+    status: BackupStatus = Field(
         ...,
         description=(
             "ok: archive present and matches the anchored hash. missing: no "

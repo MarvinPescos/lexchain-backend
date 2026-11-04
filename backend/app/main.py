@@ -14,7 +14,6 @@ import app.all_models  # Ensure all SQLAlchemy models are registered at startup
 from app.features.admin import router as admin_router
 from app.features.auth import router as auth_router
 
-# from app.features.blockchain import router as blockchain_router
 from app.features.books import router as book_router
 from app.features.documents import router as document_router
 from app.features.google import router as google_router
@@ -197,7 +196,6 @@ app.include_router(auth_router)
 app.include_router(user_router)
 app.include_router(document_router)
 app.include_router(retrieval_router)
-# app.include_router(blockchain_router)
 app.include_router(admin_router)
 app.include_router(notification_router)
 app.include_router(book_router)

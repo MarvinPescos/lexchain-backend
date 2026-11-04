@@ -30,6 +30,8 @@ from .repository import DocumentExtractionRepository
 from .schemas import (
     ApproveExtractionResponse,
     BlockEdit,
+    ExtractionBlock,
+    ExtractionFlag,
     ExtractionReviewResponse,
 )
 
@@ -55,6 +57,8 @@ class ExtractionReviewService:
     ) -> ExtractionReviewResponse:
         """Return the blocks and flags for the review screen."""
         document, extraction = await self._load(user, document_id, for_write=False)
+        # An extraction exists only for a finalized, processed document.
+        assert document.status is not None and document.signed_copy_id is not None
 
         blocks = extraction.blocks or []
         flags = extraction.flags or []
@@ -76,8 +80,8 @@ class ExtractionReviewService:
             engine=extraction.engine,
             page_count=extraction.page_count,
             confidence_avg=extraction.confidence_avg,
-            blocks=blocks,
-            flags=flags,
+            blocks=[ExtractionBlock.model_validate(b) for b in blocks],
+            flags=[ExtractionFlag.model_validate(f) for f in flags],
             flag_count=len(flags),
             high_severity_count=sum(1 for f in flags if f.get("severity") == "high"),
             edited_block_count=extraction.edited_block_count,

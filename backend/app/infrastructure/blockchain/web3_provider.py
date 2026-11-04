@@ -29,9 +29,9 @@ class Web3BlockchainProvider:
         return self.w3.eth.contract(address=self.contract_address, abi=self.abi)  # type: ignore
 
     async def store_document_hash(
-        self, document_id: str, data_hash: HexStr
+        self, document_id: str, data_hash: str
     ) -> ChainRecord:
-        data_hash_bytes32 = self.w3.to_bytes(hexstr=data_hash)
+        data_hash_bytes32 = self.w3.to_bytes(hexstr=HexStr(data_hash))
         tx = await self._contract.functions.storeDocumentHash(
             document_id, data_hash_bytes32
         ).build_transaction(

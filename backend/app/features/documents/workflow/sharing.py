@@ -107,6 +107,7 @@ class DocumentSharing:
         )
 
         owner = await user_repo.get_by_id(doc.user_id)
+        assert owner is not None
 
         from app.celery_tasks import handle_party_added
 
@@ -204,6 +205,7 @@ class DocumentSharing:
 
         user_repo = UserRepository(self.session)
         owner = await user_repo.get_by_id(doc.user_id)
+        assert owner is not None
 
         issuer = DocumentPartyResponse(
             id=owner.id,
@@ -258,6 +260,7 @@ class DocumentSharing:
         # LexChain access ends now. The Drive permission is recorded in the
         # same commit, so a failed revocation is retried rather than forgotten.
         document = await self.repo.get_by_id(document_id)
+        assert document is not None
         revocation = None
         if document.draft_file_id and party.draft_permission_id:
             revocation = DraftRevocation(
@@ -369,6 +372,7 @@ class DocumentSharing:
         from app.features.users.repository import UserRepository
 
         owner = await UserRepository(self.session).get_by_id(doc.user_id)
+        assert owner is not None
         send_document_invite_email.delay(
             email=party.email,
             owner_name=f"{owner.f_name} {owner.l_name}",
@@ -384,6 +388,7 @@ class DocumentSharing:
         """
         document_id, party_id = party.document_id, party.id
         document = await self.repo.get_by_id(document_id)
+        assert document is not None
         try:
             await self.drafting.grant_party(document, party)
             await self.session.commit()

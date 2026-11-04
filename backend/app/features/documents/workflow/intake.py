@@ -20,7 +20,7 @@ from app.infrastructure.database import IntegrityConstraintError
 from app.infrastructure.observability.logging_setup import log
 from app.infrastructure.queue import DocumentQueue
 from app.infrastructure.security.dependencies import AuthenticatedUser
-from app.shared.errors.exceptions import BadRequestError, ConflictError
+from app.shared.errors.exceptions import BadRequestError, ConflictError, NotFoundError
 from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -291,6 +291,8 @@ class DocumentIntake:
         """Fix a mistyped Doc. No. / Page No. (or book) before finalize."""
         document = await self.access.authorize(user, document_id, ACTION_CORRECT_ENTRY)
         target_book = book_id or document.book_id
+        if target_book is None:
+            raise NotFoundError("Book not found")
 
         from app.features.books.service import BookService
 

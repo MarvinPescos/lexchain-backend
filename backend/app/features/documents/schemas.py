@@ -317,17 +317,17 @@ class DocumentPartyResponse(BaseModel):
     l_name: str = Field(..., description="User's last name")
     role: str = Field(..., description="Role assigned")
     status: str = Field(
-        "accepted",
+        default="accepted",
         description=(
             "pending | accepted | declined | expired — the owner is always "
             "accepted; expired only for an email invitation past its expiry"
         ),
     )
     responded_at: datetime | None = Field(
-        None, description="When this party accepted or declined"
+        default=None, description="When this party accepted or declined"
     )
     expires_at: datetime | None = Field(
-        None,
+        default=None,
         description="Email invitations only: when the sign-up link stops adding them",
     )
     created_at: datetime
@@ -435,12 +435,12 @@ class RestoreResponse(BaseModel):
     document_id: uuid.UUID
     restored: bool = Field(..., description="False if it was already authentic")
     previous_hash: str | None = Field(
-        None, description="SHA-256 of the file that was replaced; null if none was"
+        default=None, description="SHA-256 of the file that was replaced; null if none was"
     )
     restored_hash: str = Field(..., description="SHA-256 now current: the on-chain hash")
     restored_copy_id: uuid.UUID = Field(..., description="The signed copy now current")
     preserved_copy_id: uuid.UUID | None = Field(
-        None, description="The replaced file, kept in signed-copy history"
+        default=None, description="The replaced file, kept in signed-copy history"
     )
     restored_by: uuid.UUID | None = None
     restored_at: datetime | None = None

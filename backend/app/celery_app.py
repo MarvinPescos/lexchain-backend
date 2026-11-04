@@ -1,4 +1,7 @@
-from celery import Celery
+from collections.abc import Callable
+from typing import Any, cast
+
+from celery import Celery, Task
 
 from app.core.config import settings
 from app.features.blockchain.models import OnChainRecord
@@ -50,3 +53,9 @@ celery_app.conf.update(
         },
     },
 )
+
+
+def celery_task(**options: Any) -> Callable[[Callable[..., Any]], Task]:
+    """`celery_app.task`, typed. Celery ships no hints, so a decorated task
+    would otherwise read as a plain function with no `.delay`."""
+    return cast(Callable[[Callable[..., Any]], Task], celery_app.task(**options))

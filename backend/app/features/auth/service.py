@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from typing import Literal
 
 from app.core import settings
@@ -204,8 +205,8 @@ class AuthService:
                 if requires_confirmation
                 else "Account created successfully."
             ),
-            user_id=auth_response.user.id,
-            email=auth_response.user.email,
+            user_id=uuid.UUID(auth_response.user.id),
+            email=auth_response.user.email or data.email,
             requires_email_confirmation=requires_confirmation,
         )
 
@@ -275,9 +276,12 @@ class AuthService:
         if not supabase_user:
             raise UnauthorizedError("Invalid credentials")
 
+        # Optional on the Supabase side for phone accounts; this one signed in by email.
+        email = supabase_user.email or data.email
+
         await self.repo.sync_from_supabase(
             supabase_user_id=supabase_user.id,
-            email=supabase_user.email,
+            email=email,
             is_email_verified=supabase_user.email_confirmed_at is not None,
         )
 
@@ -315,7 +319,7 @@ class AuthService:
         log.info("auth.signin.succeeded", email=_mask_email(data.email))
 
         if supabase_user.email_confirmed_at is not None:
-            await self._claim_document_invites(user.id, supabase_user.email)
+            await self._claim_document_invites(user.id, email)
 
         return SignInResponse(
             access_token=auth_response.session.access_token,
@@ -323,7 +327,7 @@ class AuthService:
             expires_in=auth_response.session.expires_in,
             user=SignInUser(
                 id=user.id,
-                email=supabase_user.email,
+                email=email,
                 role=user.role,
             ),
         )
