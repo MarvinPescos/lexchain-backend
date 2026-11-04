@@ -1,6 +1,6 @@
 import uuid
 
-from app.celery_app import celery_app
+from app.celery_app import celery_task
 from app.celery_tasks.runner import run_async
 from app.features.notifications.models import NotificationType
 from app.features.notifications.repository import NotificationRepository
@@ -21,7 +21,7 @@ async def _create_notification(user_id, type, title, body, metadata):
         await session.commit()
 
 
-@celery_app.task(name="notifications.party_added")
+@celery_task(name="notifications.party_added")
 def handle_party_added(
     party_user_id: uuid.UUID, owner_name: str, document_title: str, document_id: str
 ):
@@ -36,7 +36,7 @@ def handle_party_added(
     )
 
 
-@celery_app.task(name="notifications.document_recorded")
+@celery_task(name="notifications.document_recorded")
 def handle_document_recorded(
     user_id: uuid.UUID,
     document_title: str,
@@ -54,7 +54,7 @@ def handle_document_recorded(
     )
 
 
-@celery_app.task(name="notifications.document_processed")
+@celery_task(name="notifications.document_processed")
 def handle_document_processed(
     user_id: uuid.UUID, document_title: str, document_id: str, status: str
 ):
@@ -109,7 +109,7 @@ async def _send_draft_activity_email(user_id, subject, body, document_name, draf
         log.error("email.draft_activity.failed", user_id=user_id, subject=subject)
 
 
-@celery_app.task(name="notifications.draft_activity_email")
+@celery_task(name="notifications.draft_activity_email")
 def send_draft_activity_email(
     user_id: str, subject: str, body: str, document_name: str, draft_url: str | None
 ):
@@ -117,3 +117,35 @@ def send_draft_activity_email(
     run_async(
         _send_draft_activity_email(user_id, subject, body, document_name, draft_url)
     )
+
+
+async def _send_document_invite_email(email, owner_name, document_name):
+    from urllib.parse import quote
+
+    from app.infrastructure.email import (
+        EmailMessage,
+        build_document_invite_email,
+        build_email_provider,
+    )
+    from app.infrastructure.observability.logging_setup import log
+
+    from app.core import settings
+
+    magic_link = f"{settings.SIGN_UP_URL}?email={quote(email)}"
+    html, text = build_document_invite_email(owner_name, document_name, magic_link)
+    sent = await build_email_provider().send(
+        EmailMessage(
+            to=email,
+            subject=f"{owner_name} invited you to a document on LexChain",
+            html=html,
+            text=text,
+        )
+    )
+    if not sent:
+        log.error("email.document_invite.failed", document_name=document_name)
+
+
+@celery_task(name="notifications.document_invite_email")
+def send_document_invite_email(email: str, owner_name: str, document_name: str):
+    """Email someone with no account that a document is waiting for them."""
+    run_async(_send_document_invite_email(email, owner_name, document_name))

@@ -177,7 +177,7 @@ class BlockchainService:
         await self.session.refresh(document, ["signed_copy"])
         copy = document.signed_copy
 
-        common = dict(
+        common: dict[str, Any] = dict(
             document_id=document_id,
             file_name=document.file_name,
             finalized_at=document.finalized_at,
@@ -211,7 +211,7 @@ class BlockchainService:
         # The contract read carries no tx hash; it was stored when anchoring.
         anchored = await self.onchain_repo.get_by_document_id(document_id)
 
-        chain = dict(
+        chain: dict[str, Any] = dict(
             onchain_hash=onchain_hash,
             snapshot_hash=snapshot.file_sha256,
             tx_hash=record.tx_hash or (anchored.tx_hash if anchored else None),
@@ -219,6 +219,7 @@ class BlockchainService:
             issued_by=record.issued_by,
         )
 
+        assert copy is not None  # finalized, so it has a signed copy
         try:
             # Never through the CDN: a cached copy would be compared against the
             # chain and produce a confident, wrong verdict.

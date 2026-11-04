@@ -1,8 +1,9 @@
 import uuid
 
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import CursorResult, delete, func, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from app.features.books.models import Book
@@ -256,8 +257,64 @@ class DocumentRepository(UserScopeRepository[Document]):
         )
         return list(result.scalars().all())
 
+    async def get_email_invite(
+        self, document_id: uuid.UUID, email: str
+    ) -> DocumentParty | None:
+        """The open invitation to an address that has no account yet."""
+        result = await self.session.execute(
+            select(DocumentParty).where(
+                DocumentParty.document_id == document_id,
+                DocumentParty.user_id.is_(None),
+                func.lower(DocumentParty.email) == email.lower(),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_email_invite_by_id(
+        self, document_id: uuid.UUID, party_id: uuid.UUID
+    ) -> DocumentParty | None:
+        result = await self.session.execute(
+            select(DocumentParty).where(
+                DocumentParty.id == party_id,
+                DocumentParty.document_id == document_id,
+                DocumentParty.user_id.is_(None),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def claim_email_invites(
+        self, user_id: uuid.UUID, email: str
+    ) -> list[DocumentParty]:
+        """Hand every unexpired email invitation for this address to its account.
+
+        Row-locked, so two sign-ins at once cannot both claim the same row. A
+        document the account was meanwhile added to directly keeps that party
+        row and drops the invitation, so the claim never collides with it.
+        """
+        now = datetime.now(timezone.utc)
+        result = await self.session.execute(
+            select(DocumentParty)
+            .where(
+                DocumentParty.user_id.is_(None),
+                func.lower(DocumentParty.email) == email.lower(),
+                DocumentParty.invite_expires_at > now,
+            )
+            .with_for_update(skip_locked=True)
+        )
+        claimed = []
+        for party in result.scalars().all():
+            if await self.get_party(party.document_id, user_id) is not None:
+                await self.session.delete(party)
+                continue
+            party.user_id = user_id
+            party.status = PARTY_STATUS_ACCEPTED
+            party.responded_at = now
+            claimed.append(party)
+        await self.session.flush()
+        return claimed
+
     async def add_party(
-        self, document_id: uuid.UUID, user_id: uuid.UUID, role: str, email: str
+        self, document_id: uuid.UUID, user_id: uuid.UUID | None, role: str, email: str
     ):
         """Add a party to a document"""
 
@@ -394,7 +451,7 @@ class DocumentRepository(UserScopeRepository[Document]):
             )
             .execution_options(synchronize_session=False)
         )
-        return result.rowcount == 1
+        return cast(CursorResult, result).rowcount == 1
 
     async def lock_signed_copy_id(self, document_id: uuid.UUID) -> uuid.UUID | None:
         """The document's current signed copy, with its row locked until commit."""

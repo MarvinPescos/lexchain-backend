@@ -241,3 +241,73 @@ def build_ecopy_email(document_name: str, lawyer_name: str) -> tuple[str, str]:
 </body>
 </html>"""
     return html, text
+
+
+def build_document_invite_email(
+    owner_name: str, document_name: str, magic_link: str
+) -> tuple[str, str]:
+    """Returns (html, text) for a document invitation to someone with no account.
+
+    Signing up with the invited address is what claims it, so the link only
+    has to bring them to sign-up.
+    """
+    from html import escape
+
+    text = (
+        f"{owner_name} invited you to '{document_name}' on LexChain.\n\n"
+        "Create your account with this email address and the document will be "
+        "added for you:\n"
+        f"{magic_link}\n\n"
+        "This invitation expires in 7 days.\n"
+    )
+
+    html = f"""\
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background-color:#f4f4f5;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f5;padding:40px 0;">
+  <tr>
+    <td align="center">
+      <table width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:12px;overflow:hidden;">
+
+        <tr>
+          <td style="padding:32px 40px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+            <h1 style="margin:0;font-size:24px;font-weight:700;color:#111827;">LexChain</h1>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:0 40px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:16px;line-height:1.6;color:#374151;">
+            <p style="margin:0 0 16px;"><strong>{escape(owner_name)}</strong> invited you to <strong>{escape(document_name)}</strong>.</p>
+            <p style="margin:0;">Create your account with this email address and the document will be added for you.</p>
+          </td>
+        </tr>
+
+        <tr>
+          <td align="center" style="padding:0 40px 24px;">
+            <table cellpadding="0" cellspacing="0">
+              <tr>
+                <td align="center" style="background-color:#111827;border-radius:8px;">
+                  <a href="{escape(magic_link, quote=True)}" target="_blank" style="display:block;padding:14px 36px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;white-space:nowrap;">
+                    Create my account
+                  </a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:0 40px 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;line-height:1.5;color:#9ca3af;">
+            <p style="margin:0;">This invitation expires in 7 days. If you weren't expecting it, you can ignore this email.</p>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>"""
+    return html, text

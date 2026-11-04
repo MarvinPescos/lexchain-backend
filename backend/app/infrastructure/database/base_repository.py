@@ -13,6 +13,8 @@ from .base import Base
 from .exceptions import DatabaseError, IntegrityConstraintError
 
 ModelType = TypeVar("ModelType", bound=Base)
+# update/delete also take rows the repository's model owns, e.g. a Document's parties.
+RecordType = TypeVar("RecordType", bound=Base)
 
 
 class BaseRepository(Generic[ModelType]):
@@ -94,7 +96,7 @@ class BaseRepository(Generic[ModelType]):
                 f"Failed to fetch all at {self.model_name}", original_error=e
             )
 
-    async def update(self, db_obj: ModelType, **data) -> ModelType:
+    async def update(self, db_obj: RecordType, **data) -> RecordType:
         """Update a record"""
         try:
             for key, value in data.items():
@@ -124,7 +126,7 @@ class BaseRepository(Generic[ModelType]):
                 f"Failed to update at {self.model_name}", original_error=e
             )
 
-    async def delete(self, db_obj: ModelType):
+    async def delete(self, db_obj: Base):
         """Delete a record"""
         try:
             await self.session.delete(db_obj)

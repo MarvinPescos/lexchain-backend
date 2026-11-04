@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from typing import Literal
 
 from app.core import settings
@@ -204,8 +205,8 @@ class AuthService:
                 if requires_confirmation
                 else "Account created successfully."
             ),
-            user_id=auth_response.user.id,
-            email=auth_response.user.email,
+            user_id=uuid.UUID(auth_response.user.id),
+            email=auth_response.user.email or data.email,
             requires_email_confirmation=requires_confirmation,
         )
 
@@ -275,9 +276,12 @@ class AuthService:
         if not supabase_user:
             raise UnauthorizedError("Invalid credentials")
 
+        # Optional on the Supabase side for phone accounts; this one signed in by email.
+        email = supabase_user.email or data.email
+
         await self.repo.sync_from_supabase(
             supabase_user_id=supabase_user.id,
-            email=supabase_user.email,
+            email=email,
             is_email_verified=supabase_user.email_confirmed_at is not None,
         )
 
@@ -314,13 +318,16 @@ class AuthService:
 
         log.info("auth.signin.succeeded", email=_mask_email(data.email))
 
+        if supabase_user.email_confirmed_at is not None:
+            await self._claim_document_invites(user.id, email)
+
         return SignInResponse(
             access_token=auth_response.session.access_token,
             refresh_token=auth_response.session.refresh_token,
             expires_in=auth_response.session.expires_in,
             user=SignInUser(
                 id=user.id,
-                email=supabase_user.email,
+                email=email,
                 role=user.role,
             ),
         )
@@ -580,6 +587,28 @@ class AuthService:
                 scope=scope,
                 supabase_user_id=supabase_user_id,
                 error=str(e),
+            )
+
+    async def _claim_document_invites(self, user_id, email: str) -> None:
+        """Join the documents this address was invited to before it had an account.
+
+        Never fails the sign-in: an unclaimed invitation is picked up next time.
+        """
+        from app.features.documents.dependencies import get_drafting
+        from app.features.documents.workflow.sharing import DocumentSharing
+
+        # The sign-in sync is kept apart, so rolling back a failed claim
+        # cannot undo it.
+        await self.session.commit()
+        try:
+            sharing = DocumentSharing(self.session, get_drafting(self.session))
+            await sharing.claim_email_invites(user_id, email)
+        except Exception as e:
+            await self.session.rollback()
+            log.error(
+                "auth.signin.invite_claim_failed",
+                email=_mask_email(email),
+                error=f"{type(e).__name__}: {e}",
             )
 
     async def _compensate_delete_supabase_user(self, supabase_user_id: str) -> None:

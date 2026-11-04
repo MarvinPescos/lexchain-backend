@@ -16,7 +16,7 @@ variable "region" {
 variable "availability_zone" {
   type        = string
   default     = "us-east-1a"
-  description = "Must be an AZ that offers var.instance_type"
+  description = "Must be an AZ that offers both instance types"
 }
 
 variable "aws_profile" {
@@ -24,19 +24,32 @@ variable "aws_profile" {
   description = "AWS CLI profile for the app account"
 }
 
-variable "gpu" {
-  type        = bool
-  description = "Use the GPU AMI and run Marker. Must agree with instance_type."
-}
-
 variable "instance_type" {
   type        = string
-  description = "g4dn.xlarge (T4 GPU, 16 GB) with gpu = true; t3.large (8 GB) without"
+  default     = "m7i-flex.large"
+  description = "App box: everything except Marker"
 }
 
 variable "root_volume_gb" {
   type        = number
-  description = "GB for Docker images, plus Marker's model weights when gpu = true"
+  description = "App box disk, GB for Docker images"
+}
+
+variable "marker" {
+  type        = bool
+  description = "Run the separate GPU box for Marker"
+}
+
+variable "marker_instance_type" {
+  type        = string
+  default     = "g4dn.xlarge"
+  description = "Marker box; must be a GPU type"
+}
+
+variable "marker_root_volume_gb" {
+  type        = number
+  default     = 100
+  description = "Marker box disk, GB for its image and model weights"
 }
 
 variable "backup_bucket_name" {

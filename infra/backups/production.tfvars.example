@@ -1,11 +1,10 @@
 environment = "production"
-aws_profile = "lexchain"
+aws_profile = "lexchain-backups"   # the second account; S3 costs cents there
 bucket_name = "lexchain-production-backups-CHANGE-ME"
 
-# Keep GOVERNANCE / 1 until this is real production; COMPLIANCE is irreversible.
+# The app's account (the one with the credit) is let in by the bucket policy.
+app_account_id = "111111111111"
+
+# Keep GOVERNANCE / 1 until real documents go in; COMPLIANCE is irreversible.
 retention_mode = "GOVERNANCE"
 retention_days = 1
-
-# Real production: put the bucket in its own account (aws_profile above) and
-# set the app's account id here.
-# app_account_id = "111111111111"

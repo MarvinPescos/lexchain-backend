@@ -175,6 +175,9 @@ class GoogleConnectionService:
         """A short-lived token for the frontend's Google Picker."""
         token = await self.access_token(user_id)
         connection = await self.repo.get_for_user(user_id)
+        # access_token() has just left a live token and its expiry on this row.
+        assert connection is not None
+        assert connection.access_token_expires_at is not None
         return GooglePickerToken(
             access_token=token, expires_at=connection.access_token_expires_at
         )

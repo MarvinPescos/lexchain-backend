@@ -228,6 +228,7 @@ class DocumentDiscussion:
         Google Docs turns attribution by elimination off instead of
         misattributing that person's comments.
         """
+        assert document.draft_file_id is not None
         permissions = await self.workspace.list_permissions(
             token, document.draft_file_id
         )
@@ -261,6 +262,7 @@ class DocumentDiscussion:
         A new comment has no thread yet: the lawyer's goes to the clients, a
         client's goes to the lawyer.
         """
+        recipients: set[uuid.UUID | None]
         if event.kind == _EVENT_COMMENT:
             if event.actor_id == document.user_id:
                 recipients = {
@@ -278,9 +280,8 @@ class DocumentDiscussion:
                 recipients |= {
                     p.user_id for p in parties if p.status == PARTY_STATUS_ACCEPTED
                 }
-        recipients.discard(None)
         recipients.discard(event.actor_id)
-        return recipients
+        return {r for r in recipients if r is not None}
 
     async def _notify(
         self, document: Document, parties: list[DocumentParty], event: _Event

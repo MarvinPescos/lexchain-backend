@@ -74,6 +74,8 @@ class DocumentRestoration:
             user, document_id, tamper_report=False
         )
         if verdict.status == "AUTHENTIC":
+            assert verdict.current_hash is not None
+            assert document.signed_copy_id is not None
             return RestoreResponse(
                 document_id=document_id,
                 restored=False,
@@ -94,10 +96,12 @@ class DocumentRestoration:
             )
 
         onchain_hash = verdict.onchain_hash
+        assert onchain_hash is not None and verdict.current_hash is not None
         original = await self._archived_original(document_id, onchain_hash)
         tampered = await self._current_bytes(document, verdict.current_hash)
 
         current = document.signed_copy
+        assert current is not None
         uploaded: list[str] = []
         try:
             preserved = None
@@ -207,8 +211,10 @@ class DocumentRestoration:
     async def _current_bytes(self, document: Document, judged_hash: str) -> bytes | None:
         """The file that was judged TAMPERED, to keep. None if it can no longer
         be read as that same file — the restore goes ahead without it."""
+        copy = document.signed_copy
+        assert copy is not None
         try:
-            data = await get_storage_client().download(document.signed_copy.storage_url)
+            data = await get_storage_client().download(copy.storage_url)
         except _STORAGE_ERRORS as e:
             log.warning(
                 "document.restore.tampered_unreadable",

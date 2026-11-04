@@ -192,6 +192,12 @@ class Settings(BaseSettings):
         default="http://localhost:3000/reset-password",
         description="Frontend page a password-recovery email links to",
     )
+    # Invitation emails link here. Must be http(s): mail clients such as
+    # Gmail strip links with a custom scheme (lexchain://), leaving plain text.
+    SIGN_UP_URL: str = Field(
+        default="https://lexchain.me/register",
+        description="Frontend sign-up page that invitation emails link to",
+    )
 
     class Config:
         env_file = ".env"

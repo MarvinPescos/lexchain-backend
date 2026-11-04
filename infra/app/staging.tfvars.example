@@ -2,12 +2,10 @@ environment        = "staging"
 aws_profile        = "lexchain"
 backup_bucket_name = "lexchain-staging-backups-CHANGE-ME"
 
-# Day to day: no GPU, OCR via pypdf or MinerU.
-gpu            = false
-instance_type  = "t3.large"
+# App box: everything except OCR. OCR runs on the Azure MinerU box.
+instance_type  = "m7i-flex.large"
 root_volume_gb = 40
 
-# Before a release, or when OCR code changes, test Marker for a few hours:
-# gpu            = true
-# instance_type  = "g4dn.xlarge"
-# root_volume_gb = 100
+# Before a release, or when Marker code changes, set true for a few hours,
+# point MARKER_API_URL at the `marker_api_url` output, test, then set false.
+marker = false
