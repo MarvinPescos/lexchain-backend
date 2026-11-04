@@ -1,7 +1,7 @@
 """OCR review routes: read, correct, LLM second opinion, approve.
 
-Mounted under /documents by the documents router. Review only exists once a
-document is finalized — OCR runs on the frozen signed copy.
+Mounted under /documents by the documents router. Review happens while the
+document is SIGNED, before finalize — OCR runs on the current signed copy.
 """
 
 import uuid

@@ -6,7 +6,7 @@ from app.features.blockchain.service import BlockchainService
 from app.features.documents.workflow.finalization import DocumentFinalization
 from app.features.snapshot.repository import DocumentSnaphotRepository
 from app.infrastructure.nlp.ocr.base import ExtractionResult
-from tests.conftest import as_auth, pdf
+from tests.conftest import as_auth, pdf, mark_processed
 
 
 class FakeBackup:
@@ -96,7 +96,8 @@ async def finalized(session, intake, queue, chain, backup, storage, lawyer, open
     """A finalized, archived deed; returns (document_id, stored url)."""
     me = as_auth(lawyer)
     doc = await intake.upload_signed(me, pdf("deed"), "Deed", open_book.id)
-    await DocumentFinalization(session, queue, chain, backup).finalize(me, doc.document_id)
+    await mark_processed(session, doc.document_id)
+    await DocumentFinalization(session, chain, backup).finalize(me, doc.document_id)
     [url] = storage.objects
     return doc.document_id, url
 

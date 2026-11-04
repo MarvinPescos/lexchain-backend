@@ -21,6 +21,7 @@ from ..constants import (
     STATUS_COMPLETED,
     STATUS_ENRICHING,
     LIFECYCLE_FINALIZED,
+    LIFECYCLE_SIGNED,
 )
 from ..dispatch import DocumentDispatcher
 from .blocks import blocks_to_text, count_edited
@@ -250,14 +251,23 @@ class ExtractionReviewService:
             raise NotFoundError("This document has no extraction yet")
 
         if for_write:
+            # Locked so a replace of the signed copy cannot clear this
+            # extraction while it is being edited or approved.
+            await self.session.refresh(document, with_for_update=True)
+            extraction = await self.repo.get_by_document_id(document_id)
+            if not extraction:
+                raise NotFoundError("This document has no extraction yet")
             if extraction.reviewed_at is not None:
                 raise ConflictError(
                     "This extraction has already been approved and cannot be changed"
                 )
-            # OCR runs on the frozen final copy, so review only exists after finalize.
-            if document.lifecycle != LIFECYCLE_FINALIZED:
+            # Reviewed while SIGNED, before finalize. FINALIZED stays allowed
+            # for documents finalized before processing moved to SIGNED and
+            # still mid-pipeline; a new finalized document is COMPLETED, which
+            # the status check below refuses.
+            if document.lifecycle not in (LIFECYCLE_SIGNED, LIFECYCLE_FINALIZED):
                 raise ConflictError(
-                    "Extracted text can only be reviewed once the document is finalized"
+                    "Extracted text can only be reviewed once a signed copy is filed"
                 )
             if document.status not in REVIEWABLE_STATUSES:
                 raise ConflictError(

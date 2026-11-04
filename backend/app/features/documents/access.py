@@ -32,6 +32,7 @@ from .constants import (
     ACTION_REPLACE_SIGNED_COPY,
     ACTION_VIEW,
     LIFECYCLE_FINALIZED,
+    STATUS_COMPLETED,
     STATUS_FAILED,
 )
 from .models import Document, SignedCopy
@@ -97,7 +98,9 @@ class DocumentAccess:
             can_replace_signed_copy=allowed(ACTION_REPLACE_SIGNED_COPY),
             can_correct_entry=allowed(ACTION_CORRECT_ENTRY),
             can_cancel=allowed(ACTION_CANCEL),
-            can_finalize=allowed(ACTION_FINALIZE),
+            # Mirrors finalization.ensure_processed.
+            can_finalize=allowed(ACTION_FINALIZE)
+            and document.status == STATUS_COMPLETED,
             can_retry_processing=is_owner and document.status == STATUS_FAILED,
             can_share=is_owner,
             can_revoke=is_owner,

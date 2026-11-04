@@ -287,8 +287,9 @@ async def open_document(
     summary="Upload an already signed document (Path 2)",
     description=(
         "Upload a signed/notarized PDF and file it in a register book. The "
-        "document is SIGNED and waits for the lawyer to finalize it — nothing "
-        "is processed yet.\n\n"
+        "document is SIGNED and its signed copy is queued for processing "
+        "(`status` QUEUED): OCR, the lawyer's review of the text, then "
+        "analysis, so its risk clauses are shown before finalize.\n\n"
         "`doc_no` / `page_no` are the Doc. No. and Page No. from the notarial "
         "block. Optional for an OPEN book — the next free entry is used. "
         "Required for a CLOSED book, where they are copied from the paper register.\n\n"
@@ -534,7 +535,8 @@ async def cancel(
     summary="Attach the signed copy (Path 1)",
     description=(
         "Attach the signed/notarized PDF to the record it was prepared in and "
-        "file it in a register book. Only from READY_FOR_SIGNATURE."
+        "file it in a register book. Only from READY_FOR_SIGNATURE. The signed "
+        "copy is queued for processing (`status` QUEUED)."
     ),
 )
 async def attach_signed_copy(
@@ -556,7 +558,12 @@ async def attach_signed_copy(
     tags=[TAG_SIGNED_COPY],
     response_model=DocumentResponse,
     summary="Replace the signed copy",
-    description="Swap in the right signed copy before finalize. A reason is required and the previous copy is kept.",
+    description=(
+        "Swap in the right signed copy before finalize. A reason is required and "
+        "the previous copy is kept in history. The extraction, chunks and "
+        "insights of the previous copy are cleared and the new copy is "
+        "processed from the start (`status` QUEUED)."
+    ),
 )
 async def replace_signed_copy(
     document_id: uuid.UUID,
@@ -867,9 +874,11 @@ async def remove_document_party(
     status_code=status.HTTP_200_OK,
     summary="Finalize a document",
     description=(
-        "The lawyer confirms the signed copy. Freezes it, anchors the SHA-256 of "
-        "the PDF on-chain, then queues OCR and analysis on the frozen copy. Only "
-        "from SIGNED. This is the only point at which a document is hashed on-chain."
+        "The lawyer confirms the signed copy. Freezes it and anchors the SHA-256 "
+        "of the PDF on-chain. Only from SIGNED, and only once processing is "
+        "COMPLETED (shown as `permissions.can_finalize`), so the risk clauses "
+        "were seen first. Nothing is queued. This is the only point at which a "
+        "document is hashed on-chain."
     ),
     responses={
         200: {"description": "Finalized document"},
@@ -877,7 +886,10 @@ async def remove_document_party(
         403: {"description": "Forbidden — only the document owner may finalize"},
         404: {"description": "Document not found"},
         409: {
-            "description": "Not SIGNED, or the stored file no longer matches the upload"
+            "description": (
+                "Not SIGNED; processing not COMPLETED (`PROCESSING_NOT_COMPLETE`); "
+                "or the stored file no longer matches the upload"
+            )
         },
     },
 )

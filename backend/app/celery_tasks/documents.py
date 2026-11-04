@@ -22,13 +22,22 @@ def _is_final_attempt(task) -> bool:
     default_retry_delay=60,
     acks_late=True,
 )
-def extract_document_task(self, document_id: uuid.UUID, storage_url: str):
-    """Phase 1 — OCR only. Leaves the document awaiting issuer review."""
+def extract_document_task(
+    self,
+    document_id: uuid.UUID,
+    storage_url: str,
+    signed_copy_id: uuid.UUID | None = None,
+):
+    """Phase 1 — OCR only. Leaves the document awaiting issuer review.
+
+    `signed_copy_id` is None only for messages queued before it was sent.
+    """
     try:
         run_async(
             extract_document_job(
                 document_id=document_id,
                 storage_url=storage_url,
+                signed_copy_id=signed_copy_id,
                 final_attempt=_is_final_attempt(self),
             )
         )
@@ -43,7 +52,9 @@ def extract_document_task(self, document_id: uuid.UUID, storage_url: str):
     default_retry_delay=60,
     acks_late=True,
 )
-def enrich_document_task(self, document_id: uuid.UUID):
+def enrich_document_task(
+    self, document_id: uuid.UUID, signed_copy_id: uuid.UUID | None = None
+):
     """Phase 2 — chunk, embed and analyze the text the issuer approved."""
     from app.infrastructure.nlp.analysis import LLMAnalysisProvider
     from app.infrastructure.nlp.chunking import build_chunker
@@ -53,6 +64,7 @@ def enrich_document_task(self, document_id: uuid.UUID):
         run_async(
             enrich_document_job(
                 document_id=document_id,
+                signed_copy_id=signed_copy_id,
                 analyzer=LLMAnalysisProvider(),
                 chunker=build_chunker(),
                 embedder=build_embedder(),

@@ -438,7 +438,7 @@ class ProcessingDispatch(Base, TimestampMixin):
     """A processing job the database has promised to the queue (outbox).
 
     Written in the same commit as the state change that needs the job
-    (finalize → extract, approve → enrich), then sent to the broker. Until
+    (signed copy lands → extract, approve → enrich), then sent to the broker. Until
     `dispatched_at` is set the beat task keeps sending it, so a broker outage
     delays processing instead of losing it.
     """

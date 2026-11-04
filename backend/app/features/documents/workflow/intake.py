@@ -3,7 +3,8 @@
 Path 1 opens a record before anything is signed; its signed copy is attached
 later. Path 2 uploads an already signed copy in one step. Either way the file
 is a SignedCopy written to its own storage path, the register entry is claimed
-in the same transaction, and nothing is processed until finalize.
+in the same transaction, and the copy is queued for processing in that same
+commit — so the lawyer sees its risk clauses while it can still be replaced.
 """
 
 import hashlib
@@ -13,8 +14,11 @@ from app.infrastructure.clients.supabase_storage import (
     get_storage_client,
     object_path_from_url,
 )
+from app.features.chunks.repository import DocumentChunkRepository
+from app.features.insights.repository import DocumentInsightRepository
 from app.infrastructure.database import IntegrityConstraintError
 from app.infrastructure.observability.logging_setup import log
+from app.infrastructure.queue import DocumentQueue
 from app.infrastructure.security.dependencies import AuthenticatedUser
 from app.shared.errors.exceptions import BadRequestError, ConflictError
 from fastapi import UploadFile
@@ -29,8 +33,12 @@ from ..constants import (
     ACTION_RENAME,
     ACTION_REPLACE_SIGNED_COPY,
     ACTION_UPLOAD_SIGNED,
+    JOB_EXTRACT,
+    STATUS_QUEUED,
 )
-from ..models import UQ_DOCUMENT_SIGNED_FILE, Document, SignedCopy
+from ..dispatch import DocumentDispatcher
+from ..extraction.repository import DocumentExtractionRepository
+from ..models import UQ_DOCUMENT_SIGNED_FILE, Document, ProcessingDispatch, SignedCopy
 from ..presenters import document_response
 from ..repository import DocumentRepository
 from ..schemas import DocumentResponse
@@ -51,8 +59,9 @@ class _SignedFile:
 
 
 class DocumentIntake:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, queue: DocumentQueue) -> None:
         self.session = session
+        self.dispatcher = DocumentDispatcher(session, queue)
         self.repo = DocumentRepository(session)
         self.access = DocumentAccess(session)
 
@@ -112,12 +121,14 @@ class DocumentIntake:
                 ACTION_ATTACH_SIGNED_COPY, document, user.user_id
             )
             await self.repo.add(change)
+            dispatch = await self._queue_processing(document)
             await self.session.commit()
         except Exception as e:
             await self._undo_store(copy)
             self._raise_if_duplicate_index(e)
             raise
 
+        await self.dispatcher.send(dispatch)
         log.info(
             "document.signed_copy.attach",
             document_id=str(document_id),
@@ -140,7 +151,7 @@ class DocumentIntake:
     ) -> DocumentResponse:
         """Upload an already signed/notarized PDF: record + filing + signed copy.
 
-        Ends in SIGNED. Nothing is processed until the lawyer finalizes.
+        Ends in SIGNED, with the signed copy queued for processing.
         """
         # Wrong-path guard: the signed copy of a document prepared in LexChain
         # belongs on that record, not on a new one.
@@ -190,12 +201,14 @@ class DocumentIntake:
             document.page_no = entry.page_no
             await self._make_current(document, copy)
             await self.repo.add(change)
+            dispatch = await self._queue_processing(document)
             await self.session.commit()
         except Exception as e:
             await self._undo_store(copy)
             self._raise_if_duplicate_index(e)
             raise
 
+        await self.dispatcher.send(dispatch)
         log.info(
             "document.upload",
             user_id=str(user.user_id),
@@ -224,13 +237,22 @@ class DocumentIntake:
         file: UploadFile,
         reason: str,
     ) -> DocumentResponse:
-        """Swap in the right signed copy before finalize. The previous one is kept."""
+        """Swap in the right signed copy before finalize. The previous one is kept.
+
+        What was derived from the previous copy — extraction, chunks, insights —
+        is cleared, and the new copy is processed from the start. A job still
+        running for the previous copy cannot write over it: the worker commits
+        under the same row lock taken here, and only for the current copy.
+        """
         if not reason or not reason.strip():
             raise BadRequestError("Give the reason the signed copy is being replaced")
 
         document = await self.access.authorize(
             user, document_id, ACTION_REPLACE_SIGNED_COPY
         )
+        # Serializes with the worker's commits and with a concurrent replace.
+        await self.session.refresh(document, with_for_update=True)
+        lifecycle.ensure(ACTION_REPLACE_SIGNED_COPY, document)
 
         signed = await self._read_signed_file(file)
         if signed.sha256 == document.document_hash:
@@ -246,12 +268,15 @@ class DocumentIntake:
                 ACTION_REPLACE_SIGNED_COPY, document, user.user_id
             )
             await self.repo.add(change)
+            await self._clear_processing(document)
+            dispatch = await self._queue_processing(document)
             await self.session.commit()
         except Exception as e:
             await self._undo_store(copy)
             self._raise_if_duplicate_index(e)
             raise
 
+        await self.dispatcher.send(dispatch)
         log.info("document.signed_copy.replace", document_id=str(document_id))
         return await document_response(self.session, user, document)
 
@@ -380,3 +405,19 @@ class DocumentIntake:
         document.signed_copy_id = copy.id
         document.document_hash = copy.sha256
         await self.session.flush()
+
+    async def _queue_processing(self, document: Document) -> ProcessingDispatch:
+        """Promise OCR of the current copy. Not committed: the caller commits it
+        with the copy, so a broker outage delays processing but never loses it."""
+        document.status = STATUS_QUEUED
+        return await self.dispatcher.record(document.id, JOB_EXTRACT)
+
+    async def _clear_processing(self, document: Document) -> None:
+        """Drop what was derived from the previous copy, and its unsent jobs."""
+        await DocumentChunkRepository(self.session).delete_for_document(document.id)
+        await DocumentInsightRepository(self.session).delete_for_document(document.id)
+        extractions = DocumentExtractionRepository(self.session)
+        extraction = await extractions.get_by_document_id(document.id)
+        if extraction is not None:
+            await extractions.delete(extraction)
+        await self.dispatcher.drop_pending(document.id)

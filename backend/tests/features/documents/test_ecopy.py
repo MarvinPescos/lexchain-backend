@@ -40,7 +40,7 @@ from app.shared.errors.exceptions import (
     NotFoundError,
     ServiceUnavailableError,
 )
-from tests.conftest import _make_user, as_auth, pdf, real_pdf
+from tests.conftest import _make_user, as_auth, pdf, real_pdf, mark_processed
 from tests.features.documents.test_drafting import add_party
 
 
@@ -76,6 +76,7 @@ async def finalized(session, intake, finalization, storage, lawyer, client, open
     """A finalized deed with `client` on it; returns (document_id, original bytes)."""
     me = as_auth(lawyer)
     doc = await intake.upload_signed(me, real_pdf("deed"), "Deed of Sale", open_book.id)
+    await mark_processed(session, doc.document_id)
     await finalization.finalize(me, doc.document_id)
     await add_party(session, doc.document_id, client)
     [original] = storage.objects.values()
@@ -142,6 +143,7 @@ async def test_a_document_not_yet_finalized_cannot_be_requested(
     ecopy, session, intake, lawyer, client, open_book
 ):
     doc = await intake.upload_signed(as_auth(lawyer), real_pdf("signed"), "Deed", open_book.id)
+    await mark_processed(session, doc.document_id)
     await add_party(session, doc.document_id, client)
 
     with pytest.raises(ConflictError, match="finalized"):
@@ -201,6 +203,7 @@ async def test_a_file_that_cannot_be_rendered_is_refused_not_served(
     queries, session, intake, lawyer, client, open_book
 ):
     doc = await intake.upload_signed(as_auth(lawyer), pdf("garbled"), "Deed", open_book.id)
+    await mark_processed(session, doc.document_id)
     await add_party(session, doc.document_id, client)
 
     with pytest.raises(ServiceUnavailableError):

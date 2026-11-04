@@ -35,8 +35,11 @@ def get_document_queue() -> DocumentQueue:
     return LoggingDocumentQueue()
 
 
-def get_intake(db: AsyncSession = Depends(get_db)) -> DocumentIntake:
-    return DocumentIntake(db)
+def get_intake(
+    db: AsyncSession = Depends(get_db),
+    queue: DocumentQueue = Depends(get_document_queue),
+) -> DocumentIntake:
+    return DocumentIntake(db, queue)
 
 
 def get_queries(db: AsyncSession = Depends(get_db)) -> DocumentQueries:
@@ -64,11 +67,10 @@ def get_sharing(
 
 def get_finalization(
     db: AsyncSession = Depends(get_db),
-    queue: DocumentQueue = Depends(get_document_queue),
     provider: BlockchainProvider = Depends(get_blockchain_provider),
 ) -> DocumentFinalization:
     backup = build_backup() if settings.BACKUP_ENABLED else None
-    return DocumentFinalization(db, queue, provider, backup)
+    return DocumentFinalization(db, provider, backup)
 
 
 def get_ecopy(db: AsyncSession = Depends(get_db)) -> DocumentEcopy:

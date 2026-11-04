@@ -1,7 +1,9 @@
 from datetime import timedelta
 
 # === Processing status ===
-# Null until the document is finalized — nothing is OCR'd before that.
+# Null until a signed copy lands. The signed copy is processed while the
+# document is SIGNED, so the lawyer sees its risk clauses before finalizing;
+# finalize is allowed only once processing is COMPLETED.
 STATUS_QUEUED = "QUEUED"
 STATUS_PROCESSING = "PROCESSING"
 # OCR is done and the issuer must review the extracted text before the
@@ -13,7 +15,7 @@ STATUS_FAILED = "FAILED"
 
 # === Processing jobs ===
 # What a ProcessingDispatch hands to the queue.
-JOB_EXTRACT = "extract"  # OCR, after finalize
+JOB_EXTRACT = "extract"  # OCR, once a signed copy is attached or uploaded
 JOB_ENRICH = "enrich"  # chunk / embed / analyze, after the text is approved
 
 # === Lifecycle ===
@@ -24,7 +26,8 @@ JOB_ENRICH = "enrich"  # chunk / embed / analyze, after the text is approved
 #
 # PREPARING            record exists, working draft is edited in Google Docs
 # READY_FOR_SIGNATURE  text agreed; the draft goes to print
-# SIGNED               signed/notarized PDF attached, waiting for the lawyer
+# SIGNED               signed/notarized PDF attached; processed and risk-checked
+#                      here, waiting for the lawyer to finalize
 # FINALIZED            snapshotted + anchored on-chain, immutable forever
 # CANCELLED            abandoned before signing, kept for the record
 LIFECYCLE_PREPARING = "PREPARING"
