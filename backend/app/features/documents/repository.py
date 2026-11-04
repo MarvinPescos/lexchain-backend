@@ -396,6 +396,14 @@ class DocumentRepository(UserScopeRepository[Document]):
         )
         return result.rowcount == 1
 
+    async def lock_signed_copy_id(self, document_id: uuid.UUID) -> uuid.UUID | None:
+        """The document's current signed copy, with its row locked until commit."""
+        return await self.session.scalar(
+            select(Document.signed_copy_id)
+            .where(Document.id == document_id)
+            .with_for_update()
+        )
+
     async def count_active(self) -> int:
         """Count documents that were not cancelled."""
         from sqlalchemy import func

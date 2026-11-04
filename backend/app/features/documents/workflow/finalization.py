@@ -1,9 +1,11 @@
 """Finalize: the lawyer confirms the signed copy, and it becomes permanent.
 
-Freeze the current signed copy, archive it (read back and checked), anchor the
-SHA-256 of its bytes on-chain, then hand it to the OCR pipeline through a
-durable dispatch. Moves to an `attestation/` feature once chain anchoring
-becomes its own background job.
+Allowed only once the signed copy has been processed (COMPLETED), so the
+lawyer has seen its risk clauses while it could still be replaced. Freeze the
+current signed copy, archive it (read back and checked), and anchor the
+SHA-256 of its bytes on-chain. Nothing is queued: processing already ran.
+Moves to an `attestation/` feature once chain anchoring becomes its own
+background job.
 """
 
 import hashlib
@@ -18,28 +20,55 @@ from app.infrastructure.backup import BackupProvider
 from app.infrastructure.blockchain import BlockchainProvider
 from app.infrastructure.clients.supabase_storage import get_storage_client
 from app.infrastructure.observability.logging_setup import log
-from app.infrastructure.queue import DocumentQueue
 from app.infrastructure.security.dependencies import AuthenticatedUser
 from app.shared.errors.exceptions import ConflictError, ServiceUnavailableError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import lifecycle
 from ..access import DocumentAccess
-from ..constants import ACTION_FINALIZE, JOB_EXTRACT, STATUS_QUEUED
-from ..dispatch import DocumentDispatcher
+from ..constants import (
+    ACTION_FINALIZE,
+    STATUS_AWAITING_REVIEW,
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+)
+from ..models import Document
 from ..repository import DocumentRepository
+
+
+def ensure_processed(document: Document) -> None:
+    """Refuse to finalize a signed copy whose processing has not completed."""
+    if document.status == STATUS_COMPLETED:
+        return
+    if document.status == STATUS_FAILED:
+        message = (
+            "Processing of the signed copy failed. Retry it, and finalize once "
+            "its risk check is complete."
+        )
+    elif document.status == STATUS_AWAITING_REVIEW:
+        message = (
+            "Review and approve the extracted text first. Finalize once the "
+            "risk check is complete."
+        )
+    else:
+        message = (
+            "The signed copy is still being processed. Finalize once its risk "
+            "check is complete."
+        )
+    raise ConflictError(
+        message,
+        details={"reason": "PROCESSING_NOT_COMPLETE", "status": document.status},
+    )
 
 
 class DocumentFinalization:
     def __init__(
         self,
         session: AsyncSession,
-        queue: DocumentQueue,
         provider: BlockchainProvider,
         backup: BackupProvider | None = None,
     ) -> None:
         self.session = session
-        self.dispatcher = DocumentDispatcher(session, queue)
         self.repo = DocumentRepository(session)
         self.access = DocumentAccess(session)
         self.snapshot_service = DocumentSnapshotService(session)
@@ -54,13 +83,19 @@ class DocumentFinalization:
     async def finalize(
         self, user: AuthenticatedUser, document_id: uuid.UUID
     ) -> RecordResponse:
-        """Freeze the signed copy, anchor it, then queue it for processing.
+        """Freeze the signed copy and anchor it. Refused until processing is COMPLETED.
 
-        What is anchored is the SHA-256 of the final PDF bytes. OCR, review and
-        enrichment run afterwards on the frozen copy and never feed the chain.
+        What is anchored is the SHA-256 of the final PDF bytes. OCR text,
+        review edits and insights were built before this and never feed the
+        chain.
         """
         user_id = user.user_id
         document = await self.access.authorize(user, document_id, ACTION_FINALIZE)
+        # Locked so a replace cannot swap the copy between this check and the
+        # anchor; the replace waits, then finds the document FINALIZED.
+        await self.session.refresh(document, with_for_update=True)
+        lifecycle.ensure(ACTION_FINALIZE, document)
+        ensure_processed(document)
 
         await self.session.refresh(document, ["signed_copy"])
         copy = document.signed_copy
@@ -101,14 +136,7 @@ class DocumentFinalization:
         document.finalized_by = user_id
         document.finalized_at = datetime.now(timezone.utc)
         await self.repo.add(change)
-        # The OCR job is promised in the same commit as the finalization, so a
-        # broker outage can delay processing but never lose it.
-        dispatch = await self.dispatcher.record(document.id, JOB_EXTRACT)
-        document.status = STATUS_QUEUED
         await self.session.commit()
-
-        # Only now does the pipeline see the document.
-        await self.dispatcher.send(dispatch)
 
         from app.celery_tasks import handle_document_recorded
 

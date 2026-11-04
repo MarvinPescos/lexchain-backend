@@ -56,7 +56,7 @@ class DocumentProcessing:
         else:
             job, status = JOB_EXTRACT, STATUS_QUEUED
 
-        # Same outbox as finalize/approve: the job commits with the status.
+        # Same outbox as intake/approve: the job commits with the status.
         document.status = status
         dispatch = await self.dispatcher.record(document_id, job)
         await self.session.commit()

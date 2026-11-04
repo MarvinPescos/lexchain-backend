@@ -26,6 +26,8 @@ from app.core import settings
 from app.features.books.constants import BOOK_CLOSED, BOOK_OPEN
 from app.features.books.models import Book
 from app.features.blockchain.service import BlockchainService
+from app.features.documents.constants import STATUS_COMPLETED
+from app.features.documents.models import Document
 from app.features.documents.queries import DocumentQueries
 from app.features.documents.workflow.drafting import DocumentDrafting
 from app.features.documents.workflow.finalization import DocumentFinalization
@@ -113,11 +115,13 @@ class RecordingQueue:
 
     def __init__(self) -> None:
         self.processed: list[uuid.UUID] = []
+        self.copies: list[uuid.UUID] = []
 
     async def enqueue_process_document(self, document_id, **kwargs) -> None:
         self.processed.append(document_id)
+        self.copies.append(kwargs["signed_copy_id"])
 
-    async def enqueue_enrich_document(self, document_id) -> None:
+    async def enqueue_enrich_document(self, document_id, **kwargs) -> None:
         pass
 
 
@@ -193,8 +197,10 @@ def queries(session: AsyncSession) -> DocumentQueries:
 
 
 @pytest.fixture
-def intake(session: AsyncSession, storage: FakeStorage) -> DocumentIntake:
-    return DocumentIntake(session)
+def intake(
+    session: AsyncSession, storage: FakeStorage, queue: RecordingQueue
+) -> DocumentIntake:
+    return DocumentIntake(session, queue)
 
 
 @pytest.fixture
@@ -235,9 +241,16 @@ async def connect_google(google: GoogleConnectionService, user: User) -> None:
 
 @pytest.fixture
 def finalization(
-    session: AsyncSession, storage: FakeStorage, queue: RecordingQueue, chain: FakeChain
+    session: AsyncSession, storage: FakeStorage, chain: FakeChain
 ) -> DocumentFinalization:
-    return DocumentFinalization(session, queue, chain)
+    return DocumentFinalization(session, chain)
+
+
+async def mark_processed(session: AsyncSession, document_id: uuid.UUID) -> None:
+    """Stand in for the pipeline: finalize waits for the signed copy to be processed."""
+    document = await session.get(Document, document_id)
+    document.status = STATUS_COMPLETED
+    await session.flush()
 
 
 @pytest.fixture

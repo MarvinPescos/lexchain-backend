@@ -16,7 +16,11 @@ class DocumentUploadResponse(BaseModel):
     file_name: str = Field(..., description="Display name")
     lifecycle: str = Field(..., description=LIFECYCLE_DESCRIPTION)
     status: str | None = Field(
-        None, description="Processing status; null until the document is finalized"
+        None,
+        description=(
+            "Processing status of the current signed copy; null until one is "
+            "attached or uploaded"
+        ),
     )
     on_chain: bool = Field(..., description="Check if doc is on chain")
     is_owner: bool = Field(
@@ -128,7 +132,10 @@ class DocumentPermissions(BaseModel):
     can_replace_signed_copy: bool = Field(..., description="May replace the signed PDF")
     can_correct_entry: bool = Field(..., description="May correct Doc. No. / Page No.")
     can_cancel: bool = Field(..., description="May cancel the document")
-    can_finalize: bool = Field(..., description="May snapshot and anchor on-chain")
+    can_finalize: bool = Field(
+        ...,
+        description="May snapshot and anchor on-chain; false until processing is COMPLETED",
+    )
     can_retry_processing: bool = Field(
         ..., description="May send a FAILED document back through processing"
     )
@@ -149,7 +156,11 @@ class DocumentResponse(BaseModel):
     file_name: str = Field(..., description="Display name")
     lifecycle: str = Field(..., description=LIFECYCLE_DESCRIPTION)
     status: str | None = Field(
-        None, description="Processing status; null until the document is finalized"
+        None,
+        description=(
+            "Processing status of the current signed copy; null until one is "
+            "attached or uploaded"
+        ),
     )
     on_chain: bool = Field(
         ..., description="Check if document is already recorded on-chain or not"
@@ -189,6 +200,15 @@ class DocumentResponse(BaseModel):
     )
     risk_flags: list[dict] = Field(
         default_factory=list, description="Identified risk flags"
+    )
+    analysis_status: str | None = Field(
+        None,
+        description=(
+            "How much of the document the risk analysis covered: `complete`, or "
+            "`partial` when some sections could not be analyzed (then "
+            "`risk_flags` may be missing clauses). Null until analysis has run, "
+            "or for an analysis made before this was recorded."
+        ),
     )
     created_at: datetime
     updated_at: datetime | None = None

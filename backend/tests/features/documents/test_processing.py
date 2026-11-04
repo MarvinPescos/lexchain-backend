@@ -37,7 +37,7 @@ class BrokerDown(RecordingQueue):
     async def enqueue_process_document(self, document_id, **kwargs) -> None:
         raise ConnectionError("broker unreachable")
 
-    async def enqueue_enrich_document(self, document_id) -> None:
+    async def enqueue_enrich_document(self, document_id, **kwargs) -> None:
         raise ConnectionError("broker unreachable")
 
 
@@ -46,7 +46,7 @@ class RecordingEnrichQueue(RecordingQueue):
         super().__init__()
         self.enriched: list = []
 
-    async def enqueue_enrich_document(self, document_id) -> None:
+    async def enqueue_enrich_document(self, document_id, **kwargs) -> None:
         self.enriched.append(document_id)
 
 
@@ -137,10 +137,9 @@ def ocr(monkeypatch: pytest.MonkeyPatch) -> FakeOCR:
 
 
 @pytest.fixture
-async def finalized(intake, finalization, lawyer, open_book):
-    me = as_auth(lawyer)
-    doc = await intake.upload_signed(me, pdf("deed"), "Deed", open_book.id)
-    await finalization.finalize(me, doc.document_id)
+async def signed(intake, lawyer, open_book):
+    """A Path 2 upload: SIGNED, its signed copy queued for processing."""
+    doc = await intake.upload_signed(as_auth(lawyer), pdf("deed"), "Deed", open_book.id)
     return doc.document_id
 
 
@@ -184,25 +183,24 @@ async def _approve(session, lawyer, document_id, queue) -> None:
 # === Durable dispatch (#9) ===
 
 
-async def test_finalize_sends_and_marks_the_dispatch(session, finalized, queue):
-    assert queue.processed == [finalized]
+async def test_upload_sends_and_marks_the_dispatch(session, signed, queue):
+    assert queue.processed == [signed]
     [dispatch] = await _dispatches(session)
     assert (dispatch.job, dispatch.attempts) == (JOB_EXTRACT, 0)
     assert dispatch.dispatched_at is not None
 
 
-async def test_broker_down_at_finalize_leaves_the_job_pending(
-    session, intake, storage, chain, lawyer, open_book
+async def test_broker_down_at_upload_leaves_the_job_pending(
+    session, storage, lawyer, open_book
 ):
-    from app.features.documents.workflow.finalization import DocumentFinalization
+    from app.features.documents.workflow.intake import DocumentIntake
 
     me = as_auth(lawyer)
-    doc = await intake.upload_signed(me, pdf("deed"), "Deed", open_book.id)
-    record = await DocumentFinalization(session, BrokerDown(), chain).finalize(
-        me, doc.document_id
+    doc = await DocumentIntake(session, BrokerDown()).upload_signed(
+        me, pdf("deed"), "Deed", open_book.id
     )
 
-    assert record.tx_hash
+    assert doc.lifecycle == "SIGNED"
     assert await _status(session, doc.document_id) == STATUS_QUEUED
     [dispatch] = await _dispatches(session)
     assert dispatch.dispatched_at is None
@@ -217,28 +215,29 @@ async def test_broker_down_at_finalize_leaves_the_job_pending(
 
 
 async def test_broker_down_at_approval_leaves_the_job_pending(
-    session, worker_db, ocr, notified, finalized, lawyer
+    session, worker_db, ocr, notified, signed, lawyer
 ):
-    await _extract(session, finalized)
-    await _approve(session, lawyer, finalized, BrokerDown())
+    await _extract(session, signed)
+    await _approve(session, lawyer, signed, BrokerDown())
 
-    assert await _status(session, finalized) == STATUS_ENRICHING
+    assert await _status(session, signed) == STATUS_ENRICHING
     pending = [d for d in await _dispatches(session) if d.job == JOB_ENRICH]
     assert [d.dispatched_at for d in pending] == [None]
 
     queue = RecordingEnrichQueue()
     assert await DocumentDispatcher(session, queue).send(pending[0]) is True
-    assert queue.enriched == [finalized]
+    assert queue.enriched == [signed]
 
 
 async def test_relay_resends_only_stale_pending_dispatches(
-    session, worker_db, monkeypatch, intake, chain, lawyer, open_book
+    session, worker_db, monkeypatch, storage, lawyer, open_book
 ):
-    from app.features.documents.workflow.finalization import DocumentFinalization
+    from app.features.documents.workflow.intake import DocumentIntake
 
     me = as_auth(lawyer)
-    doc = await intake.upload_signed(me, pdf("deed"), "Deed", open_book.id)
-    await DocumentFinalization(session, BrokerDown(), chain).finalize(me, doc.document_id)
+    doc = await DocumentIntake(session, BrokerDown()).upload_signed(
+        me, pdf("deed"), "Deed", open_book.id
+    )
     queue = RecordingQueue()
     monkeypatch.setattr(relay, "get_document_queue", lambda: queue)
 
@@ -260,38 +259,38 @@ async def test_relay_resends_only_stale_pending_dispatches(
 
 
 async def test_transient_ocr_error_retries_then_succeeds(
-    session, worker_db, ocr, notified, finalized
+    session, worker_db, ocr, notified, signed
 ):
     ocr.errors = [httpx.ConnectError("ocr down")]
 
     with pytest.raises(httpx.ConnectError):
-        await _extract(session, finalized, final_attempt=False)
-    assert await _status(session, finalized) != STATUS_FAILED
+        await _extract(session, signed, final_attempt=False)
+    assert await _status(session, signed) != STATUS_FAILED
     assert notified == []
 
-    await _extract(session, finalized, final_attempt=False)
-    assert await _status(session, finalized) == STATUS_AWAITING_REVIEW
-    assert await _count(session, DocumentExtraction, finalized) == 1
+    await _extract(session, signed, final_attempt=False)
+    assert await _status(session, signed) == STATUS_AWAITING_REVIEW
+    assert await _count(session, DocumentExtraction, signed) == 1
     assert notified == ["awaiting_review"]
 
 
 async def test_last_attempt_marks_failed_and_notifies_once(
-    session, worker_db, ocr, notified, finalized
+    session, worker_db, ocr, notified, signed
 ):
     ocr.errors = [httpx.ConnectError("ocr down")]
 
-    await _extract(session, finalized, final_attempt=True)
-    assert await _status(session, finalized) == STATUS_FAILED
+    await _extract(session, signed, final_attempt=True)
+    assert await _status(session, signed) == STATUS_FAILED
     assert notified == ["failed"]
 
 
 async def test_permanent_error_fails_without_retrying(
-    session, worker_db, ocr, notified, finalized
+    session, worker_db, ocr, notified, signed
 ):
     ocr.errors = [http_error(400)]
 
-    await _extract(session, finalized, final_attempt=False)
-    assert await _status(session, finalized) == STATUS_FAILED
+    await _extract(session, signed, final_attempt=False)
+    assert await _status(session, signed) == STATUS_FAILED
     assert notified == ["failed"]
 
 
@@ -302,39 +301,39 @@ def test_rate_limits_and_server_errors_are_retryable(status):
 
 
 async def test_extract_delivered_twice_does_nothing_the_second_time(
-    session, worker_db, ocr, notified, finalized
+    session, worker_db, ocr, notified, signed
 ):
-    await _extract(session, finalized)
-    await _extract(session, finalized)
+    await _extract(session, signed)
+    await _extract(session, signed)
 
     assert ocr.calls == 1
-    assert await _count(session, DocumentExtraction, finalized) == 1
+    assert await _count(session, DocumentExtraction, signed) == 1
     assert notified == ["awaiting_review"]
 
 
 async def test_enrichment_retry_rebuilds_partial_output(
-    session, worker_db, ocr, notified, finalized, lawyer
+    session, worker_db, ocr, notified, signed, lawyer
 ):
-    await _extract(session, finalized)
-    await _approve(session, lawyer, finalized, RecordingEnrichQueue())
+    await _extract(session, signed)
+    await _approve(session, lawyer, signed, RecordingEnrichQueue())
 
     # Chunks are committed before embedding fails.
     embedder = FakeEmbedder(httpx.ReadTimeout("embedder slow"))
     with pytest.raises(httpx.ReadTimeout):
-        await _enrich(finalized, embedder, final_attempt=False)
-    assert await _count(session, DocumentChunk, finalized) == 2
-    assert await _status(session, finalized) == STATUS_ENRICHING
+        await _enrich(signed, embedder, final_attempt=False)
+    assert await _count(session, DocumentChunk, signed) == 2
+    assert await _status(session, signed) == STATUS_ENRICHING
 
-    await _enrich(finalized, embedder, final_attempt=False)
-    assert await _status(session, finalized) == STATUS_COMPLETED
-    assert await _count(session, DocumentChunk, finalized) == 2
-    assert await _count(session, DocumentInsight, finalized) == 1
+    await _enrich(signed, embedder, final_attempt=False)
+    assert await _status(session, signed) == STATUS_COMPLETED
+    assert await _count(session, DocumentChunk, signed) == 2
+    assert await _count(session, DocumentInsight, signed) == 1
     assert notified == ["awaiting_review", "completed"]
 
     # Delivered again after completing: nothing changes.
-    await _enrich(finalized, FakeEmbedder())
-    assert await _count(session, DocumentChunk, finalized) == 2
-    assert await _count(session, DocumentInsight, finalized) == 1
+    await _enrich(signed, FakeEmbedder())
+    assert await _count(session, DocumentChunk, signed) == 2
+    assert await _count(session, DocumentInsight, signed) == 1
     assert notified == ["awaiting_review", "completed"]
 
 
@@ -342,14 +341,14 @@ async def test_enrichment_retry_rebuilds_partial_output(
 
 
 async def test_reembed_fills_only_missing_vectors(
-    session, worker_db, monkeypatch, ocr, notified, finalized, lawyer
+    session, worker_db, monkeypatch, ocr, notified, signed, lawyer
 ):
     from app.workers import reembed_chunks
 
     monkeypatch.setattr(reembed_chunks, "AsyncSessionLocal", worker.AsyncSessionLocal)
-    await _extract(session, finalized)
-    await _approve(session, lawyer, finalized, RecordingEnrichQueue())
-    await _enrich(finalized, FakeEmbedder())
+    await _extract(session, signed)
+    await _approve(session, lawyer, signed, RecordingEnrichQueue())
+    await _enrich(signed, FakeEmbedder())
 
     # What the e5 migration does to vectors from the old model.
     chunks = (await session.execute(select(DocumentChunk))).scalars().all()
@@ -378,71 +377,71 @@ async def _retry(session, user, document_id, queue):
 
 
 async def test_failed_ocr_is_retried_from_ocr(
-    session, worker_db, ocr, notified, finalized, lawyer
+    session, worker_db, ocr, notified, signed, lawyer
 ):
     ocr.errors = [httpx.ConnectError("ocr down")]
-    await _extract(session, finalized)
-    assert await _status(session, finalized) == STATUS_FAILED
+    await _extract(session, signed)
+    assert await _status(session, signed) == STATUS_FAILED
 
     queue = RecordingEnrichQueue()
-    result = await _retry(session, lawyer, finalized, queue)
+    result = await _retry(session, lawyer, signed, queue)
 
     assert (result.job, result.status) == (JOB_EXTRACT, STATUS_QUEUED)
-    assert queue.processed == [finalized] and queue.enriched == []
-    assert await _status(session, finalized) == STATUS_QUEUED
+    assert queue.processed == [signed] and queue.enriched == []
+    assert await _status(session, signed) == STATUS_QUEUED
 
-    await _extract(session, finalized)
-    assert await _status(session, finalized) == STATUS_AWAITING_REVIEW
+    await _extract(session, signed)
+    assert await _status(session, signed) == STATUS_AWAITING_REVIEW
     assert notified == ["failed", "awaiting_review"]
 
 
 async def test_failed_enrichment_is_retried_from_enrichment(
-    session, worker_db, ocr, notified, finalized, lawyer
+    session, worker_db, ocr, notified, signed, lawyer
 ):
-    await _extract(session, finalized)
-    await _approve(session, lawyer, finalized, RecordingEnrichQueue())
-    await _enrich(finalized, FakeEmbedder(http_error(400)))
-    assert await _status(session, finalized) == STATUS_FAILED
+    await _extract(session, signed)
+    await _approve(session, lawyer, signed, RecordingEnrichQueue())
+    await _enrich(signed, FakeEmbedder(http_error(400)))
+    assert await _status(session, signed) == STATUS_FAILED
 
     queue = RecordingEnrichQueue()
-    result = await _retry(session, lawyer, finalized, queue)
+    result = await _retry(session, lawyer, signed, queue)
 
     assert (result.job, result.status) == (JOB_ENRICH, STATUS_ENRICHING)
-    assert queue.enriched == [finalized] and queue.processed == []
+    assert queue.enriched == [signed] and queue.processed == []
 
-    await _enrich(finalized, FakeEmbedder())
-    assert await _status(session, finalized) == STATUS_COMPLETED
+    await _enrich(signed, FakeEmbedder())
+    assert await _status(session, signed) == STATUS_COMPLETED
     assert ocr.calls == 1  # OCR and review were not redone
 
 
 async def test_only_a_failed_document_can_be_retried(
-    session, worker_db, ocr, notified, finalized, lawyer
+    session, worker_db, ocr, notified, signed, lawyer
 ):
     from app.shared.errors.exceptions import ConflictError
 
     with pytest.raises(ConflictError):
-        await _retry(session, lawyer, finalized, RecordingQueue())
+        await _retry(session, lawyer, signed, RecordingQueue())
 
     ocr.errors = [httpx.ConnectError("ocr down")]
-    await _extract(session, finalized)
-    await _retry(session, lawyer, finalized, RecordingQueue())
+    await _extract(session, signed)
+    await _retry(session, lawyer, signed, RecordingQueue())
 
     # A second click finds it QUEUED, and queues nothing more.
     with pytest.raises(ConflictError):
-        await _retry(session, lawyer, finalized, RecordingQueue())
+        await _retry(session, lawyer, signed, RecordingQueue())
     assert len([d for d in await _dispatches(session) if d.job == JOB_EXTRACT]) == 2
 
 
 async def test_permission_shows_retry_only_when_failed(
-    session, worker_db, ocr, notified, finalized, lawyer
+    session, worker_db, ocr, notified, signed, lawyer
 ):
     from app.features.documents.access import DocumentAccess
 
     access = DocumentAccess(session)
-    document = await session.get(Document, finalized)
+    document = await session.get(Document, signed)
     assert not access.permissions(as_auth(lawyer), document).can_retry_processing
 
     ocr.errors = [httpx.ConnectError("ocr down")]
-    await _extract(session, finalized)
+    await _extract(session, signed)
     await session.refresh(document)
     assert access.permissions(as_auth(lawyer), document).can_retry_processing

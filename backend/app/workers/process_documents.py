@@ -1,4 +1,6 @@
 import uuid
+from collections.abc import Awaitable, Callable
+from functools import partial
 
 import httpx
 from langfuse import get_client, propagate_attributes
@@ -11,7 +13,10 @@ from app.features.documents.extraction.repository import DocumentExtractionRepos
 from app.features.insights.repository import DocumentInsightRepository
 from app.infrastructure.clients.supabase_storage import get_storage_client
 from app.infrastructure.database import AsyncSessionLocal
-from app.infrastructure.nlp.analysis.base import AnalysisProvider
+from app.infrastructure.nlp.analysis.base import (
+    ANALYSIS_STATUS_COMPLETE,
+    AnalysisProvider,
+)
 from app.infrastructure.nlp.chunking.base import Chunker
 from app.infrastructure.nlp.embeddings.base import Embedder
 from app.infrastructure.nlp.ocr import build_ocr
@@ -35,13 +40,18 @@ langfuse = get_client()
 async def extract_document_job(
     document_id: uuid.UUID,
     storage_url: str,
+    signed_copy_id: uuid.UUID | str | None = None,
     final_attempt: bool = True,
 ) -> None:
-    """Phase 1: OCR the file and hand it to the issuer for review.
+    """Phase 1: OCR the signed copy and hand it to the issuer for review.
 
     Stops at AWAITING_REVIEW. Chunking, embedding and analysis deliberately do
-    not run here — building them from unreviewed text would mean the RAG index
-    and the on-chain snapshot disagree the moment the issuer corrects anything.
+    not run here — they are built from the text the issuer approves.
+
+    The job is for one signed copy. If the lawyer replaced it, the job does
+    nothing, and no commit of a stale job lands after the replace (see
+    `_commit_if_current`). None means the current copy, for messages queued
+    before jobs named their copy.
 
     A transient error is raised for Celery to retry unless this is the
     `final_attempt`; only then is the document marked FAILED. A job delivered
@@ -56,6 +66,10 @@ async def extract_document_job(
         if not doc:
             log.warning("worker.document.missing", document_id=str(document_id))
             return
+        copy_id = _as_uuid(signed_copy_id) or doc.signed_copy_id
+        if copy_id != doc.signed_copy_id:
+            _log_replaced("extract", document_id, copy_id)
+            return
         if doc.status in OCR_DONE_STATUSES:
             log.info(
                 "worker.document.extract.skipped",
@@ -67,6 +81,7 @@ async def extract_document_job(
         stable_document_id_str = str(stable_document_id)
         doc_user_id = doc.user_id
         doc_file_name = doc.file_name
+        commit = partial(_commit_if_current, session, document_id, copy_id)
 
         with langfuse.start_as_current_observation(
             as_type="span",
@@ -80,7 +95,7 @@ async def extract_document_job(
                 try:
                     file_data = await get_storage_client().download(storage_url)
 
-                    await _mark_processing(session, doc_repo, doc)
+                    await _mark_processing(commit, doc_repo, doc)
 
                     # Build OCR provider from downloaded bytes
                     ocr = build_ocr(file_data)
@@ -93,7 +108,7 @@ async def extract_document_job(
                     # retry never finds an extraction it did not finish.
                     flag_count = len(extraction.flags or [])
                     await doc_repo.update(doc, status=STATUS_AWAITING_REVIEW)
-                    await session.commit()
+                    await commit()
 
                     handle_document_processed.delay(
                         user_id=str(doc_user_id),
@@ -118,6 +133,10 @@ async def extract_document_job(
                         }
                     )
 
+                except SignedCopyReplaced:
+                    await session.rollback()
+                    root_span.update(output={"status": "replaced"})
+                    _log_replaced("extract", document_id, copy_id)
                 except Exception as e:
                     await session.rollback()
                     if not final_attempt and is_retryable(e):
@@ -135,14 +154,13 @@ async def extract_document_job(
                             document_id=stable_document_id_str,
                             error=str(e),
                         )
-                        await _mark_failed(stable_document_id)
-
-                        handle_document_processed.delay(
-                            user_id=str(doc_user_id),
-                            document_title=doc_file_name,
-                            document_id=str(stable_document_id),
-                            status="failed",
-                        )
+                        if await _mark_failed(stable_document_id, copy_id):
+                            handle_document_processed.delay(
+                                user_id=str(doc_user_id),
+                                document_title=doc_file_name,
+                                document_id=str(stable_document_id),
+                                status="failed",
+                            )
 
         # Flush outside the with block — span is fully closed before sending
         langfuse.flush()
@@ -157,14 +175,18 @@ async def enrich_document_job(
     analyzer: AnalysisProvider,
     chunker: Chunker,
     embedder: Embedder,
+    signed_copy_id: uuid.UUID | str | None = None,
     final_attempt: bool = True,
 ) -> None:
     """Phase 2: chunk, embed and analyze the text the issuer approved.
 
-    Runs only after approval, so every derived artefact is built from the same
-    text that finalize will snapshot and anchor.
+    Runs only after approval, while the document is still SIGNED, so the
+    lawyer sees the risk clauses before finalizing. Nothing built here feeds
+    the anchored hash, which is the SHA-256 of the signed PDF.
 
-    Retries like extract_document_job. Each run first clears the chunks and
+    Runs only while the document is ENRICHING, and like extract_document_job
+    does nothing for a signed copy that has been replaced. Retries like
+    extract_document_job. Each run first clears the chunks and
     insights an earlier, interrupted run left behind, so a retry rebuilds
     them rather than duplicating them. A job delivered again after the
     document completed does nothing.
@@ -181,15 +203,27 @@ async def enrich_document_job(
             log.warning("worker.document.missing", document_id=str(document_id))
             return
 
-        if doc.status == STATUS_COMPLETED:
-            log.info("worker.document.enrich.skipped", document_id=str(document_id))
+        copy_id = _as_uuid(signed_copy_id) or doc.signed_copy_id
+        if copy_id != doc.signed_copy_id:
+            _log_replaced("enrich", document_id, copy_id)
+            return
+
+        # Approve and retry set ENRICHING; anything else means the job is late
+        # (already completed) or its text was cleared by a replace.
+        if doc.status != STATUS_ENRICHING:
+            log.info(
+                "worker.document.enrich.skipped",
+                document_id=str(document_id),
+                status=doc.status,
+            )
             return
 
         extraction = await extraction_repo.get_by_document_id(document_id)
         if not extraction:
             log.error("worker.document.extraction.missing", document_id=str(document_id))
-            await _mark_failed(document_id)
+            await _mark_failed(document_id, copy_id)
             return
+        commit = partial(_commit_if_current, session, document_id, copy_id)
 
         stable_document_id_str = str(document_id)
         doc_user_id = doc.user_id
@@ -210,15 +244,15 @@ async def enrich_document_job(
                     # Whatever an interrupted run stored is rebuilt from scratch.
                     await chunk_repo.delete_for_document(doc.id)
                     await insight_repo.delete_for_document(doc.id)
-                    await session.commit()
+                    await commit()
 
                     # 1. Chunk
                     chunk_result, stored_chunks = await _run_chunking_and_store_chunks(
-                        session, chunker, chunk_repo, doc, extraction, approved_text
+                        commit, chunker, chunk_repo, doc, extraction, approved_text
                     )
                     # 2. Embed
                     embeddings_dim = await _run_embeddings(
-                        session,
+                        commit,
                         embedder,
                         chunk_repo,
                         chunks_created=chunk_result.chunks,
@@ -229,7 +263,7 @@ async def enrich_document_job(
                         analyzer, insight_repo, doc, extraction, approved_text
                     )
 
-                    await _mark_completed(session, doc_repo, doc)
+                    await _mark_completed(commit, doc_repo, doc)
 
                     handle_document_processed.delay(
                         user_id=str(doc_user_id),
@@ -243,6 +277,10 @@ async def enrich_document_job(
                         document_id=stable_document_id_str,
                         chunks=len(chunk_result.chunks),
                         labels=analysis_result.labels,
+                        risk_flags=len(analysis_result.risk_flags or []),
+                        analysis_status=(analysis_result.meta or {}).get(
+                            "analysis_status", ANALYSIS_STATUS_COMPLETE
+                        ),
                         embeddings_dim=embeddings_dim,
                         edited_blocks=extraction.edited_block_count,
                     )
@@ -254,6 +292,10 @@ async def enrich_document_job(
                         }
                     )
 
+                except SignedCopyReplaced:
+                    await session.rollback()
+                    root_span.update(output={"status": "replaced"})
+                    _log_replaced("enrich", document_id, copy_id)
                 except Exception as e:
                     await session.rollback()
                     if not final_attempt and is_retryable(e):
@@ -271,14 +313,13 @@ async def enrich_document_job(
                             document_id=stable_document_id_str,
                             error=str(e),
                         )
-                        await _mark_failed(document_id)
-
-                        handle_document_processed.delay(
-                            user_id=str(doc_user_id),
-                            document_title=doc_file_name,
-                            document_id=stable_document_id_str,
-                            status="failed",
-                        )
+                        if await _mark_failed(document_id, copy_id):
+                            handle_document_processed.delay(
+                                user_id=str(doc_user_id),
+                                document_title=doc_file_name,
+                                document_id=stable_document_id_str,
+                                status="failed",
+                            )
 
         langfuse.flush()
 
@@ -288,8 +329,45 @@ async def enrich_document_job(
 
 # Helpers
 
+# Commits the job's writes, only while its signed copy is still current.
+Commit = Callable[[], Awaitable[None]]
+
 # A job for a document already past OCR was delivered twice: nothing to do.
 OCR_DONE_STATUSES = (STATUS_AWAITING_REVIEW, STATUS_ENRICHING, STATUS_COMPLETED)
+
+
+class SignedCopyReplaced(Exception):
+    """The signed copy a job was working on is no longer the current one."""
+
+
+def _as_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
+    # Celery delivers ids as strings.
+    if value is None or isinstance(value, uuid.UUID):
+        return value
+    return uuid.UUID(value)
+
+
+def _log_replaced(job: str, document_id: uuid.UUID, copy_id: uuid.UUID | None) -> None:
+    log.info(
+        f"worker.document.{job}.copy_replaced",
+        document_id=str(document_id),
+        signed_copy_id=str(copy_id),
+    )
+
+
+async def _commit_if_current(
+    session: AsyncSession, document_id: uuid.UUID, signed_copy_id: uuid.UUID | None
+) -> None:
+    """Commit only while `signed_copy_id` is still the document's current copy.
+
+    Locks the document row first. Replacing the signed copy takes the same
+    lock, so either this commit lands before the replace (which then clears
+    it), or the replace lands first and this raises SignedCopyReplaced.
+    """
+    current = await DocumentRepository(session).lock_signed_copy_id(document_id)
+    if current != signed_copy_id:
+        raise SignedCopyReplaced(str(signed_copy_id))
+    await session.commit()
 
 
 def is_retryable(error: Exception) -> bool:
@@ -306,13 +384,9 @@ def is_retryable(error: Exception) -> bool:
 
 
 
-async def _mark_processing(
-    session: AsyncSession,
-    doc_repo: DocumentRepository,
-    doc,
-) -> None:
+async def _mark_processing(commit: Commit, doc_repo: DocumentRepository, doc) -> None:
     await doc_repo.update(doc, status=STATUS_PROCESSING)
-    await session.commit()
+    await commit()
 
 
 async def _run_ocr_and_store_extraction(
@@ -360,8 +434,8 @@ async def _run_ocr_and_store_extraction(
         flags=flags,
     )
 
-    # OCR runs after finalize, on the frozen signed copy. Nothing here touches
-    # the anchored hash — that is the SHA-256 of the PDF, set at finalize.
+    # OCR runs on the signed copy before finalize. Nothing here touches the
+    # anchored hash — that is the SHA-256 of the PDF, taken at finalize.
 
     # Not committed here: the caller commits it with AWAITING_REVIEW.
     return ocr_result, extraction
@@ -378,7 +452,7 @@ async def _run_analysis_and_store_insight(
         as_type="generation",
         name="analysis_llm",
         model="meta/llama-3.1-70b-instruct",
-        input=text[:24_000],
+        input={"text_length": len(text), "text_preview": text[:2_000]},
     ) as generation:
         analysis_result = await analyzer.analyze(text)
         generation.update(
@@ -388,6 +462,9 @@ async def _run_analysis_and_store_insight(
                 "entity_count": len(analysis_result.entities or []),
                 "risk_flag_count": len(analysis_result.risk_flags or []),
                 "confidence": analysis_result.confidence,
+                "analysis_status": (analysis_result.meta or {}).get(
+                    "analysis_status"
+                ),
             }
         )
     # generation auto-closes on exit
@@ -412,7 +489,7 @@ async def _run_analysis_and_store_insight(
 
 
 async def _run_chunking_and_store_chunks(
-    session: AsyncSession,
+    commit: Commit,
     chunker: Chunker,
     chunk_repo: DocumentChunkRepository,
     doc,
@@ -464,13 +541,13 @@ async def _run_chunking_and_store_chunks(
 
     if rows:
         stored = await chunk_repo.bulk_create(rows)
-        await session.commit()
+        await commit()
 
     return chunk_result, stored
 
 
 async def _run_embeddings(
-    session,
+    commit: Commit,
     embedder: Embedder,
     chunk_repo: DocumentChunkRepository,
     chunks_created,  # list[Chunk] with text
@@ -494,7 +571,7 @@ async def _run_embeddings(
                 vector=result.vector,
                 meta=result.meta,
             )
-        await session.commit()
+        await commit()
 
         span.update(
             output={
@@ -509,24 +586,30 @@ async def _run_embeddings(
     return results[0].dim if results else None
 
 
-async def _mark_completed(
-    session: AsyncSession,
-    doc_repo: DocumentRepository,
-    doc,
-) -> None:
+async def _mark_completed(commit: Commit, doc_repo: DocumentRepository, doc) -> None:
     await doc_repo.update(doc, status=STATUS_COMPLETED)
-    await session.commit()
+    await commit()
 
 
-async def _mark_failed(document_id: uuid.UUID) -> None:
+async def _mark_failed(document_id: uuid.UUID, signed_copy_id: uuid.UUID | None) -> bool:
+    """Mark the document FAILED, unless its signed copy was replaced meanwhile.
+
+    True when it was marked, so the caller notifies only then.
+    """
     try:
         async with AsyncSessionLocal() as fail_session:
             fail_repo = DocumentRepository(fail_session)
             fresh = await fail_repo.get_by_id(document_id)
-            if fresh:
-                await fail_repo.update(fresh, status=STATUS_FAILED)
-                await fail_session.commit()
+            if not fresh:
+                return False
+            await fail_repo.update(fresh, status=STATUS_FAILED)
+            await _commit_if_current(fail_session, document_id, signed_copy_id)
+            return True
+    except SignedCopyReplaced:
+        _log_replaced("mark_failed", document_id, signed_copy_id)
+        return False
     except Exception:
         log.error(
             "worker.document.failed.status_update_failed", document_id=str(document_id)
         )
+        return False

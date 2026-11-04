@@ -15,7 +15,7 @@ from app.shared.errors.exceptions import (
     NotFoundError,
     ServiceUnavailableError,
 )
-from tests.conftest import as_auth, pdf
+from tests.conftest import as_auth, pdf, mark_processed
 from tests.features.blockchain.test_tamper_report import FakeBackup
 from tests.features.documents.test_drafting import add_party
 
@@ -40,7 +40,8 @@ async def finalized(session, intake, queue, chain, backup, storage, lawyer, open
     """A finalized, archived deed; returns (document_id, stored url, anchored hash)."""
     me = as_auth(lawyer)
     doc = await intake.upload_signed(me, pdf("deed"), "Deed", open_book.id)
-    record = await DocumentFinalization(session, queue, chain, backup).finalize(
+    await mark_processed(session, doc.document_id)
+    record = await DocumentFinalization(session, chain, backup).finalize(
         me, doc.document_id
     )
     [url] = storage.objects
