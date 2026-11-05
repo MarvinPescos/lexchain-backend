@@ -5,19 +5,21 @@ account. A stopped copy loses its 5-minute recovery point silently, so problems
 are emailed rather than only logged.
 """
 
-from dataclasses import dataclass
+from typing import Literal
 
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import settings
 from app.infrastructure.database import AsyncSessionLocal
-from app.infrastructure.email import EmailMessage, build_email_provider
 from app.infrastructure.observability.logging_setup import log
+from app.workers.backup_alerts import send_backup_alert
+
+ReplicationProblem = Literal["slot_missing", "subscription_stopped", "lag_exceeded"]
 
 
-@dataclass
-class SlotState:
+class SlotState(BaseModel):
     active: bool
     lag_bytes: int | None
 
@@ -40,7 +42,9 @@ async def read_slot(session: AsyncSession, slot_name: str) -> SlotState | None:
     )
 
 
-def replication_problem(slot: SlotState | None, max_lag_bytes: int) -> str | None:
+def replication_problem(
+    slot: SlotState | None, max_lag_bytes: int
+) -> ReplicationProblem | None:
     if slot is None:
         return "slot_missing"
     if not slot.active:
@@ -64,13 +68,7 @@ async def check_replication() -> None:
         return
 
     log.error("backup.replication.problem", problem=problem, slot=slot_name)
-    if settings.BACKUP_ALERT_EMAIL:
-        body = f"Replication to the RDS copy needs attention: {problem} (slot {slot_name})."
-        await build_email_provider().send(
-            EmailMessage(
-                to=settings.BACKUP_ALERT_EMAIL,
-                subject="LexChain: database replication problem",
-                html=f"<p>{body}</p>",
-                text=body,
-            )
-        )
+    await send_backup_alert(
+        "database replication problem",
+        f"Replication to the RDS copy needs attention: {problem} (slot {slot_name}).",
+    )

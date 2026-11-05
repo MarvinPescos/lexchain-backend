@@ -139,7 +139,7 @@ class Settings(BaseSettings):
         default=None, description="Locked bucket for hourly dumps"
     )
     BACKUP_DB_MONTHLY_BUCKET: str | None = Field(
-        default=None, description="Locked bucket for each month's first dump"
+        default=None, description="Locked bucket for the dumps of each month's first day"
     )
     BACKUP_DB_SECONDS: int = Field(
         default=3600, ge=300, description="How often the database is dumped"
@@ -161,7 +161,7 @@ class Settings(BaseSettings):
         description="Replication lag that triggers an alert",
     )
     BACKUP_ALERT_EMAIL: str | None = Field(
-        default=None, description="Who is told when replication stops"
+        default=None, description="Who is told when a dump fails or replication stops"
     )
 
     WEB_RPC_URL: str = Field(..., description="")

@@ -5,19 +5,22 @@ infra/backups/RECOVERY.md). A job that stops running is caught from outside the
 server, by the missing-dump alarm in infra/backups.
 """
 
+import asyncio
 import os
 import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
-import boto3
-from botocore.exceptions import ClientError
 from sqlalchemy.engine import URL, make_url
 
 from app.core import settings
+from app.infrastructure.backup import build_dump_store
 from app.infrastructure.observability.logging_setup import log
+from app.workers.backup_alerts import send_backup_alert
+
+DUMP_CONTENT_TYPE = "application/gzip"
+DUMP_FAILED = "database backup failed"
 
 
 def utcnow() -> datetime:
@@ -47,61 +50,41 @@ def dump_database(target: Path) -> None:
     )
 
 
-def upload(client: Any, bucket: str, key: str, path: Path) -> None:
-    with path.open("rb") as body:
-        client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=body,
-            ContentType="application/gzip",
-            IfNoneMatch="*",
-            # Object Lock rejects a write without a checksum.
-            ChecksumAlgorithm="SHA256",
-        )
-
-
-def upload_monthly(client: Any, bucket: str, key: str, path: Path) -> bool:
-    """Keep the month's first dump. The role can't list the bucket, so the
-    write-once key is what says whether this month already has one."""
-    try:
-        upload(client, bucket, key, path)
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "PreconditionFailed":
-            return False
-        raise
-    return True
-
-
-def backup_database() -> None:
+async def backup_database() -> None:
     if not settings.BACKUP_DB_URL or not settings.BACKUP_DB_BUCKET:
         log.info("backup.db.skipped")
         return
 
     now = utcnow()
     key = f"{now:%Y-%m-%dT%H-%M-%SZ}.sql.gz"
-    monthly_stored = False
+    # Every dump of the month's first day, not just the first one: the role
+    # can't list the bucket, and a fixed monthly key could be claimed in advance
+    # by a compromised server, silently blocking the real dump.
+    monthly = settings.BACKUP_DB_MONTHLY_BUCKET if now.day == 1 else None
     try:
         with tempfile.TemporaryDirectory() as directory:
             dump = Path(directory) / "dump.sql.gz"
-            dump_database(dump)
+            await asyncio.to_thread(dump_database, dump)
             size_bytes = dump.stat().st_size
 
-            client = boto3.client("s3", region_name=settings.AWS_REGION)
-            upload(client, settings.BACKUP_DB_BUCKET, key, dump)
-            if settings.BACKUP_DB_MONTHLY_BUCKET:
-                monthly_stored = upload_monthly(
-                    client,
-                    settings.BACKUP_DB_MONTHLY_BUCKET,
-                    f"{now:%Y-%m}.sql.gz",
-                    dump,
+            await build_dump_store(settings.BACKUP_DB_BUCKET).store_file(
+                key, dump, DUMP_CONTENT_TYPE
+            )
+            if monthly:
+                await build_dump_store(monthly).store_file(
+                    key, dump, DUMP_CONTENT_TYPE
                 )
     except subprocess.CalledProcessError as e:
-        log.error("backup.db.failed", error=f"pg_dump exited {e.returncode}", stderr=e.stderr)
+        log.error(
+            "backup.db.failed", error=f"pg_dump exited {e.returncode}", stderr=e.stderr
+        )
+        await send_backup_alert(DUMP_FAILED, f"pg_dump exited {e.returncode}.")
         raise
     except Exception as e:
         log.error("backup.db.failed", error=str(e))
+        await send_backup_alert(DUMP_FAILED, f"The dump {key} was not stored.")
         raise
 
     log.info(
-        "backup.db.stored", key=key, size_bytes=size_bytes, monthly_stored=monthly_stored
+        "backup.db.stored", key=key, size_bytes=size_bytes, monthly=monthly is not None
     )

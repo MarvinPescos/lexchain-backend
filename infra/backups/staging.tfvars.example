@@ -1,5 +1,6 @@
 environment = "staging"
 aws_profile = "lexchain"
+region = "ap-southeast-1"
 bucket_name = "lexchain-staging-backups-CHANGE-ME"
 
 # Test data: short, overridable locks.

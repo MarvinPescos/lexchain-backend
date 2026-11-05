@@ -8,7 +8,7 @@ def backup_database_task():
     """Dump the whole database to the locked buckets."""
     from app.workers.backup_database import backup_database
 
-    backup_database()
+    run_async(backup_database())
 
 
 @celery_task(name="backup.check_replication")

@@ -1,6 +1,7 @@
 import pytest
 
 from app.core import settings
+from app.workers import backup_alerts
 from app.workers import check_replication as job
 from app.workers.check_replication import SlotState, replication_problem
 
@@ -33,7 +34,7 @@ class Outbox:
 @pytest.fixture
 def outbox(monkeypatch):
     box = Outbox()
-    monkeypatch.setattr(job, "build_email_provider", lambda: box)
+    monkeypatch.setattr(backup_alerts, "build_email_provider", lambda: box)
     monkeypatch.setattr(settings, "BACKUP_ALERT_EMAIL", "lawyer@example.com")
     return box
 

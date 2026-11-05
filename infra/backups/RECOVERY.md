@@ -6,7 +6,7 @@ Run all of this from the lawyer's admin account in the backups account. The app 
 |---|---|---|---|
 | RDS copy with AWS Backup continuous backups | About 5 minutes plus replication lag | Up to 35 days | App tables |
 | Hourly `pg_dump` | 1 hour | 7 days | Everything, including `auth` |
-| Monthly `pg_dump` | 1 month | The firm's retention period | Everything, including `auth`. For tampering noticed late |
+| Monthly `pg_dump` (every dump of the 1st) | 1 month | The firm's retention period | Everything, including `auth`. For tampering noticed late |
 
 Finalized PDFs and their anchors lose nothing, because both are written at finalize.
 
@@ -21,12 +21,13 @@ Finalized PDFs and their anchors lose nothing, because both are written at final
    BACKUP_DB_BUCKET=<db_bucket_name output>
    BACKUP_DB_MONTHLY_BUCKET=<db_monthly_bucket_name output>
    AWS_REGION=ap-southeast-1
+   BACKUP_ALERT_EMAIL=<address>
    ```
 
    Use the session pooler (port 5432). The transaction pooler doesn't work with `pg_dump`, and the direct host is IPv6-only by default.
 4. Wait for `backup.db.stored` in the worker log, then confirm a `.sql.gz` in the hourly bucket.
 
-Every object written to the documents bucket must send `If-None-Match`, admins included. For the plan's section 7 row 7 test, pass `--if-none-match '*'` to `aws s3api put-object`.
+Every object written to the documents and dump buckets must send `If-None-Match`, admins included. For the plan's section 7 row 7 test, pass `--if-none-match '*'` to `aws s3api put-object`.
 
 ## Restore a dump
 
@@ -43,7 +44,8 @@ Use a **fresh Supabase project**. A local Postgres lacks Supabase's `auth` and `
    The new project already has Supabase's own objects, so expect `already exists` errors for those. Read the rest of the log.
 3. Compare table row counts with the source, and sign in with a real user.
 4. Run the chain reconcile job. Documents finalized after the dump have an archive and an anchor but no database row, and it lists them. Re-enter those from the archive.
-5. Note the time taken.
+5. If `lifecycle` was edited on a document, verify shows `TAMPERED` but restore refuses it. Put the column back from the dump first, then restore the file.
+6. Note the time taken.
 
 ## Set up the RDS copy
 
@@ -59,10 +61,16 @@ Run the rest from the bastion: `aws ssm start-session --target <rds_bastion_id o
    grant usage on schema public to rds_replication;
    grant select on all tables in schema public to rds_replication;
    alter default privileges in schema public grant select on tables to rds_replication;
-   create publication rds_copy for tables in schema public;
+   do $$ begin
+     execute (
+       select 'create publication rds_copy for table '
+         || string_agg(format('%I.%I', schemaname, tablename), ', ')
+       from pg_tables where schemaname = 'public'
+     );
+   end $$;
    ```
 
-   `auth` stays out; dumps cover it.
+   The tables are listed because `for tables in schema` needs a superuser, which Supabase's `postgres` role isn't. `auth` stays out; dumps cover it.
 3. Load the schema into RDS:
 
    ```bash
@@ -79,9 +87,9 @@ Run the rest from the bastion: `aws ssm start-session --target <rds_bastion_id o
      publication rds_copy;
    ```
 
-5. Set `BACKUP_REPLICATION_SLOT=rds_copy` and `BACKUP_ALERT_EMAIL=<address>` on the server. The worker then emails that address if the subscription stops or falls behind.
+5. Set `BACKUP_REPLICATION_SLOT=rds_copy` on the server. The worker then emails `BACKUP_ALERT_EMAIL` if the subscription stops or falls behind. Lag is measured in bytes of WAL, so a quiet database can sit behind for a long time without an alert, with little to lose.
 
-**Every Alembic migration also has to run on RDS**, because schema changes don't replicate. Run it there first, so replication doesn't stop on a missing column. A new table also needs `alter subscription rds_copy refresh publication;`.
+**Every Alembic migration also has to run on RDS**, because schema changes don't replicate. Add columns on RDS first and drop them on RDS last, so replication never meets a column it doesn't have. A new table also needs `alter publication rds_copy add table <table>;` in Supabase, then `alter subscription rds_copy refresh publication;` on RDS.
 
 ## Restore RDS to just before an edit
 
@@ -98,22 +106,40 @@ Run the rest from the bastion: `aws ssm start-session --target <rds_bastion_id o
      --no-publicly-accessible
    ```
 
-3. Check the tampered value is gone from the restored instance.
-4. From the bastion, copy `public` back into Supabase:
+3. **Detach the restored instance from Supabase straight away.** It carries the same subscription, and if it connects it takes over the slot and pulls the tampered rows back in. `slot_name = none` keeps the drop from removing the slot the live copy uses:
+
+   ```sql
+   alter subscription rds_copy disable;
+   alter subscription rds_copy set (slot_name = none);
+   drop subscription rds_copy;
+   ```
+
+4. Check the tampered value is gone from the restored instance.
+5. From the bastion, copy `public` back into Supabase:
 
    ```bash
    pg_dump --data-only --schema=public --no-owner "<restored rds url>" > public.sql
    ```
 
    Stop the workers, truncate the app tables in Supabase, and load `public.sql` with `session_replication_role = replica`, so foreign keys don't depend on load order.
-5. Disable the subscription on the old instance and delete the restored one when done. The slot on Supabase is still in use, so drop the subscription first if RDS is being rebuilt.
-6. Note the time taken and the rows lost.
+6. The load replicates to the live copy, so it ends up matching. Delete the restored instance when done.
+7. Note the time taken and the rows lost.
 
 ## Tear down after validation
 
-1. Set `rds = false` and apply. If the vault lock refuses to delete recovery points younger than `min_retention_days`, wait a day and apply again.
-2. In Supabase, run `drop publication rds_copy; drop role rds_replication;`, and check `pg_replication_slots` is empty. **A slot left behind holds WAL until the disk fills.**
-3. Remove `BACKUP_REPLICATION_SLOT` from the server.
-4. Check that nothing else is billing in either account.
+1. Remove `BACKUP_REPLICATION_SLOT` from the server.
+2. On RDS, run `drop subscription rds_copy;`. This also drops the slot on Supabase.
+3. Set `rds = false` and apply. If the vault refuses to delete a recovery point, delete that recovery point by hand in the AWS Backup console and apply again.
+4. In Supabase, clean up:
+
+   ```sql
+   drop publication rds_copy;
+   drop owned by rds_replication;
+   drop role rds_replication;
+   select slot_name from pg_replication_slots;
+   ```
+
+   **A slot left behind holds WAL until the disk fills.** If `rds_copy` is still listed, run `select pg_drop_replication_slot('rds_copy');`.
+5. Check that nothing else is billing in either account.
 
 The dump buckets stay: they have `prevent_destroy`, and their locks are short during validation.

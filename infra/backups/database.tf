@@ -157,6 +157,26 @@ data "aws_iam_policy_document" "db" {
     resources = ["${aws_s3_bucket.db[each.key].arn}/*"]
   }
 
+  # A junk version over a key would be what a restore downloads.
+  statement {
+    sid     = "DenyOverwrite"
+    effect  = "Deny"
+    actions = ["s3:PutObject"]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    resources = ["${aws_s3_bucket.db[each.key].arn}/*"]
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-none-match"
+      values   = ["true"]
+    }
+  }
+
   statement {
     sid     = "DenyInsecureTransport"
     effect  = "Deny"
@@ -190,7 +210,8 @@ resource "aws_s3_bucket_policy" "db" {
 }
 
 # The check for stopped backups runs here, outside the server it watches: no
-# PUT into the hourly bucket for two hours raises the alarm, whatever the cause.
+# successful PUT into the hourly bucket for two hours raises the alarm, whatever
+# the cause. It counts uploads, so it can't tell a real dump from a junk object.
 resource "aws_s3_bucket_metric" "hourly" {
   bucket = aws_s3_bucket.db["hourly"].id
   name   = "EntireBucket"
@@ -216,15 +237,45 @@ resource "aws_cloudwatch_metric_alarm" "missing_dump" {
   alarm_name        = "lexchain-${var.environment}-missing-db-dump"
   alarm_description = "No database dump reached the hourly bucket for two hours."
 
-  namespace   = "AWS/S3"
-  metric_name = "PutRequests"
-  dimensions = {
-    BucketName = aws_s3_bucket.db["hourly"].bucket
-    FilterId   = aws_s3_bucket_metric.hourly.name
+  # PutRequests counts refused requests too, so a dump denied by a broken
+  # policy would otherwise look healthy.
+  metric_query {
+    id          = "stored"
+    expression  = "FILL(puts, 0) - FILL(errors, 0)"
+    label       = "Successful PUTs"
+    return_data = true
   }
 
-  statistic           = "Sum"
-  period              = 3600
+  metric_query {
+    id = "puts"
+
+    metric {
+      namespace   = "AWS/S3"
+      metric_name = "PutRequests"
+      period      = 3600
+      stat        = "Sum"
+      dimensions = {
+        BucketName = aws_s3_bucket.db["hourly"].bucket
+        FilterId   = aws_s3_bucket_metric.hourly.name
+      }
+    }
+  }
+
+  metric_query {
+    id = "errors"
+
+    metric {
+      namespace   = "AWS/S3"
+      metric_name = "4xxErrors"
+      period      = 3600
+      stat        = "Sum"
+      dimensions = {
+        BucketName = aws_s3_bucket.db["hourly"].bucket
+        FilterId   = aws_s3_bucket_metric.hourly.name
+      }
+    }
+  }
+
   evaluation_periods  = 2
   comparison_operator = "LessThanThreshold"
   threshold           = 1

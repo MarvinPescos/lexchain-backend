@@ -5,7 +5,7 @@ from app.features.blockchain import dependencies
 from app.infrastructure.blockchain.mock_provider import MockBlockchainProvider
 
 
-@pytest.mark.parametrize("environment", ["development", "production"])
+@pytest.mark.parametrize("environment", ["development", "staging", "production"])
 def test_real_environments_use_the_real_chain(monkeypatch, environment):
     class Web3:
         pass
@@ -16,7 +16,7 @@ def test_real_environments_use_the_real_chain(monkeypatch, environment):
     assert isinstance(dependencies.get_blockchain_provider(), Web3)
 
 
-def test_any_other_environment_uses_the_mock(monkeypatch):
+def test_only_the_test_environment_uses_the_mock(monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "test")
 
     assert isinstance(dependencies.get_blockchain_provider(), MockBlockchainProvider)

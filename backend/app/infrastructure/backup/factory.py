@@ -1,6 +1,6 @@
 from app.core import settings
 
-from .base import BackupProvider
+from .base import BackupProvider, DumpStore
 
 
 def build_backup() -> BackupProvider:
@@ -20,3 +20,10 @@ def build_backup() -> BackupProvider:
         return S3BackupProvider()
 
     raise ValueError(f"Unsupported BACKUP_PROVIDER: {settings.BACKUP_PROVIDER}")
+
+
+def build_dump_store(bucket: str) -> DumpStore:
+    """Return the locked bucket database dumps go to."""
+    from .s3_backup import S3BackupProvider
+
+    return S3BackupProvider(bucket)

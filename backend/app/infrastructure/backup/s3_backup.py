@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import boto3
@@ -22,19 +23,21 @@ class S3BackupProvider:
         self.bucket_name = bucket_name or settings.BACKUP_BUCKET
         self._client = client or boto3.client("s3", region_name=settings.AWS_REGION)
 
-    async def store(self, key: str, data: bytes, content_type: str) -> BackupRef:
-        # boto3 is synchronous; keep it off the event loop. Object Lock rejects
-        # a write without a checksum, and the bucket policy one without
-        # If-None-Match.
-        await asyncio.to_thread(
-            self._client.put_object,
+    def _put(self, key: str, body: Any, content_type: str) -> None:
+        # Object Lock rejects a write without a checksum, and the bucket policy
+        # one without If-None-Match.
+        self._client.put_object(
             Bucket=self.bucket_name,
             Key=key,
-            Body=data,
+            Body=body,
             ContentType=content_type,
             IfNoneMatch="*",
             ChecksumAlgorithm="SHA256",
         )
+
+    async def store(self, key: str, data: bytes, content_type: str) -> BackupRef:
+        # boto3 is synchronous; keep it off the event loop.
+        await asyncio.to_thread(self._put, key, data, content_type)
 
         log.info(
             "backup.stored",
@@ -44,6 +47,13 @@ class S3BackupProvider:
             size_bytes=len(data),
         )
         return BackupRef(key=key, size_bytes=len(data), provider=self.provider_name)
+
+    async def store_file(self, key: str, path: Path, content_type: str) -> None:
+        def _upload() -> None:
+            with path.open("rb") as body:
+                self._put(key, body, content_type)
+
+        await asyncio.to_thread(_upload)
 
     async def fetch(self, key: str) -> bytes:
         def _download() -> bytes:

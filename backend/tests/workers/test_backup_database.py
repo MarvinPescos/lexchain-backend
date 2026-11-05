@@ -9,11 +9,13 @@ from botocore.stub import ANY, Stubber
 
 from app.celery_app import celery_app
 from app.core import settings
+from app.infrastructure.backup.s3_backup import S3BackupProvider
 from app.workers import backup_database as job
 
 NOW = datetime(2026, 11, 5, 3, 0, 7, tzinfo=timezone.utc)
-HOURLY_KEY = "2026-11-05T03-00-07Z.sql.gz"
-MONTHLY_KEY = "2026-11.sql.gz"
+KEY = "2026-11-05T03-00-07Z.sql.gz"
+FIRST_OF_MONTH = datetime(2026, 11, 1, 3, 0, 7, tzinfo=timezone.utc)
+FIRST_OF_MONTH_KEY = "2026-11-01T03-00-07Z.sql.gz"
 
 
 def _put(bucket: str, key: str) -> dict:
@@ -35,7 +37,9 @@ def s3(monkeypatch):
         aws_access_key_id="test",
         aws_secret_access_key="test",
     )
-    monkeypatch.setattr(job.boto3, "client", lambda *a, **k: client)
+    monkeypatch.setattr(
+        job, "build_dump_store", lambda bucket: S3BackupProvider(bucket, client)
+    )
     with Stubber(client) as stubber:
         yield stubber
         stubber.assert_no_pending_responses()
@@ -56,6 +60,17 @@ def pg_dump(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def alerts(monkeypatch):
+    sent = []
+
+    async def send(subject, body):
+        sent.append(subject)
+
+    monkeypatch.setattr(job, "send_backup_alert", send)
+    return sent
+
+
 @pytest.fixture(autouse=True)
 def configured(monkeypatch):
     monkeypatch.setattr(
@@ -68,35 +83,41 @@ def configured(monkeypatch):
     monkeypatch.setattr(job, "utcnow", lambda: NOW)
 
 
-def test_dump_goes_to_the_hourly_and_monthly_buckets(s3, pg_dump):
-    s3.add_response("put_object", {}, _put("hourly", HOURLY_KEY))
-    s3.add_response("put_object", {}, _put("monthly", MONTHLY_KEY))
+async def test_a_normal_day_only_fills_the_hourly_bucket(s3, pg_dump):
+    s3.add_response("put_object", {}, _put("hourly", KEY))
 
-    job.backup_database()
+    await job.backup_database()
 
     assert len(pg_dump) == 1
 
 
-def test_a_month_already_stored_is_not_a_failure(s3, pg_dump):
-    s3.add_response("put_object", {}, _put("hourly", HOURLY_KEY))
-    s3.add_client_error("put_object", "PreconditionFailed", http_status_code=412)
+async def test_the_first_of_the_month_also_fills_the_monthly_bucket(
+    s3, pg_dump, monkeypatch
+):
+    monkeypatch.setattr(job, "utcnow", lambda: FIRST_OF_MONTH)
+    s3.add_response("put_object", {}, _put("hourly", FIRST_OF_MONTH_KEY))
+    s3.add_response("put_object", {}, _put("monthly", FIRST_OF_MONTH_KEY))
 
-    job.backup_database()
+    await job.backup_database()
 
 
-def test_a_monthly_upload_failure_fails_the_job(s3, pg_dump):
-    s3.add_response("put_object", {}, _put("hourly", HOURLY_KEY))
+async def test_a_monthly_upload_failure_fails_the_job_and_alerts(
+    s3, pg_dump, monkeypatch, alerts
+):
+    monkeypatch.setattr(job, "utcnow", lambda: FIRST_OF_MONTH)
+    s3.add_response("put_object", {}, _put("hourly", FIRST_OF_MONTH_KEY))
     s3.add_client_error("put_object", "AccessDenied", http_status_code=403)
 
     with pytest.raises(ClientError):
-        job.backup_database()
+        await job.backup_database()
+
+    assert len(alerts) == 1
 
 
-def test_the_password_stays_off_the_command_line(s3, pg_dump):
-    s3.add_response("put_object", {}, _put("hourly", HOURLY_KEY))
-    s3.add_response("put_object", {}, _put("monthly", MONTHLY_KEY))
+async def test_the_password_stays_off_the_command_line(s3, pg_dump):
+    s3.add_response("put_object", {}, _put("hourly", KEY))
 
-    job.backup_database()
+    await job.backup_database()
 
     args, kwargs = pg_dump[0]
     assert "s3cret" not in " ".join(args)
@@ -107,20 +128,22 @@ def test_the_password_stays_off_the_command_line(s3, pg_dump):
     )
 
 
-def test_a_failed_dump_uploads_nothing(s3, monkeypatch):
+async def test_a_failed_dump_uploads_nothing_and_alerts(s3, monkeypatch, alerts):
     def fail(args, **kwargs):
         raise subprocess.CalledProcessError(1, args, stderr="connection refused")
 
     monkeypatch.setattr(job.subprocess, "run", fail)
 
     with pytest.raises(subprocess.CalledProcessError):
-        job.backup_database()
+        await job.backup_database()
+
+    assert len(alerts) == 1
 
 
-def test_an_unconfigured_environment_skips_the_dump(s3, pg_dump, monkeypatch):
+async def test_an_unconfigured_environment_skips_the_dump(s3, pg_dump, monkeypatch):
     monkeypatch.setattr(settings, "BACKUP_DB_BUCKET", None)
 
-    job.backup_database()
+    await job.backup_database()
 
     assert pg_dump == []
 
