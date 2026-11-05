@@ -113,3 +113,11 @@ def verify_backups_task():
     from app.workers.verify_backups import verify_backups
 
     run_async(verify_backups())
+
+
+@celery_task(name="document.reconcile_chain")
+def reconcile_chain_task():
+    """Check every anchored document still exists; lawyers are alerted if not."""
+    from app.workers.reconcile_chain import reconcile_chain
+
+    run_async(reconcile_chain())

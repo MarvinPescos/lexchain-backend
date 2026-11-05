@@ -106,6 +106,30 @@ class Web3BlockchainProvider:
                 await asyncio.sleep(_EMPTY_READ_DELAY_SECONDS)
         return None
 
+    async def list_anchored_document_ids(self, from_block: int) -> set[str]:
+        """Every document ID anchored from `from_block` to the latest block.
+
+        Read in chunks, because RPC providers cap the `get_logs` range. Any
+        failed chunk raises: a partial list must never pass for a complete one.
+        """
+        event = self._contract.events.DocumentRecordVerified()
+        chunk_size = settings.CHAIN_LOG_CHUNK_BLOCKS
+        document_ids: set[str] = set()
+        try:
+            latest = await self.w3.eth.block_number
+            if from_block > latest:
+                raise ValueError(f"Block {from_block} is past the latest, {latest}")
+            for start in range(from_block, latest + 1, chunk_size):
+                logs = await event.get_logs(
+                    from_block=start, to_block=min(start + chunk_size - 1, latest)
+                )
+                document_ids.update(log["args"]["documentId"] for log in logs)
+        except Exception as e:
+            raise ServiceUnavailableError(
+                "The blockchain could not be read to list the anchored documents."
+            ) from e
+        return document_ids
+
 
 def _abi_path() -> Path:
     """The compiled contract's artifact.

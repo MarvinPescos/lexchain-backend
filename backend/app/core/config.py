@@ -123,6 +123,28 @@ class Settings(BaseSettings):
         ge=3600,
         description="How often every archive is checked against its anchored hash",
     )
+    CHAIN_SCAN_FROM_BLOCK: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "The contract's deployment block. Chain reconciliation is skipped "
+            "without it, rather than scanning from block 0. Each environment "
+            "needs its own contract, or another's anchors read as document_missing"
+        ),
+    )
+    CHAIN_LOG_CHUNK_BLOCKS: int = Field(
+        default=190,
+        ge=1,
+        description=(
+            "Blocks per get_logs call. Must stay under the RPC provider's cap: "
+            "the current WEB_RPC_URL provider refuses a range over 200"
+        ),
+    )
+    CHAIN_RECONCILE_SECONDS: int = Field(
+        default=604800,
+        ge=3600,
+        description="How often the database is reconciled against the chain",
+    )
 
     WEB_RPC_URL: str = Field(..., description="")
     CONTRACT_ADDRESS: str = Field(..., description="")

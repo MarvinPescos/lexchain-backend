@@ -20,3 +20,6 @@ class MockBlockchainProvider:
         self, document_id: str, retry_empty: bool = True
     ) -> ChainRecord | None:
         return None
+
+    async def list_anchored_document_ids(self, from_block: int) -> set[str]:
+        return set()
