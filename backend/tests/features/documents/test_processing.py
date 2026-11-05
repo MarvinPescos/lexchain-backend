@@ -11,6 +11,7 @@ from app.features.chunks.models import DocumentChunk
 from app.features.documents.constants import (
     JOB_ENRICH,
     JOB_EXTRACT,
+    LIFECYCLE_FINALIZED,
     STATUS_AWAITING_REVIEW,
     STATUS_COMPLETED,
     STATUS_ENRICHING,
@@ -253,6 +254,86 @@ async def test_relay_resends_only_stale_pending_dispatches(
     # Delivered: never sent again.
     assert await relay.dispatch_pending() == 0
     assert queue.processed == [doc.document_id]
+
+
+async def _stall(session: AsyncSession, document_id) -> ProcessingDispatch:
+    """Age the document's job past the stall window, as if no worker ran it."""
+    [dispatch] = [d for d in await _dispatches(session) if d.document_id == document_id]
+    dispatch.created_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    dispatch.dispatched_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    await session.flush()
+    return dispatch
+
+
+async def test_relay_resends_a_job_no_worker_finished(
+    session, worker_db, monkeypatch, signed, queue
+):
+    monkeypatch.setattr(relay, "get_document_queue", lambda: queue)
+    dispatch = await _stall(session, signed)
+    queue.processed.clear()
+
+    assert await relay.dispatch_pending() == 1
+    assert queue.processed == [signed]
+
+    await session.refresh(dispatch)
+    assert dispatch.attempts == 1
+    assert dispatch.dispatched_at is not None
+
+    # Just resent: it gets a full window before the next one.
+    assert await relay.dispatch_pending() == 0
+
+
+async def test_relay_leaves_a_recently_sent_job_alone(
+    session, worker_db, monkeypatch, signed, queue
+):
+    monkeypatch.setattr(relay, "get_document_queue", lambda: queue)
+    queue.processed.clear()
+
+    assert await relay.dispatch_pending() == 0
+    assert queue.processed == []
+
+
+async def test_relay_ignores_a_stalled_job_once_ocr_finished(
+    session, worker_db, monkeypatch, signed, queue
+):
+    monkeypatch.setattr(relay, "get_document_queue", lambda: queue)
+    await _stall(session, signed)
+    doc = await session.get(Document, signed)
+    doc.status = STATUS_AWAITING_REVIEW
+    await session.flush()
+    queue.processed.clear()
+
+    assert await relay.dispatch_pending() == 0
+    assert queue.processed == []
+
+
+async def test_relay_ignores_a_stalled_job_on_a_finalized_document(
+    session, worker_db, monkeypatch, signed, queue
+):
+    monkeypatch.setattr(relay, "get_document_queue", lambda: queue)
+    await _stall(session, signed)
+    doc = await session.get(Document, signed)
+    doc.lifecycle = LIFECYCLE_FINALIZED
+    await session.flush()
+    queue.processed.clear()
+
+    assert await relay.dispatch_pending() == 0
+    assert queue.processed == []
+
+
+async def test_relay_fails_a_job_after_its_last_resend(
+    session, worker_db, monkeypatch, notified, signed, queue
+):
+    monkeypatch.setattr(relay, "get_document_queue", lambda: queue)
+    dispatch = await _stall(session, signed)
+    dispatch.attempts = relay.MAX_STALL_RESENDS
+    await session.flush()
+    queue.processed.clear()
+
+    assert await relay.dispatch_pending() == 0
+    assert queue.processed == []
+    assert await _status(session, signed) == STATUS_FAILED
+    assert notified == ["failed"]
 
 
 # === Retries (#10) ===
