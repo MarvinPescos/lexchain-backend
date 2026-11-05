@@ -18,3 +18,6 @@ class MockBlockchainProvider:
 
     async def get_document_hash(self, document_id: str) -> ChainRecord | None:
         return None
+
+    async def list_anchored_document_ids(self, from_block: int) -> set[str]:
+        return set()

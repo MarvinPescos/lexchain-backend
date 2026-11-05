@@ -1,3 +1,4 @@
+import uuid
 from typing import Optional
 
 from app.features.users.models import User
@@ -42,6 +43,13 @@ class UserRepository(BaseRepository[User]):
             select(func.count()).select_from(self.model).where(self.model.role == role)
         )
         return result.scalar() or 0
+
+    async def list_ids_by_role(self, role: str) -> list[uuid.UUID]:
+        """The IDs of every user holding `role`."""
+        result = await self.session.execute(
+            select(self.model.id).where(self.model.role == role)
+        )
+        return list(result.scalars().all())
 
     # Added 2026-09-12 16:59 PST — supports the last-lawyer guard on
     # AdminService.set_user_active. count_by_role counts deactivated accounts

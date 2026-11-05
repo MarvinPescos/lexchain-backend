@@ -85,6 +85,8 @@ services:
     container_name: lexchain-celery-documents
     command: celery -A app.celery_app worker -Q documents -c 1 --loglevel=info
     volumes:
+      # The chain reconciliation reads the contract ABI from here.
+      - ../blockchain:/app/blockchain:ro
       - .:/app
     env_file: .env
     environment:

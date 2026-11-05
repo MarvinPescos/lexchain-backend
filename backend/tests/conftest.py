@@ -131,6 +131,9 @@ class FakeChain:
     def __init__(self) -> None:
         self.records: dict[str, ChainRecord] = {}
 
+    async def list_anchored_document_ids(self, from_block: int) -> set[str]:
+        return set(self.records)
+
     async def store_document_hash(self, document_id: str, data_hash: str) -> ChainRecord:
         record = ChainRecord(
             document_id=document_id,

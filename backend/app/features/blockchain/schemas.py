@@ -203,3 +203,38 @@ class IntegrityReportResponse(BaseModel):
         default_factory=list,
         description="One page, newest first; ties on verified_at ordered by id",
     )
+
+
+ChainReconcileStatus = Literal[
+    "ok", "snapshot_missing", "orphaned_anchor", "document_missing"
+]
+
+
+class ChainReconcileCheck(BaseModel):
+    document_id: str = Field(
+        ..., description="The ID as anchored; no database row may exist for it"
+    )
+    status: ChainReconcileStatus = Field(
+        ...,
+        description=(
+            "snapshot_missing: the document is FINALIZED but its snapshot row is "
+            "gone. orphaned_anchor: the document isn't FINALIZED, so finalize "
+            "failed after anchoring or the lifecycle was edited; not reported as "
+            "tampering. document_missing: the document row is gone."
+        ),
+    )
+
+
+class ChainReconcileResponse(BaseModel):
+    skipped: bool = Field(
+        default=False,
+        description="True when CHAIN_SCAN_FROM_BLOCK isn't set: nothing was checked",
+    )
+    checked: int = Field(default=0, description="Document IDs anchored on-chain")
+    ok: int = 0
+    snapshot_missing: int = 0
+    orphaned_anchor: int = 0
+    document_missing: int = 0
+    problems: list[ChainReconcileCheck] = Field(
+        default_factory=list, description="Every anchored ID whose status is not ok"
+    )
