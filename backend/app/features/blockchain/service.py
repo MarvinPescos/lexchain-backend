@@ -303,6 +303,15 @@ class BlockchainService:
 
         if current_hash == onchain_hash:
             log.info("blockchain.verify.authentic", document_id=str(document_id))
+            # The file is genuine, so the verdict stands; the altered row is
+            # reported through `baseline_trusted` and this log.
+            if not baseline_trusted:
+                log.error(
+                    "blockchain.verify.snapshot_altered",
+                    document_id=str(document_id),
+                    onchain_hash=onchain_hash,
+                    snapshot_hash=snapshot.file_sha256,
+                )
             return DocumentVerificationResponse(
                 status=VERIFY_AUTHENTIC,
                 is_authentic=True,
