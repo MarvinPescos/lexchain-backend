@@ -139,7 +139,10 @@ async def set_user_active(
         "hash anchored on-chain. With `repair=true`, a missing archive is written "
         "from the live signed copy, if the snapshot matches the on-chain hash and "
         "the live copy still matches it. A bad archive is reported, never overwritten. "
-        "Also runs daily without repair."
+        "Each document's current signed copy is also checked against the chain and "
+        "reported under `live`; a mismatch is recorded and the lawyer who finalized "
+        "the document is notified once per tampered file. Also runs daily without "
+        "repair."
     ),
     responses={200: {"description": "Verification summary"}, 403: {"description": "Not a lawyer"}},
 )
