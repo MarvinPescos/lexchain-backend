@@ -1,3 +1,5 @@
+from storage3.exceptions import StorageApiError
+
 from app.core import settings
 
 from .supabase_client import Client, create_client
@@ -46,9 +48,16 @@ class SupabaseStorageClient:
 
         Authenticated reads are not served from the public CDN cache, so the
         bytes are what is stored now — integrity checks depend on that.
+        Raises FileNotFoundError when storage answers that the object is gone;
+        `status` arrives as a string, so that is matched on `code`.
         """
         path = object_path_from_url(url, self.bucket_name)
-        return self._get_client().storage.from_(self.bucket_name).download(path)
+        try:
+            return self._get_client().storage.from_(self.bucket_name).download(path)
+        except StorageApiError as e:
+            if e.code == "not_found":
+                raise FileNotFoundError(url) from e
+            raise
 
     async def signed_url(self, url: str, expires_in: int) -> str:
         """A URL that reads the object for `expires_in` seconds, then stops working."""

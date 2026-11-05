@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from app.features.blockchain.dependencies import get_blockchain_provider
 from app.features.blockchain.models import VerificationResult
+from app.features.blockchain.service import BlockchainService
 from app.features.documents.models import Document
 from app.features.documents.workflow.finalization import DocumentFinalization
 from app.features.snapshot.repository import DocumentSnaphotRepository
@@ -173,6 +174,66 @@ async def test_internal_checks_are_not_recorded_unless_asked(
     assert await _rows(session, document_id) == []
 
 
+# === Quick check ===
+
+
+async def test_quick_check_of_an_authentic_document_keeps_no_row(
+    session, http, finalized, lawyer
+):
+    document_id, _ = finalized
+
+    r = await http(lawyer, f"/documents/{document_id}/verify", report="false")
+
+    assert r.json()["status"] == "AUTHENTIC"
+    assert await _rows(session, document_id) == []
+
+
+async def test_quick_check_of_a_tampered_document_keeps_one_row_and_skips_ocr(
+    session, http, finalized, storage, lawyer, monkeypatch
+):
+    document_id, url = finalized
+    storage.objects[url] = b"tampered"
+
+    def no_ocr(*a, **k):
+        raise AssertionError("a quick check must not run OCR")
+
+    monkeypatch.setattr("app.features.blockchain.service.build_ocr", no_ocr)
+    monkeypatch.setattr(BlockchainService, "_tamper_report", no_ocr)
+
+    r = await http(lawyer, f"/documents/{document_id}/verify", report="false")
+
+    body = r.json()
+    assert body["status"] == "TAMPERED"
+    assert body["tamper_report"] is None
+    assert body["tamper_report_status"] == "NOT_APPLICABLE"
+    [row] = await _rows(session, document_id)
+    assert row.status == "TAMPERED"
+
+
+async def test_quick_check_of_a_draft_keeps_no_row(
+    session, http, intake, lawyer, open_book
+):
+    doc = await intake.upload_signed(as_auth(lawyer), pdf("deed"), "Deed", open_book.id)
+    await mark_processed(session, doc.document_id)
+
+    r = await http(lawyer, f"/documents/{doc.document_id}/verify", report="false")
+
+    assert r.json()["status"] == "NOT_ANCHORED"
+    assert await _rows(session, doc.document_id) == []
+
+
+async def test_verify_without_the_param_still_keeps_an_authentic_row(
+    session, http, finalized, lawyer
+):
+    document_id, _ = finalized
+
+    r = await http(lawyer, f"/documents/{document_id}/verify")
+
+    assert r.json()["status"] == "AUTHENTIC"
+    [row] = await _rows(session, document_id)
+    assert row.status == "AUTHENTIC"
+
+
 # === Report ===
 
 
@@ -194,6 +255,7 @@ async def test_report_lists_every_status_distinctly_with_matching_totals(
         "AUTHENTIC",
         "AUTHENTIC",
         "TAMPERED",
+        "FILE_MISSING",
         "SNAPSHOT_COMPROMISED",
         "NOT_ANCHORED",
         "VERIFICATION_UNAVAILABLE",
@@ -206,9 +268,10 @@ async def test_report_lists_every_status_distinctly_with_matching_totals(
     assert r.status_code == 200
     body = r.json()
     assert body["summary"] == {
-        "total": 6,
+        "total": 7,
         "authentic": 2,
         "tampered": 1,
+        "file_missing": 1,
         "snapshot_compromised": 1,
         "not_anchored": 1,
         "verification_unavailable": 1,
@@ -344,6 +407,19 @@ async def test_report_does_not_touch_storage_or_the_chain(
 
     assert r.status_code == 200
     assert r.json()["summary"]["authentic"] == 1
+
+
+async def test_report_counts_deleted_files(http, finalized, storage, lawyer):
+    document_id, url = finalized
+    del storage.objects[url]
+    await http(lawyer, f"/documents/{document_id}/verify")
+
+    r = await http(lawyer, REPORT)
+
+    summary = r.json()["summary"]
+    assert summary["file_missing"] == 1
+    assert summary["total"] == 1
+    assert summary["verification_unavailable"] == 0
 
 
 def test_report_contract_is_in_openapi():

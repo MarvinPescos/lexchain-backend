@@ -108,11 +108,16 @@ class DocumentVerificationResponse(BaseModel):
         description=(
             "AUTHENTIC — the stored file matches the chain; "
             "TAMPERED — it does not; "
-            "SNAPSHOT_COMPROMISED — the stored original was altered too, so no "
-            "trustworthy baseline exists to diff against; "
-            "NOT_ANCHORED — the document was never finalized; "
-            "VERIFICATION_UNAVAILABLE — the document could not be re-read, so "
-            "integrity is unknown (this is not a tamper result)"
+            "FILE_MISSING — the stored file was deleted (a tamper finding; "
+            "`current_hash` is null and there is no diff); "
+            "SNAPSHOT_COMPROMISED — the file was changed or deleted and the stored "
+            "original was altered too, so no trustworthy baseline exists to diff "
+            "against; "
+            "NOT_ANCHORED — the document was never finalized and the chain has no "
+            "record of it; "
+            "VERIFICATION_UNAVAILABLE — storage or the chain could not be read, or "
+            "an anchor exists with no finalized state or frozen record to check it "
+            "against, so integrity is unknown (not a tamper finding by itself)"
         ),
     )
     is_authentic: bool
@@ -138,7 +143,7 @@ class DocumentVerificationResponse(BaseModel):
             "AVAILABLE — `tamper_report` holds a diff against a trusted baseline; "
             "UNAVAILABLE — the document is TAMPERED but no trustworthy diff could "
             "be produced (the verdict still stands); NOT_APPLICABLE — any status "
-            "other than TAMPERED"
+            "other than TAMPERED, or the quick check, which makes no diff"
         ),
     )
     tamper_report: TamperReport | None = Field(
@@ -160,8 +165,8 @@ class VerificationResultResponse(BaseModel):
     status: str = Field(
         ...,
         description=(
-            "AUTHENTIC | TAMPERED | SNAPSHOT_COMPROMISED | NOT_ANCHORED | "
-            "VERIFICATION_UNAVAILABLE — as on DocumentVerificationResponse. "
+            "AUTHENTIC | TAMPERED | FILE_MISSING | SNAPSHOT_COMPROMISED | "
+            "NOT_ANCHORED | VERIFICATION_UNAVAILABLE — as on DocumentVerificationResponse. "
             "VERIFICATION_UNAVAILABLE means integrity was unknown, not tampered"
         ),
     )
@@ -184,6 +189,7 @@ class IntegrityReportSummary(BaseModel):
     total: int
     authentic: int = 0
     tampered: int = 0
+    file_missing: int = 0
     snapshot_compromised: int = 0
     not_anchored: int = 0
     verification_unavailable: int = 0
@@ -202,4 +208,39 @@ class IntegrityReportResponse(BaseModel):
     results: list[VerificationResultResponse] = Field(
         default_factory=list,
         description="One page, newest first; ties on verified_at ordered by id",
+    )
+
+
+ChainReconcileStatus = Literal[
+    "ok", "snapshot_missing", "orphaned_anchor", "document_missing"
+]
+
+
+class ChainReconcileCheck(BaseModel):
+    document_id: str = Field(
+        ..., description="The ID as anchored; no database row may exist for it"
+    )
+    status: ChainReconcileStatus = Field(
+        ...,
+        description=(
+            "snapshot_missing: the document is FINALIZED but its snapshot row is "
+            "gone. orphaned_anchor: the document isn't FINALIZED, so finalize "
+            "failed after anchoring or the lifecycle was edited; not reported as "
+            "tampering. document_missing: the document row is gone."
+        ),
+    )
+
+
+class ChainReconcileResponse(BaseModel):
+    skipped: bool = Field(
+        default=False,
+        description="True when CHAIN_SCAN_FROM_BLOCK isn't set: nothing was checked",
+    )
+    checked: int = Field(default=0, description="Document IDs anchored on-chain")
+    ok: int = 0
+    snapshot_missing: int = 0
+    orphaned_anchor: int = 0
+    document_missing: int = 0
+    problems: list[ChainReconcileCheck] = Field(
+        default_factory=list, description="Every anchored ID whose status is not ok"
     )

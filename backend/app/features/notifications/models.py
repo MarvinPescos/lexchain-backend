@@ -28,6 +28,10 @@ class NotificationType(str, enum.Enum):
     ECOPY_APPROVED = "ecopy_approved"
     ECOPY_DECLINED = "ecopy_declined"
     ECOPY_DELIVERY_FAILED = "ecopy_delivery_failed"
+    # A record the chain says should exist is gone from the database.
+    ANCHORED_RECORD_MISSING = "anchored_record_missing"
+    # The scheduled check found a live file that differs from the chain.
+    LIVE_FILE_TAMPERED = "live_file_tampered"
 
 
 class Notification(Base, TimestampMixin):

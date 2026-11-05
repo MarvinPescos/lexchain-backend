@@ -1,9 +1,9 @@
-"""Restore: a TAMPERED finalized document gets its anchored bytes back.
+"""Restore: a TAMPERED or FILE_MISSING finalized document gets its anchored bytes back.
 
 The bytes come only from the archive written at finalize, and only once they
 re-hash to the on-chain hash — never from the active file, which is the one
-that no longer matches. The file found in its place is kept as its own signed
-copy. The document stays FINALIZED and nothing is re-anchored: the original
+that no longer matches. The file found in its place, if any, is kept as its own
+signed copy. The document stays FINALIZED and nothing is re-anchored: the original
 chain record is what the restored copy verifies against.
 """
 
@@ -37,6 +37,7 @@ RESTORED_REASON = (
     "Restored from the archived original: the stored file no longer matched "
     "the hash anchored on-chain."
 )
+RESTORED_MISSING_REASON = "Restored from the archived original: the stored file was missing."
 
 _STORAGE_ERRORS = (httpx.HTTPError, OSError, StorageException)
 
@@ -63,7 +64,7 @@ class DocumentRestoration:
     ) -> RestoreResponse:
         """Make the archived, anchored bytes the current signed copy again.
 
-        Only from TAMPERED with a trusted baseline. Every refusal happens before
+        Only from TAMPERED or FILE_MISSING with a trusted baseline. Every refusal happens before
         anything is written. Already AUTHENTIC answers `restored=False`.
         """
         document = await self.access.authorize(user, document_id, ACTION_RESTORE)
@@ -89,25 +90,35 @@ class DocumentRestoration:
                 "original to restore from.",
                 details={"reason": "SNAPSHOT_COMPROMISED"},
             )
-        if verdict.status != "TAMPERED":
+        if verdict.status not in ("TAMPERED", "FILE_MISSING"):
             raise ServiceUnavailableError(
-                "Could not read the stored file to confirm it was tampered with. "
-                "Try again once storage is available."
+                "Could not read the stored file or the chain to confirm it was "
+                "tampered with. Try again once both are available."
+            )
+
+        current = document.signed_copy
+        if current is None:
+            raise ConflictError(
+                "This document has no signed copy record to restore onto.",
+                details={"reason": "NO_SIGNED_COPY"},
             )
 
         onchain_hash = verdict.onchain_hash
-        assert onchain_hash is not None and verdict.current_hash is not None
+        previous_hash = verdict.current_hash  # None for a deleted file
+        assert onchain_hash is not None
         original = await self._archived_original(document_id, onchain_hash)
-        tampered = await self._current_bytes(document, verdict.current_hash)
+        tampered = (
+            await self._current_bytes(document, previous_hash)
+            if previous_hash is not None
+            else None
+        )
 
-        current = document.signed_copy
-        assert current is not None
         uploaded: list[str] = []
         try:
             preserved = None
-            if tampered is not None:
+            if tampered is not None and previous_hash is not None:
                 preserved = await self._store(
-                    document, current, tampered, verdict.current_hash, uploaded
+                    document, current, tampered, previous_hash, uploaded
                 )
             restored = await self._store(
                 document,
@@ -116,12 +127,12 @@ class DocumentRestoration:
                 onchain_hash,
                 uploaded,
                 uploaded_by=user.user_id,
-                reason=RESTORED_REASON,
+                reason=RESTORED_REASON if previous_hash is not None else RESTORED_MISSING_REASON,
             )
             document.signed_copy_id = restored.id
             document.document_hash = onchain_hash
             change = lifecycle.transition(ACTION_RESTORE, document, user.user_id)
-            change.from_hash = verdict.current_hash
+            change.from_hash = previous_hash
             change.to_hash = onchain_hash
             await self.repo.add(change)
             await self.session.refresh(change, ["created_at"])
@@ -150,13 +161,13 @@ class DocumentRestoration:
             "document.restore",
             user_id=str(user.user_id),
             document_id=str(document_id),
-            previous_hash=verdict.current_hash,
+            previous_hash=previous_hash,
             restored_hash=onchain_hash,
         )
         return RestoreResponse(
             document_id=document_id,
             restored=True,
-            previous_hash=verdict.current_hash,
+            previous_hash=previous_hash,
             restored_hash=onchain_hash,
             restored_copy_id=restored.id,
             preserved_copy_id=preserved.id if preserved else None,
@@ -198,8 +209,8 @@ class DocumentRestoration:
             raise ServiceUnavailableError(
                 "The archived original could not be read. Try restoring again."
             ) from e
-        # The snapshot hash is the on-chain hash here: the verdict was TAMPERED,
-        # which is only given against a trusted baseline.
+        # The snapshot hash is the on-chain hash here: TAMPERED and FILE_MISSING
+        # are only given against a trusted baseline.
         if snapshot.file_sha256 != onchain_hash or not matches_snapshot(snapshot, data):
             log.error("document.restore.archive_mismatch", document_id=str(document_id))
             raise ConflictError(

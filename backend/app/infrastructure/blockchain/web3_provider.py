@@ -71,15 +71,19 @@ class Web3BlockchainProvider:
             tx_hash=receipt["transactionHash"].hex(),
         )
 
-    async def get_document_hash(self, document_id: str) -> ChainRecord | None:
+    async def get_document_hash(
+        self, document_id: str, retry_empty: bool = True
+    ) -> ChainRecord | None:
         """The anchored record, or None if the chain has none.
 
         Callers ask about documents they anchored, so an empty answer is
         retried briefly: a load-balanced RPC can serve a node that hasn't seen
-        the block yet. An unreachable chain raises instead of passing for
-        "never anchored".
+        the block yet. `retry_empty=False` is for documents not expected to be
+        anchored, where the empty answer is the usual one. An unreachable chain
+        raises instead of passing for "never anchored".
         """
-        for attempt in range(_EMPTY_READ_RETRIES + 1):
+        retries = _EMPTY_READ_RETRIES if retry_empty else 0
+        for attempt in range(retries + 1):
             try:
                 (
                     data_hash,
@@ -98,9 +102,33 @@ class Web3BlockchainProvider:
                     issued_by=issued_by,
                     tx_hash="",
                 )
-            if attempt < _EMPTY_READ_RETRIES:
+            if attempt < retries:
                 await asyncio.sleep(_EMPTY_READ_DELAY_SECONDS)
         return None
+
+    async def list_anchored_document_ids(self, from_block: int) -> set[str]:
+        """Every document ID anchored from `from_block` to the latest block.
+
+        Read in chunks, because RPC providers cap the `get_logs` range. Any
+        failed chunk raises: a partial list must never pass for a complete one.
+        """
+        event = self._contract.events.DocumentRecordVerified()
+        chunk_size = settings.CHAIN_LOG_CHUNK_BLOCKS
+        document_ids: set[str] = set()
+        try:
+            latest = await self.w3.eth.block_number
+            if from_block > latest:
+                raise ValueError(f"Block {from_block} is past the latest, {latest}")
+            for start in range(from_block, latest + 1, chunk_size):
+                logs = await event.get_logs(
+                    from_block=start, to_block=min(start + chunk_size - 1, latest)
+                )
+                document_ids.update(log["args"]["documentId"] for log in logs)
+        except Exception as e:
+            raise ServiceUnavailableError(
+                "The blockchain could not be read to list the anchored documents."
+            ) from e
+        return document_ids
 
 
 def _abi_path() -> Path:

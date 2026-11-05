@@ -149,6 +149,7 @@ The `BackupProvider` protocol (`store` / `fetch` / `exists`, no delete) was desi
 - [ ] Use Supabase's **direct or session-mode** connection string; `pg_dump` won't work through the transaction pooler.
 - [ ] Dumps contain personal data (RA 10173): they stay private and encrypted at rest (SSE-S3), and are readable only by the lawyer's admin account and the server role.
 - [ ] **Restore drill:** restore one dump into a local Postgres and confirm the tables and row counts. Keep the steps in a short runbook.
+- [ ] **Runbook, reconciliation findings:** `POST /admin/chain/reconcile` and the weekly job never repair anything. A `document_missing` finding means the document row was deleted: restore the row from a DB dump. `snapshot_missing` means the same for its snapshot row. `orphaned_anchor` is a warning, not tampering: finalize anchored and then failed to commit, or `lifecycle` was edited, so check the document before acting.
 
 ---
 

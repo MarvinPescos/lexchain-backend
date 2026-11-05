@@ -2,7 +2,11 @@ from fastapi import APIRouter, Depends, Query, status, Request
 import uuid
 from app.infrastructure.security.dependencies import AuthenticatedUser, require_lawyer
 from .service import AdminService
-from .dependencies import get_admin_service, get_snapshot_archive
+from .dependencies import (
+    get_admin_service, get_chain_reconciliation, get_snapshot_archive,
+)
+from app.features.blockchain.reconciliation import ChainReconciliation
+from app.features.blockchain.schemas import ChainReconcileResponse
 from app.features.snapshot.backups import SnapshotArchive
 from app.features.snapshot.schemas import BackupVerificationResponse
 from .schemas import (
@@ -135,7 +139,10 @@ async def set_user_active(
         "hash anchored on-chain. With `repair=true`, a missing archive is written "
         "from the live signed copy, if the snapshot matches the on-chain hash and "
         "the live copy still matches it. A bad archive is reported, never overwritten. "
-        "Also runs daily without repair."
+        "Each document's current signed copy is also checked against the chain and "
+        "reported under `live`; a mismatch is recorded and the lawyer who finalized "
+        "the document is notified once per tampered file. Also runs daily without "
+        "repair."
     ),
     responses={200: {"description": "Verification summary"}, 403: {"description": "Not a lawyer"}},
 )
@@ -145,3 +152,28 @@ async def verify_backups(
     archive: SnapshotArchive = Depends(get_snapshot_archive),
 ) -> BackupVerificationResponse:
     return await archive.verify(repair=repair)
+
+
+@router.post(
+    "/chain/reconcile",
+    response_model=ChainReconcileResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Reconcile the database against the chain",
+    description=(
+        "Lists every document ID anchored on-chain and checks that its document "
+        "and snapshot rows still exist. Checks presence only, and repairs nothing: "
+        "a missing row is restored by hand from a database dump. Lawyers are "
+        "notified once per finding. `skipped` is true when CHAIN_SCAN_FROM_BLOCK "
+        "isn't set. Also runs on a schedule, weekly by default."
+    ),
+    responses={
+        200: {"description": "Reconciliation summary"},
+        403: {"description": "Not a lawyer"},
+        503: {"description": "The chain could not be read in full; nothing is reported"},
+    },
+)
+async def reconcile_chain(
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    reconciliation: ChainReconciliation = Depends(get_chain_reconciliation),
+) -> ChainReconcileResponse:
+    return await reconciliation.run()

@@ -5,6 +5,7 @@ import uuid
 
 from app.features.documents.models import Document
 
+from .constants import VERIFY_TAMPER_FINDINGS
 from .models import OnChainRecord, VerificationResult
 
 class OnChainRecordRepository(BaseRepository[OnChainRecord]):
@@ -22,6 +23,22 @@ class OnChainRecordRepository(BaseRepository[OnChainRecord]):
 class VerificationResultRepository(BaseRepository[VerificationResult]):
     def __init__(self, session):
         super().__init__(VerificationResult, session)
+
+    async def latest_scheduled_finding(
+        self, document_id: uuid.UUID
+    ) -> VerificationResult | None:
+        """The last tamper finding the scheduled check wrote, which it alerted on."""
+        result = await self.session.execute(
+            select(VerificationResult)
+            .where(
+                VerificationResult.document_id == document_id,
+                VerificationResult.verified_by.is_(None),
+                VerificationResult.status.in_(VERIFY_TAMPER_FINDINGS),
+            )
+            .order_by(VerificationResult.verified_at.desc(), VerificationResult.id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     @staticmethod
     def _for_owner(query, owner_id, verified_from, verified_to):

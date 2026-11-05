@@ -5,7 +5,7 @@ from app.infrastructure.database.base_repository import BaseRepository
 from sqlalchemy import CursorResult, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Notification
+from .models import Notification, NotificationType
 
 
 class NotificationRepository(BaseRepository[Notification]):
@@ -24,6 +24,12 @@ class NotificationRepository(BaseRepository[Notification]):
             stmt = stmt.where(Notification.is_read.is_(False))
         stmt = stmt.order_by(Notification.created_at.desc()).limit(limit).offset(offset)
         result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_metadata_by_type(self, type: NotificationType) -> list[dict]:
+        result = await self.session.execute(
+            select(Notification.event_metadata).where(Notification.type == type)
+        )
         return list(result.scalars().all())
 
     async def get_unread_count(self, user_id: uuid.UUID) -> int:

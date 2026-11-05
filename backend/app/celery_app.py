@@ -63,6 +63,10 @@ celery_app.conf.update(
             "task": "backup.check_replication",
             "schedule": settings.BACKUP_REPLICATION_CHECK_SECONDS,
         },
+        "reconcile-chain": {
+            "task": "document.reconcile_chain",
+            "schedule": settings.CHAIN_RECONCILE_SECONDS,
+        },
     },
 )
 

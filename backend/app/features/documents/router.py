@@ -946,8 +946,14 @@ async def retry_processing(
         "and the current file are both extracted and diffed: `tamper_report` "
         "lists the changed segments with page and bbox where the OCR engine "
         "reports layout. If that diff cannot be produced, `tamper_report_status` "
-        "is UNAVAILABLE and the TAMPERED verdict still stands. Every check "
-        "that reaches a verdict is kept for the integrity report."
+        "is UNAVAILABLE and the TAMPERED verdict still stands. A deleted file "
+        "is FILE_MISSING, a tamper finding; VERIFICATION_UNAVAILABLE means "
+        "storage or the chain could not be read. The chain is read first, so an "
+        "anchored document is checked whatever its `lifecycle` says. Every check "
+        "that reaches a verdict is kept for the integrity report. With "
+        "`report=false` this is the quick check made when a document is opened: "
+        "hashes only, no OCR and no `tamper_report`, and an AUTHENTIC or "
+        "NOT_ANCHORED verdict is not kept."
     ),
     responses={
         200: {
@@ -957,18 +963,28 @@ async def retry_processing(
             )
         },
         401: {"description": "Not authenticated — missing or invalid bearer token"},
-        404: {"description": "Document not found, or it has no on-chain record"},
+        404: {
+            "description": (
+                "Document not found, or a FINALIZED document has no on-chain "
+                "record or no stored original"
+            )
+        },
     },
 )
 async def verify_document(
     request: Request,
     document_id: uuid.UUID,
+    report: bool = Query(
+        True, description="Run the OCR diff; false makes this the quick check"
+    ),
     current_user: AuthenticatedUser = Depends(require_auth),
     # Untyped: importing BlockchainService here would be circular
     # (blockchain.service imports the documents package).
     verification=Depends(get_verification),
 ) -> DocumentVerificationResponse:
-    return await verification.verify_document(current_user, document_id, record=True)
+    return await verification.verify_document(
+        current_user, document_id, tamper_report=report, record=True
+    )
 
 
 @router.post(
@@ -976,12 +992,14 @@ async def verify_document(
     tags=[TAG_FINALIZE],
     response_model=RestoreResponse,
     status_code=status.HTTP_200_OK,
-    summary="Restore a tampered document from its archive",
+    summary="Restore a tampered or deleted document from its archive",
     description=(
-        "For a FINALIZED document whose verification is TAMPERED. The archived "
-        "original is re-hashed against the on-chain hash, then becomes the "
-        "current signed copy; the tampered file is kept in /signed-copies and "
-        "the restore is recorded in /history with both hashes. The lifecycle "
+        "For a FINALIZED document whose verification is TAMPERED or FILE_MISSING. "
+        "The archived original is re-hashed against the on-chain hash, then "
+        "becomes the current signed copy; a tampered file is kept in "
+        "/signed-copies and the restore is recorded in /history with both hashes. "
+        "For a deleted file nothing is preserved, and `preserved_copy_id`, "
+        "`previous_hash` and the history row's `from_hash` are null. The lifecycle "
         "and the on-chain record are unchanged. If the document is already "
         "AUTHENTIC nothing changes and `restored` is false, so a retry is safe. "
         "`verification` is a fresh check of the result."
@@ -993,11 +1011,11 @@ async def verify_document(
         404: {"description": "Document not found, or it has no on-chain record"},
         409: {
             "description": (
-                "Not FINALIZED, SNAPSHOT_COMPROMISED, no archived original, or "
-                "the archive does not match the chain"
+                "Not FINALIZED, SNAPSHOT_COMPROMISED, no signed copy record, no "
+                "archived original, or the archive does not match the chain"
             )
         },
-        503: {"description": "Storage or the archive is unavailable; nothing changed"},
+        503: {"description": "Storage, the chain or the archive is unavailable; nothing changed"},
     },
 )
 async def restore_document(
