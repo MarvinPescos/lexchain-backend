@@ -71,15 +71,19 @@ class Web3BlockchainProvider:
             tx_hash=receipt["transactionHash"].hex(),
         )
 
-    async def get_document_hash(self, document_id: str) -> ChainRecord | None:
+    async def get_document_hash(
+        self, document_id: str, retry_empty: bool = True
+    ) -> ChainRecord | None:
         """The anchored record, or None if the chain has none.
 
         Callers ask about documents they anchored, so an empty answer is
         retried briefly: a load-balanced RPC can serve a node that hasn't seen
-        the block yet. An unreachable chain raises instead of passing for
-        "never anchored".
+        the block yet. `retry_empty=False` is for documents not expected to be
+        anchored, where the empty answer is the usual one. An unreachable chain
+        raises instead of passing for "never anchored".
         """
-        for attempt in range(_EMPTY_READ_RETRIES + 1):
+        retries = _EMPTY_READ_RETRIES if retry_empty else 0
+        for attempt in range(retries + 1):
             try:
                 (
                     data_hash,
@@ -98,7 +102,7 @@ class Web3BlockchainProvider:
                     issued_by=issued_by,
                     tx_hash="",
                 )
-            if attempt < _EMPTY_READ_RETRIES:
+            if attempt < retries:
                 await asyncio.sleep(_EMPTY_READ_DELAY_SECONDS)
         return None
 

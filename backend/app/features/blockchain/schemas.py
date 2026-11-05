@@ -108,11 +108,16 @@ class DocumentVerificationResponse(BaseModel):
         description=(
             "AUTHENTIC — the stored file matches the chain; "
             "TAMPERED — it does not; "
-            "SNAPSHOT_COMPROMISED — the stored original was altered too, so no "
-            "trustworthy baseline exists to diff against; "
-            "NOT_ANCHORED — the document was never finalized; "
-            "VERIFICATION_UNAVAILABLE — the document could not be re-read, so "
-            "integrity is unknown (this is not a tamper result)"
+            "FILE_MISSING — the stored file was deleted (a tamper finding; "
+            "`current_hash` is null and there is no diff); "
+            "SNAPSHOT_COMPROMISED — the file was changed or deleted and the stored "
+            "original was altered too, so no trustworthy baseline exists to diff "
+            "against; "
+            "NOT_ANCHORED — the document was never finalized and the chain has no "
+            "record of it; "
+            "VERIFICATION_UNAVAILABLE — storage or the chain could not be read, or "
+            "an anchor exists with no finalized state or frozen record to check it "
+            "against, so integrity is unknown (not a tamper finding by itself)"
         ),
     )
     is_authentic: bool
@@ -160,8 +165,8 @@ class VerificationResultResponse(BaseModel):
     status: str = Field(
         ...,
         description=(
-            "AUTHENTIC | TAMPERED | SNAPSHOT_COMPROMISED | NOT_ANCHORED | "
-            "VERIFICATION_UNAVAILABLE — as on DocumentVerificationResponse. "
+            "AUTHENTIC | TAMPERED | FILE_MISSING | SNAPSHOT_COMPROMISED | "
+            "NOT_ANCHORED | VERIFICATION_UNAVAILABLE — as on DocumentVerificationResponse. "
             "VERIFICATION_UNAVAILABLE means integrity was unknown, not tampered"
         ),
     )
@@ -184,6 +189,7 @@ class IntegrityReportSummary(BaseModel):
     total: int
     authentic: int = 0
     tampered: int = 0
+    file_missing: int = 0
     snapshot_compromised: int = 0
     not_anchored: int = 0
     verification_unavailable: int = 0

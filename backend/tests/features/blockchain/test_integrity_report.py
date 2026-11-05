@@ -194,6 +194,7 @@ async def test_report_lists_every_status_distinctly_with_matching_totals(
         "AUTHENTIC",
         "AUTHENTIC",
         "TAMPERED",
+        "FILE_MISSING",
         "SNAPSHOT_COMPROMISED",
         "NOT_ANCHORED",
         "VERIFICATION_UNAVAILABLE",
@@ -206,9 +207,10 @@ async def test_report_lists_every_status_distinctly_with_matching_totals(
     assert r.status_code == 200
     body = r.json()
     assert body["summary"] == {
-        "total": 6,
+        "total": 7,
         "authentic": 2,
         "tampered": 1,
+        "file_missing": 1,
         "snapshot_compromised": 1,
         "not_anchored": 1,
         "verification_unavailable": 1,
@@ -344,6 +346,19 @@ async def test_report_does_not_touch_storage_or_the_chain(
 
     assert r.status_code == 200
     assert r.json()["summary"]["authentic"] == 1
+
+
+async def test_report_counts_deleted_files(http, finalized, storage, lawyer):
+    document_id, url = finalized
+    del storage.objects[url]
+    await http(lawyer, f"/documents/{document_id}/verify")
+
+    r = await http(lawyer, REPORT)
+
+    summary = r.json()["summary"]
+    assert summary["file_missing"] == 1
+    assert summary["total"] == 1
+    assert summary["verification_unavailable"] == 0
 
 
 def test_report_contract_is_in_openapi():

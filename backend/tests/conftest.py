@@ -99,6 +99,8 @@ class FakeStorage:
         return url
 
     async def download(self, url: str) -> bytes:
+        if url not in self.objects:
+            raise FileNotFoundError(url)
         return self.objects[url]
 
     async def signed_url(self, url: str, expires_in: int) -> str:
@@ -130,6 +132,7 @@ class FakeChain:
 
     def __init__(self) -> None:
         self.records: dict[str, ChainRecord] = {}
+        self.retry_empty_reads: list[bool] = []
 
     async def store_document_hash(self, document_id: str, data_hash: str) -> ChainRecord:
         record = ChainRecord(
@@ -142,7 +145,10 @@ class FakeChain:
         self.records[document_id] = record
         return record
 
-    async def get_document_hash(self, document_id: str) -> ChainRecord | None:
+    async def get_document_hash(
+        self, document_id: str, retry_empty: bool = True
+    ) -> ChainRecord | None:
+        self.retry_empty_reads.append(retry_empty)
         return self.records.get(document_id)
 
 

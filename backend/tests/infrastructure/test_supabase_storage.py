@@ -1,6 +1,7 @@
 """Signed PDFs live in a private bucket and are read only with the service key."""
 
 import pytest
+from storage3.exceptions import StorageApiError
 
 from app.infrastructure.clients import supabase_storage
 from app.infrastructure.clients.supabase_storage import (
@@ -70,3 +71,26 @@ async def test_reads_and_links_go_through_the_service_key(bucket, stored):
         ("download", "documents/d/signed/c.pdf"),
         ("sign", "documents/d/signed/c.pdf", 300),
     ]
+
+
+STORED = "https://x.supabase.co/storage/v1/object/authenticated/Documents/d/c.pdf"
+
+
+async def test_deleted_object_reads_as_file_not_found(bucket, monkeypatch):
+    def gone(path):
+        raise StorageApiError("Object not found", "not_found", "404")
+
+    monkeypatch.setattr(bucket, "download", gone)
+
+    with pytest.raises(FileNotFoundError):
+        await SupabaseStorageClient().download(STORED)
+
+
+async def test_other_storage_errors_stay_outages(bucket, monkeypatch):
+    def failing(path):
+        raise StorageApiError("Internal error", "internal", "500")
+
+    monkeypatch.setattr(bucket, "download", failing)
+
+    with pytest.raises(StorageApiError):
+        await SupabaseStorageClient().download(STORED)

@@ -16,5 +16,7 @@ class MockBlockchainProvider:
             tx_hash="0x" + "00" * 32,
         )
 
-    async def get_document_hash(self, document_id: str) -> ChainRecord | None:
+    async def get_document_hash(
+        self, document_id: str, retry_empty: bool = True
+    ) -> ChainRecord | None:
         return None

@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from app.features.blockchain.service import BlockchainService
+from app.features.documents.models import Document
 from app.features.documents.workflow.finalization import DocumentFinalization
 from app.features.documents.workflow.restoration import DocumentRestoration
 from app.features.snapshot.repository import DocumentSnaphotRepository
@@ -117,8 +118,6 @@ async def test_restore_keeps_the_anchor_and_lifecycle(
     records_before = dict(chain.records)
 
     await restoration.restore(as_auth(lawyer), document_id)
-
-    from app.features.documents.models import Document
 
     document = await session.get(Document, document_id)
     assert document.lifecycle == "FINALIZED"
@@ -366,3 +365,76 @@ async def test_restore_route_is_lawyer_only_and_documented(
     assert r.status_code == 403
     operation = spec["paths"]["/documents/{document_id}/restore"]["post"]
     assert operation["responses"]["200"]
+
+
+# === Deleted file ===
+
+
+@pytest.fixture
+async def deleted(finalized, storage):
+    document_id, url, anchored = finalized
+    del storage.objects[url]
+    return document_id, url, anchored
+
+
+async def test_restore_brings_back_a_deleted_file(
+    restoration, verifier, deleted, lawyer
+):
+    document_id, _, anchored = deleted
+
+    result = await restoration.restore(as_auth(lawyer), document_id)
+
+    assert result.restored is True
+    assert result.previous_hash is None
+    assert result.preserved_copy_id is None
+    assert result.restored_hash == anchored
+    assert result.verification.status == "AUTHENTIC"
+    after = await verifier.verify_document(as_auth(lawyer), document_id)
+    assert after.status == "AUTHENTIC"
+    assert after.current_hash == anchored
+
+
+async def test_restoring_a_deleted_file_is_recorded_without_a_from_hash(
+    restoration, queries, deleted, lawyer
+):
+    document_id, _, anchored = deleted
+
+    await restoration.restore(as_auth(lawyer), document_id)
+
+    last = (await queries.get_history(as_auth(lawyer), document_id)).changes[-1]
+    assert last.action == "restore"
+    assert (last.from_hash, last.to_hash) == (None, anchored)
+
+
+async def test_deleted_file_with_no_archive_is_refused(
+    restoration, deleted, backup, lawyer
+):
+    document_id, _, _ = deleted
+    backup.objects.clear()
+
+    with pytest.raises(ConflictError):
+        await restoration.restore(as_auth(lawyer), document_id)
+
+
+async def test_finalized_document_with_no_signed_copy_is_refused(
+    session, restoration, finalized, lawyer
+):
+    document_id, _, _ = finalized
+
+    document = await session.get(Document, document_id)
+    document.signed_copy_id = None
+    await session.flush()
+
+    with pytest.raises(ConflictError):
+        await restoration.restore(as_auth(lawyer), document_id)
+
+
+async def test_edited_lifecycle_is_refused(session, restoration, tampered, lawyer):
+    document_id, _, _ = tampered
+
+    document = await session.get(Document, document_id)
+    document.lifecycle = "SIGNED"
+    await session.flush()
+
+    with pytest.raises(ConflictError):
+        await restoration.restore(as_auth(lawyer), document_id)

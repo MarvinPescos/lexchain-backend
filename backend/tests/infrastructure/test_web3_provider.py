@@ -120,6 +120,19 @@ async def test_never_anchored_is_none():
     assert await p.get_document_hash("d1") is None
 
 
+async def test_empty_read_can_skip_the_retries(monkeypatch):
+    slept = []
+
+    async def record(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(web3_provider.asyncio, "sleep", record)
+    p = provider(FakeContract(reads=[(b"\0" * 32, 0, "0x0")] * 4))
+
+    assert await p.get_document_hash("d1", retry_empty=False) is None
+    assert slept == []
+
+
 async def test_unreachable_chain_is_not_reported_as_missing():
     p = provider(FakeContract(reads=ConnectionError("rpc down")))
     with pytest.raises(ServiceUnavailableError):
