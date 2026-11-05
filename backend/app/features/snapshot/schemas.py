@@ -44,11 +44,37 @@ class BackupCheck(BaseModel):
             "ok: archive present and matches the anchored hash. missing: no "
             "archive. mismatch: the archive's bytes, the snapshot and the "
             "anchored hash do not all agree. unverified: the chain had no record "
-            "or could not be read, so integrity is unknown. repaired: re-archived from the live copy. unrecoverable: no "
-            "good archive and the live copy no longer matches either."
+            "or could not be read, so integrity is unknown. repaired: re-archived "
+            "from the live copy. unrecoverable: no good archive and the live copy "
+            "no longer matches either."
         ),
     )
     backup_key: str | None = None
+
+
+class LiveFileCheck(BaseModel):
+    document_id: uuid.UUID
+    status: str = Field(
+        ...,
+        description=(
+            "TAMPERED: the live file differs from the anchored hash. FILE_MISSING: "
+            "the live file was deleted. SNAPSHOT_COMPROMISED: either of those, and "
+            "the snapshot row differs from the chain too. VERIFICATION_UNAVAILABLE: "
+            "storage or the chain could not be read, so integrity is unknown."
+        ),
+    )
+
+
+class LiveFileReport(BaseModel):
+    checked: int
+    ok: int
+    tampered: int
+    file_missing: int
+    snapshot_compromised: int
+    unavailable: int
+    problems: list[LiveFileCheck] = Field(
+        default_factory=list, description="Every live file that is not ok"
+    )
 
 
 class BackupVerificationResponse(BaseModel):
@@ -61,4 +87,8 @@ class BackupVerificationResponse(BaseModel):
     unrecoverable: int
     problems: list[BackupCheck] = Field(
         default_factory=list, description="Every snapshot whose status is not ok"
+    )
+    live: LiveFileReport = Field(
+        ...,
+        description="Each document's current signed copy against the chain",
     )

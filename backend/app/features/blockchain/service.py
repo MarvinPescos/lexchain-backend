@@ -117,9 +117,12 @@ class BlockchainService:
 
         Only a check that reaches a verdict is kept; one that raises is not.
         Internal checks (restore) leave `record` off: they are not report rows.
+        A quick check (`tamper_report=False`) keeps neither AUTHENTIC nor
+        NOT_ANCHORED, so opening documents doesn't flood the integrity report.
         """
         result = await self._verify(user, document_id, tamper_report=tamper_report)
-        if record:
+        routine = result.status in (VERIFY_AUTHENTIC, VERIFY_NOT_ANCHORED)
+        if record and (tamper_report or not routine):
             await self._record(user, result)
         return result
 

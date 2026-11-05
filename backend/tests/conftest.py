@@ -163,6 +163,7 @@ def storage(monkeypatch: pytest.MonkeyPatch) -> FakeStorage:
             f"app.features.documents.workflow.{module}.get_storage_client", lambda: fake
         )
     monkeypatch.setattr("app.features.documents.queries.get_storage_client", lambda: fake)
+    monkeypatch.setattr("app.features.snapshot.backups.get_storage_client", lambda: fake)
     monkeypatch.setattr(
         "app.infrastructure.clients.supabase_storage.get_storage_client", lambda: fake
     )

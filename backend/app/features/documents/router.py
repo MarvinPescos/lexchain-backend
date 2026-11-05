@@ -950,7 +950,10 @@ async def retry_processing(
         "is FILE_MISSING, a tamper finding; VERIFICATION_UNAVAILABLE means "
         "storage or the chain could not be read. The chain is read first, so an "
         "anchored document is checked whatever its `lifecycle` says. Every check "
-        "that reaches a verdict is kept for the integrity report."
+        "that reaches a verdict is kept for the integrity report. With "
+        "`report=false` this is the quick check made when a document is opened: "
+        "hashes only, no OCR and no `tamper_report`, and an AUTHENTIC or "
+        "NOT_ANCHORED verdict is not kept."
     ),
     responses={
         200: {
@@ -971,12 +974,17 @@ async def retry_processing(
 async def verify_document(
     request: Request,
     document_id: uuid.UUID,
+    report: bool = Query(
+        True, description="Run the OCR diff; false makes this the quick check"
+    ),
     current_user: AuthenticatedUser = Depends(require_auth),
     # Untyped: importing BlockchainService here would be circular
     # (blockchain.service imports the documents package).
     verification=Depends(get_verification),
 ) -> DocumentVerificationResponse:
-    return await verification.verify_document(current_user, document_id, record=True)
+    return await verification.verify_document(
+        current_user, document_id, tamper_report=report, record=True
+    )
 
 
 @router.post(

@@ -143,7 +143,7 @@ class DocumentVerificationResponse(BaseModel):
             "AVAILABLE — `tamper_report` holds a diff against a trusted baseline; "
             "UNAVAILABLE — the document is TAMPERED but no trustworthy diff could "
             "be produced (the verdict still stands); NOT_APPLICABLE — any status "
-            "other than TAMPERED"
+            "other than TAMPERED, or the quick check, which makes no diff"
         ),
     )
     tamper_report: TamperReport | None = Field(
