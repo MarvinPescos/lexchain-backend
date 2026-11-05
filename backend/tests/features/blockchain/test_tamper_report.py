@@ -330,6 +330,20 @@ async def test_authentic_document_claims_no_diff(verifier, finalized, ocr, lawye
     assert ocr.calls == []
 
 
+async def test_altered_snapshot_over_a_genuine_file_stays_authentic(
+    session, verifier, finalized, lawyer
+):
+    document_id, _ = finalized
+    snapshot = await DocumentSnaphotRepository(session).get_by_document_id(document_id)
+    snapshot.file_sha256 = "0" * 64
+    await session.flush()
+
+    result = await verifier.verify_document(as_auth(lawyer), document_id)
+
+    assert result.status == "AUTHENTIC"
+    assert result.baseline_trusted is False
+
+
 async def test_unavailable_verification_claims_no_diff(
     verifier, finalized, storage, ocr, lawyer
 ):

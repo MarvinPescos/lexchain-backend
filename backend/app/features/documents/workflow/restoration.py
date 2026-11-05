@@ -2,8 +2,9 @@
 
 The bytes come only from the archive written at finalize, and only once they
 re-hash to the on-chain hash — never from the active file, which is the one
-that no longer matches. The file found in its place, if any, is kept as its own
-signed copy. The document stays FINALIZED and nothing is re-anchored: the original
+that no longer matches. The archive is found from the on-chain hash, so an
+altered snapshot row can neither block a restore nor choose what is restored.
+The file found in its place, if any, is kept as its own signed copy. The document stays FINALIZED and nothing is re-anchored: the original
 chain record is what the restored copy verifies against.
 """
 
@@ -14,8 +15,7 @@ import httpx
 from storage3.utils import StorageException
 
 from app.features.documents.schemas import RestoreResponse
-from app.features.snapshot.backups import matches_snapshot
-from app.features.snapshot.repository import DocumentSnaphotRepository
+from app.features.snapshot.backups import archive_key
 from app.infrastructure.backup import BackupProvider
 from app.infrastructure.blockchain import BlockchainProvider
 from app.infrastructure.clients.supabase_storage import (
@@ -52,7 +52,6 @@ class DocumentRestoration:
         self.session = session
         self.repo = DocumentRepository(session)
         self.access = DocumentAccess(session)
-        self.snapshot_repo = DocumentSnaphotRepository(session)
         # None when BACKUP_ENABLED is off: there is no archive to restore from.
         self.backup = backup
         from app.features.blockchain.service import BlockchainService
@@ -64,8 +63,8 @@ class DocumentRestoration:
     ) -> RestoreResponse:
         """Make the archived, anchored bytes the current signed copy again.
 
-        Only from TAMPERED or FILE_MISSING with a trusted baseline. Every refusal happens before
-        anything is written. Already AUTHENTIC answers `restored=False`.
+        Only from TAMPERED, FILE_MISSING or SNAPSHOT_COMPROMISED. Every refusal happens
+        before anything is written. Already AUTHENTIC answers `restored=False`.
         """
         document = await self.access.authorize(user, document_id, ACTION_RESTORE)
         # One restore at a time: a concurrent retry waits, then finds it authentic.
@@ -84,13 +83,7 @@ class DocumentRestoration:
                 restored_copy_id=document.signed_copy_id,
                 verification=verdict,
             )
-        if verdict.status == "SNAPSHOT_COMPROMISED":
-            raise ConflictError(
-                "The frozen record was altered as well, so there is no trusted "
-                "original to restore from.",
-                details={"reason": "SNAPSHOT_COMPROMISED"},
-            )
-        if verdict.status not in ("TAMPERED", "FILE_MISSING"):
+        if verdict.status not in ("TAMPERED", "FILE_MISSING", "SNAPSHOT_COMPROMISED"):
             raise ServiceUnavailableError(
                 "Could not read the stored file or the chain to confirm it was "
                 "tampered with. Try again once both are available."
@@ -182,22 +175,22 @@ class DocumentRestoration:
         self, document_id: uuid.UUID, onchain_hash: str
     ) -> bytes:
         """The archive's bytes, only if they are exactly what was anchored."""
-        snapshot = await self.snapshot_repo.get_by_document_id(document_id)
-        if self.backup is None or snapshot is None or snapshot.backup_key is None:
+        if self.backup is None:
             raise ConflictError(
                 "There is no archived original to restore this document from.",
                 details={"reason": "NO_BACKUP"},
             )
         try:
+            key = archive_key(document_id, onchain_hash)
             # Asked first so a lost archive reads as gone for good, not as an outage.
-            if not await self.backup.exists(snapshot.backup_key):
+            if not await self.backup.exists(key):
                 log.error("document.restore.archive_missing", document_id=str(document_id))
                 raise ConflictError(
                     "The archived original is missing, so this document cannot be "
                     "restored.",
                     details={"reason": "NO_BACKUP"},
                 )
-            data = await self.backup.fetch(snapshot.backup_key)
+            data = await self.backup.fetch(key)
         except ConflictError:
             raise
         except Exception as e:
@@ -209,9 +202,7 @@ class DocumentRestoration:
             raise ServiceUnavailableError(
                 "The archived original could not be read. Try restoring again."
             ) from e
-        # The snapshot hash is the on-chain hash here: TAMPERED and FILE_MISSING
-        # are only given against a trusted baseline.
-        if snapshot.file_sha256 != onchain_hash or not matches_snapshot(snapshot, data):
+        if hashlib.sha256(data).hexdigest() != onchain_hash:
             log.error("document.restore.archive_mismatch", document_id=str(document_id))
             raise ConflictError(
                 "The archived original does not match the hash anchored on-chain.",

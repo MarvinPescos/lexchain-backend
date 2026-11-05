@@ -168,18 +168,82 @@ async def _assert_untouched(queries, lawyer, document_id, storage, objects):
     assert storage.objects == objects
 
 
-async def test_compromised_snapshot_is_refused(
-    session, restoration, queries, tampered, storage, lawyer
-):
-    document_id, _, _ = tampered
+async def _alter_snapshot(session, document_id, **fields):
     snapshot = await DocumentSnaphotRepository(session).get_by_document_id(document_id)
-    snapshot.file_sha256 = "0" * 64
+    for name, value in fields.items():
+        setattr(snapshot, name, value)
     await session.flush()
+
+
+async def test_altered_snapshot_does_not_block_restore(
+    session, restoration, tampered, storage, lawyer
+):
+    document_id, url, anchored = tampered
+    await _alter_snapshot(session, document_id, file_sha256="0" * 64)
+
+    result = await restoration.restore(as_auth(lawyer), document_id)
+
+    assert result.restored is True
+    assert result.restored_hash == anchored
+    assert result.verification.status == "AUTHENTIC"
+    # The file is back; the row itself still needs a database backup.
+    assert result.verification.baseline_trusted is False
+    assert anchored in {hashlib.sha256(b).hexdigest() for b in storage.objects.values()}
+
+
+async def test_altered_snapshot_and_deleted_file_are_restored(
+    session, restoration, finalized, storage, lawyer
+):
+    document_id, url, anchored = finalized
+    await _alter_snapshot(session, document_id, file_sha256="0" * 64)
+    del storage.objects[url]
+
+    result = await restoration.restore(as_auth(lawyer), document_id)
+
+    assert result.restored is True
+    assert result.previous_hash is None
+    assert result.preserved_copy_id is None
+    assert result.verification.status == "AUTHENTIC"
+
+
+async def test_altered_snapshot_with_a_bad_archive_is_refused(
+    session, restoration, queries, tampered, backup, storage, lawyer
+):
+    document_id, url, _ = tampered
+    await _alter_snapshot(session, document_id, file_sha256="0" * 64)
+    [key] = backup.objects
+    backup.objects[key] = storage.objects[url]
     objects = dict(storage.objects)
 
-    with pytest.raises(ConflictError):
+    with pytest.raises(ConflictError) as refused:
         await restoration.restore(as_auth(lawyer), document_id)
 
+    assert refused.value.details["reason"] == "BACKUP_MISMATCH"
+    await _assert_untouched(queries, lawyer, document_id, storage, objects)
+
+
+async def test_archive_forged_to_match_an_altered_snapshot_is_never_used(
+    session, restoration, queries, tampered, backup, storage, lawyer
+):
+    document_id, _, _ = tampered
+    forged = b"forged"
+    forged_hash = hashlib.sha256(forged).hexdigest()
+    forged_key = f"{document_id}/{forged_hash}.pdf"
+    backup.objects.clear()
+    backup.objects[forged_key] = forged
+    await _alter_snapshot(
+        session,
+        document_id,
+        file_sha256=forged_hash,
+        size_bytes=len(forged),
+        backup_key=forged_key,
+    )
+    objects = dict(storage.objects)
+
+    with pytest.raises(ConflictError) as refused:
+        await restoration.restore(as_auth(lawyer), document_id)
+
+    assert refused.value.details["reason"] == "NO_BACKUP"
     await _assert_untouched(queries, lawyer, document_id, storage, objects)
 
 
@@ -213,19 +277,17 @@ async def test_unreachable_archive_is_refused(
     await _assert_untouched(queries, lawyer, document_id, storage, objects)
 
 
-async def test_no_archive_recorded_is_refused(
-    session, restoration, queries, tampered, storage, lawyer
+async def test_nulled_backup_key_does_not_block_restore(
+    session, restoration, tampered, lawyer
 ):
-    document_id, _, _ = tampered
-    snapshot = await DocumentSnaphotRepository(session).get_by_document_id(document_id)
-    snapshot.backup_key = None
-    await session.flush()
-    objects = dict(storage.objects)
+    document_id, _, anchored = tampered
+    await _alter_snapshot(session, document_id, backup_key=None)
 
-    with pytest.raises(ConflictError):
-        await restoration.restore(as_auth(lawyer), document_id)
+    result = await restoration.restore(as_auth(lawyer), document_id)
 
-    await _assert_untouched(queries, lawyer, document_id, storage, objects)
+    assert result.restored is True
+    assert result.restored_hash == anchored
+    assert result.verification.status == "AUTHENTIC"
 
 
 async def test_backups_disabled_is_refused(

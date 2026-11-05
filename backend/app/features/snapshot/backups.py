@@ -14,6 +14,7 @@ per tampered file; a read failure is unknown and neither.
 """
 
 import hashlib
+import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from typing import get_args
@@ -71,8 +72,12 @@ _LIVE_ALERTS: dict[str, tuple[str, str]] = {
 }
 
 
+def archive_key(document_id: uuid.UUID, file_hash: str) -> str:
+    return f"{document_id}/{file_hash}.pdf"
+
+
 def backup_key(snapshot: DocumentSnapshot) -> str:
-    return f"{snapshot.document_id}/{snapshot.file_sha256}.pdf"
+    return archive_key(snapshot.document_id, snapshot.file_sha256)
 
 
 def _normalise(value: str) -> str:

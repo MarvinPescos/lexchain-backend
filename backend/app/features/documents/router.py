@@ -994,8 +994,11 @@ async def verify_document(
     status_code=status.HTTP_200_OK,
     summary="Restore a tampered or deleted document from its archive",
     description=(
-        "For a FINALIZED document whose verification is TAMPERED or FILE_MISSING. "
-        "The archived original is re-hashed against the on-chain hash, then "
+        "For a FINALIZED document whose verification is TAMPERED, FILE_MISSING or "
+        "SNAPSHOT_COMPROMISED. The archive is found from the on-chain hash, so an "
+        "altered snapshot row doesn't block it, and it stays altered until "
+        "restored from a database backup. The archived original is re-hashed "
+        "against the on-chain hash, then "
         "becomes the current signed copy; a tampered file is kept in "
         "/signed-copies and the restore is recorded in /history with both hashes. "
         "For a deleted file nothing is preserved, and `preserved_copy_id`, "
@@ -1011,8 +1014,8 @@ async def verify_document(
         404: {"description": "Document not found, or it has no on-chain record"},
         409: {
             "description": (
-                "Not FINALIZED, SNAPSHOT_COMPROMISED, no signed copy record, no "
-                "archived original, or the archive does not match the chain"
+                "Not FINALIZED, no signed copy record, no archived original, or "
+                "the archive does not match the chain"
             )
         },
         503: {"description": "Storage, the chain or the archive is unavailable; nothing changed"},

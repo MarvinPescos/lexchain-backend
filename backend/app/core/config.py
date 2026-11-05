@@ -226,6 +226,11 @@ class Settings(BaseSettings):
         ge=10,
         description="How often processing jobs the broker refused are resent",
     )
+    DISPATCH_STALL_SECONDS: int = Field(
+        default=1800,
+        ge=60,
+        description="How long a sent job may wait for a worker before it is resent",
+    )
     DRAFT_REVOCATION_RETRY_SECONDS: int = Field(
         default=300,
         ge=30,

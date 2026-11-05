@@ -555,19 +555,21 @@ per-op counts, and a `similarity` ratio.
 ### 3.13 Restore (`documents/workflow/restoration.py`)
 
 `POST /documents/{id}/restore` — owner only, from FINALIZED, run after `verify`
-reports TAMPERED or FILE_MISSING. For FILE_MISSING there is nothing to preserve,
+reports TAMPERED, FILE_MISSING or SNAPSHOT_COMPROMISED. For FILE_MISSING there is nothing to preserve,
 so `preserved_copy_id`, `previous_hash` and the history row's `from_hash` stay
 null. With no signed copy record there is nothing to restore onto → 409
 `NO_SIGNED_COPY`. If `lifecycle` was edited, verify still reports TAMPERED but
 restore refuses: first correct `lifecycle` from a database backup, then restore.
 
 1. Lock the document, then verify (no tamper report). AUTHENTIC → nothing is
-   changed and `restored` is false, so a retry is safe. SNAPSHOT_COMPROMISED →
-   409; VERIFICATION_UNAVAILABLE → 503.
-2. Fetch the archive (`snapshot.backup_key`) and check it against the snapshot,
-   which both verdicts guarantee equals the on-chain hash. No archive → 409,
-   mismatch → 409, unreadable → 503. Never trust the archive blindly, and never
-   copy from the active file.
+   changed and `restored` is false, so a retry is safe.
+   VERIFICATION_UNAVAILABLE → 503.
+2. Fetch the archive at `<document_id>/<onchain_hash>.pdf` and check it against
+   the on-chain hash. The snapshot row is never read, so editing it can't block a
+   restore or pick the file; it stays altered until a database backup fixes it,
+   and verify then shows AUTHENTIC with `baseline_trusted=false`. No archive →
+   409, mismatch → 409, unreadable → 503. Never trust the archive blindly, and
+   never copy from the active file.
 3. Keep the tampered file as its own `SignedCopy` (its real hash) — on a
    notarised document it is potentially evidence. If it can no longer be read
    as the file that was judged, the restore goes ahead without it.
