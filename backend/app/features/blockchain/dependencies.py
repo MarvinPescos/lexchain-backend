@@ -5,7 +5,7 @@ from app.infrastructure.blockchain.web3_provider import Web3BlockchainProvider
 
 
 def get_blockchain_provider() -> BlockchainProvider:
-    # Deliberate: dev runs against the real chain so Web3 gets exercised.
-    if settings.ENVIRONMENT == "development":
-        return Web3BlockchainProvider()
-    return MockBlockchainProvider()
+    # Every deployed environment, staging included, anchors for real.
+    if settings.ENVIRONMENT == "test":
+        return MockBlockchainProvider()
+    return Web3BlockchainProvider()

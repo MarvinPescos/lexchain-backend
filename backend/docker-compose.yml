@@ -98,6 +98,24 @@ services:
     networks:
       - app
 
+  # Database dumps, kept off the documents worker so a dump and OCR don't block
+  # each other.
+  celery-backups:
+    build: .
+    container_name: lexchain-celery-backups
+    command: celery -A app.celery_app worker -Q backups -c 1 --loglevel=info
+    volumes:
+      - .:/app
+    env_file: .env
+    environment:
+      DB_URL: postgresql+asyncpg://${DB_USER}:${DB_PASS}@db:${DB_PORT}/${DB_NAME}
+      CELERY_BROKER_URL: redis://redis:6379/0
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    networks:
+      - app
+
   # Schedules the draft-comment sync; the documents worker runs it.
   celery-beat:
     build: .

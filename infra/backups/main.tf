@@ -129,6 +129,27 @@ data "aws_iam_policy_document" "backups" {
     ]
   }
 
+  # `fetch` reads the newest version, so a junk version over an existing key
+  # would break restore even with the original still locked underneath.
+  statement {
+    sid     = "DenyOverwrite"
+    effect  = "Deny"
+    actions = ["s3:PutObject"]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    resources = ["${aws_s3_bucket.backups.arn}/*"]
+
+    condition {
+      test     = "Null"
+      variable = "s3:if-none-match"
+      values   = ["true"]
+    }
+  }
+
   statement {
     sid     = "DenyInsecureTransport"
     effect  = "Deny"

@@ -13,6 +13,7 @@ celery_app = Celery(
     include=[
         "app.celery_tasks.notifications",
         "app.celery_tasks.documents",
+        "app.celery_tasks.backups",
     ],
 )
 
@@ -30,6 +31,9 @@ celery_app.conf.update(
         # it in the default queue, which no worker consumes.
         "document.*": {"queue": "documents"},
         "notifications.*": {"queue": "notifications"},
+        # Its own worker: on the -c 1 documents worker a dump and OCR would
+        # block each other.
+        "backup.*": {"queue": "backups"},
     },
     # Draft comments are polled: Drive's file webhooks do not report comments.
     # Run with `celery -A app.celery_app beat`.
@@ -50,6 +54,14 @@ celery_app.conf.update(
         "verify-backups": {
             "task": "document.verify_backups",
             "schedule": settings.BACKUP_VERIFY_SECONDS,
+        },
+        "backup-database": {
+            "task": "backup.database",
+            "schedule": settings.BACKUP_DB_SECONDS,
+        },
+        "check-replication": {
+            "task": "backup.check_replication",
+            "schedule": settings.BACKUP_REPLICATION_CHECK_SECONDS,
         },
         "reconcile-chain": {
             "task": "document.reconcile_chain",

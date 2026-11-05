@@ -123,6 +123,47 @@ class Settings(BaseSettings):
         ge=3600,
         description="How often every archive is checked against its anchored hash",
     )
+    AWS_REGION: str = Field(
+        default="ap-southeast-1", description="Region of the backup buckets"
+    )
+
+    # Database dumps. Unset in development, where there is nothing to protect.
+    BACKUP_DB_URL: str | None = Field(
+        default=None,
+        description=(
+            "Plain postgresql:// URL for pg_dump, through Supabase's session "
+            "pooler. The transaction pooler does not work with pg_dump."
+        ),
+    )
+    BACKUP_DB_BUCKET: str | None = Field(
+        default=None, description="Locked bucket for hourly dumps"
+    )
+    BACKUP_DB_MONTHLY_BUCKET: str | None = Field(
+        default=None, description="Locked bucket for the dumps of each month's first day"
+    )
+    BACKUP_DB_SECONDS: int = Field(
+        default=3600, ge=300, description="How often the database is dumped"
+    )
+    BACKUP_DB_TIMEOUT_SECONDS: int = Field(
+        default=1800, ge=60, description="How long one pg_dump may run"
+    )
+
+    # Replication to the RDS copy.
+    BACKUP_REPLICATION_SLOT: str | None = Field(
+        default=None, description="Replication slot of the RDS subscription"
+    )
+    BACKUP_REPLICATION_CHECK_SECONDS: int = Field(
+        default=900, ge=60, description="How often replication is checked"
+    )
+    BACKUP_REPLICATION_MAX_LAG_BYTES: int = Field(
+        default=64 * 1024 * 1024,
+        ge=0,
+        description="Replication lag that triggers an alert",
+    )
+    BACKUP_ALERT_EMAIL: str | None = Field(
+        default=None, description="Who is told when a dump fails or replication stops"
+    )
+
     CHAIN_SCAN_FROM_BLOCK: int | None = Field(
         default=None,
         ge=0,

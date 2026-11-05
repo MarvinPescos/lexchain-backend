@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel
@@ -30,4 +31,13 @@ class BackupProvider(Protocol):
 
     async def exists(self, key: str) -> bool:
         """Whether an object is present, without downloading it."""
+        ...
+
+
+class DumpStore(Protocol):
+    """Somewhere database dumps are added. Add-only, like the archive: the
+    server can't read past dumps, so there is no fetch either."""
+
+    async def store_file(self, key: str, path: Path, content_type: str) -> None:
+        """Stream a file up."""
         ...
