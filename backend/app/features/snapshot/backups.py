@@ -11,17 +11,21 @@ is reused if it checks out and never overwritten if it doesn't.
 
 import hashlib
 from datetime import datetime, timezone
+from typing import get_args
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.features.documents.models import SignedCopy
 from app.infrastructure.backup import BackupProvider
 from app.infrastructure.blockchain import BlockchainProvider
 from app.infrastructure.clients.supabase_storage import get_storage_client
 from app.infrastructure.observability.logging_setup import log
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import DocumentSnapshot
 from .schemas import BackupCheck, BackupStatus, BackupVerificationResponse
+
+BACKUP_STATUSES = get_args(BackupStatus)
 
 
 def backup_key(snapshot: DocumentSnapshot) -> str:
@@ -49,7 +53,7 @@ class SnapshotArchive:
     ) -> None:
         self.session = session
         self.backup = backup
-        # Needed only by repair, which refuses to run without it.
+        # Needed by verify and repair. Without it nothing can be called good.
         self.chain = chain
 
     async def archive(self, snapshot: DocumentSnapshot, content: bytes) -> bool:
@@ -83,9 +87,10 @@ class SnapshotArchive:
         return True
 
     async def verify(self, repair: bool = False) -> BackupVerificationResponse:
-        """Hash every archive against its anchored hash.
+        """Hash every archive against the snapshot and the hash read from the chain.
 
-        With `repair`, a missing archive is written from the live signed copy —
+        An archive the chain could not confirm is `unverified`: integrity unknown,
+        never repaired. With `repair`, a missing archive is written from the live signed copy —
         only when the snapshot matches the chain and the live copy matches the
         snapshot. A bad archive is reported, never overwritten.
         """
@@ -94,11 +99,11 @@ class SnapshotArchive:
         )
         snapshots = list(result.scalars().all())
 
-        counts = {s: 0 for s in ("ok", "missing", "mismatch", "repaired", "unrecoverable")}
+        counts = {s: 0 for s in BACKUP_STATUSES}
         problems: list[BackupCheck] = []
         for snapshot in snapshots:
             status = await self._check(snapshot)
-            if status != "ok" and repair:
+            if status in ("missing", "mismatch") and repair:
                 status = await self._repair(snapshot)
             counts[status] += 1
             if status != "ok":
@@ -138,6 +143,16 @@ class SnapshotArchive:
                 key=snapshot.backup_key,
             )
             return "mismatch"
+        onchain_hash = await self._onchain_hash(snapshot)
+        if onchain_hash is None:
+            return "unverified"
+        if onchain_hash != snapshot.file_sha256:
+            log.error(
+                "backup.verify.chain_mismatch",
+                document_id=str(snapshot.document_id),
+                key=snapshot.backup_key,
+            )
+            return "mismatch"
         return "ok"
 
     async def _repair(self, snapshot: DocumentSnapshot) -> BackupStatus:
@@ -168,16 +183,28 @@ class SnapshotArchive:
         """Whether the snapshot's hash is the one on-chain. The snapshot row is
         only a database copy; nothing is archived as the original on its word.
         """
+        if await self._onchain_hash(snapshot) != snapshot.file_sha256:
+            log.error(
+                "backup.repair.snapshot_not_anchored",
+                document_id=str(snapshot.document_id),
+            )
+            return False
+        return True
+
+    async def _onchain_hash(self, snapshot: DocumentSnapshot) -> str | None:
+        """The hash anchored for this document. None if there is no record or the
+        chain could not be read.
+        """
         document_id = str(snapshot.document_id)
         if self.chain is None:
-            log.error("backup.repair.no_chain", document_id=document_id)
-            return False
+            log.error("backup.chain.no_reader", document_id=document_id)
+            return None
         try:
             record = await self.chain.get_document_hash(document_id=document_id)
         except Exception as e:
-            log.error("backup.repair.chain_read_failed", document_id=document_id, error=str(e))
-            return False
-        if record is None or _normalise(record.data_hash) != snapshot.file_sha256:
-            log.error("backup.repair.snapshot_not_anchored", document_id=document_id)
-            return False
-        return True
+            log.error("backup.chain.read_failed", document_id=document_id, error=str(e))
+            return None
+        if record is None:
+            log.error("backup.chain.no_record", document_id=document_id)
+            return None
+        return _normalise(record.data_hash)

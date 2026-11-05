@@ -31,7 +31,9 @@ class DocumentSnapshotResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-BackupStatus = Literal["ok", "missing", "mismatch", "repaired", "unrecoverable"]
+BackupStatus = Literal[
+    "ok", "missing", "mismatch", "unverified", "repaired", "unrecoverable"
+]
 
 
 class BackupCheck(BaseModel):
@@ -40,8 +42,9 @@ class BackupCheck(BaseModel):
         ...,
         description=(
             "ok: archive present and matches the anchored hash. missing: no "
-            "archive. mismatch: the archive's bytes differ from the anchored "
-            "hash. repaired: re-archived from the live copy. unrecoverable: no "
+            "archive. mismatch: the archive's bytes, the snapshot and the "
+            "anchored hash do not all agree. unverified: the chain had no record "
+            "or could not be read, so integrity is unknown. repaired: re-archived from the live copy. unrecoverable: no "
             "good archive and the live copy no longer matches either."
         ),
     )
@@ -53,6 +56,7 @@ class BackupVerificationResponse(BaseModel):
     ok: int
     missing: int
     mismatch: int
+    unverified: int
     repaired: int
     unrecoverable: int
     problems: list[BackupCheck] = Field(

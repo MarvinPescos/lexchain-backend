@@ -194,7 +194,7 @@ async def test_verify_reports_ok_missing_and_mismatch(
     backup.objects[bad.backup_key] = b"tampered"
     del backup.objects[gone.backup_key]
 
-    report = await SnapshotArchive(session, backup).verify()
+    report = await SnapshotArchive(session, backup, chain).verify()
 
     assert (report.checked, report.ok, report.mismatch, report.missing) == (3, 1, 1, 1)
     statuses = {p.document_id: p.status for p in report.problems}
@@ -213,6 +213,49 @@ async def test_verify_reports_an_archive_of_the_wrong_size(
     assert report.mismatch == 1
 
 
+async def test_verify_catches_an_archive_and_snapshot_forged_to_agree(
+    session, intake, storage, queue, chain, backup, lawyer, open_book
+):
+    snapshot = await _finalize(session, intake, queue, chain, backup, lawyer, open_book)
+    forged = b"forged"
+    backup.objects[snapshot.backup_key] = forged
+    snapshot.file_sha256 = hashlib.sha256(forged).hexdigest()
+    snapshot.size_bytes = len(forged)
+
+    report = await SnapshotArchive(session, backup, chain).verify()
+
+    assert report.mismatch == 1
+
+
+@pytest.mark.parametrize("repair", [False, True])
+async def test_chain_outage_leaves_archives_unverified(
+    repair, session, intake, live_storage, queue, chain, backup, lawyer, open_book, monkeypatch
+):
+    snapshot = await _finalize(session, intake, queue, chain, backup, lawyer, open_book)
+    stored = dict(backup.objects)
+
+    async def chain_down(*a, **k):
+        raise ConnectionError("rpc unreachable")
+
+    monkeypatch.setattr(chain, "get_document_hash", chain_down)
+
+    report = await SnapshotArchive(session, backup, chain).verify(repair=repair)
+
+    assert (report.ok, report.unverified, report.unrecoverable) == (0, 1, 0)
+    assert report.problems[0].document_id == snapshot.document_id
+    assert backup.objects == stored
+
+
+async def test_verify_without_a_chain_reader_confirms_nothing(
+    session, intake, storage, queue, chain, backup, lawyer, open_book
+):
+    await _finalize(session, intake, queue, chain, backup, lawyer, open_book)
+
+    report = await SnapshotArchive(session, backup).verify()
+
+    assert (report.ok, report.unverified) == (0, 1)
+
+
 async def test_repair_rearchives_a_legacy_document_from_the_live_copy(
     session, intake, live_storage, queue, chain, backup, lawyer, open_book
 ):
@@ -222,7 +265,7 @@ async def test_repair_rearchives_a_legacy_document_from_the_live_copy(
 
     assert (report.repaired, report.ok) == (1, 0)
     assert snapshot.backup_key in backup.objects
-    assert (await SnapshotArchive(session, backup).verify()).ok == 1
+    assert (await SnapshotArchive(session, backup, chain).verify()).ok == 1
 
 
 async def test_repair_refuses_a_live_copy_that_changed(
