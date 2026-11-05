@@ -16,6 +16,9 @@ sqlalchemy[asyncio]
 asyncpg
 alembic
 
+# Backups
+boto3
+
 # Rate Limiting & Caching
 slowapi
 redis

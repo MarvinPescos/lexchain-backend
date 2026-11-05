@@ -1,6 +1,8 @@
 environment        = "production"
 aws_profile        = "lexchain"
 backup_bucket_name = "lexchain-production-backups-CHANGE-ME"
+backup_db_bucket_name         = "lexchain-production-db-hourly-CHANGE-ME"
+backup_db_monthly_bucket_name = "lexchain-production-db-monthly-CHANGE-ME"
 
 # App box: everything except Marker.
 instance_type  = "m7i-flex.large"

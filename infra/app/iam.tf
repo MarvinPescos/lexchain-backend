@@ -41,6 +41,16 @@ data "aws_iam_policy_document" "app_backups" {
     actions   = ["s3:ListBucket"]
     resources = ["arn:aws:s3:::${var.backup_bucket_name}"]
   }
+
+  # Add only. Restores run from the lawyer's account, so a compromised box
+  # can't read past dumps.
+  statement {
+    actions = ["s3:PutObject"]
+    resources = [
+      "arn:aws:s3:::${var.backup_db_bucket_name}/*",
+      "arn:aws:s3:::${var.backup_db_monthly_bucket_name}/*",
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "app_backups" {

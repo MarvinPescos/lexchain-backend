@@ -14,4 +14,9 @@ def build_backup() -> BackupProvider:
 
         return SupabaseBackupProvider()
 
+    if settings.BACKUP_PROVIDER == "s3":
+        from .s3_backup import S3BackupProvider
+
+        return S3BackupProvider()
+
     raise ValueError(f"Unsupported BACKUP_PROVIDER: {settings.BACKUP_PROVIDER}")

@@ -8,3 +8,18 @@ app_account_id = "111111111111"
 # Keep GOVERNANCE / 1 until real documents go in; COMPLIANCE is irreversible.
 retention_mode = "GOVERNANCE"
 retention_days = 1
+
+# Database dumps.
+db_bucket_name         = "lexchain-production-db-hourly-CHANGE-ME"
+db_monthly_bucket_name = "lexchain-production-db-monthly-CHANGE-ME"
+
+# Same rule as above. Monthly becomes the firm's record-retention period.
+db_retention_mode         = "GOVERNANCE"
+db_hourly_retention_days  = 7
+db_monthly_retention_days = 1
+
+# Told when hourly dumps stop. Confirm the SNS email after the first apply.
+alert_email = "CHANGE-ME@example.com"
+
+# The RDS copy costs money: true only during validation, then false and apply.
+rds = false

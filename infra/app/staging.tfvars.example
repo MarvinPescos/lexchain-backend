@@ -1,6 +1,8 @@
 environment        = "staging"
 aws_profile        = "lexchain"
 backup_bucket_name = "lexchain-staging-backups-CHANGE-ME"
+backup_db_bucket_name         = "lexchain-staging-db-hourly-CHANGE-ME"
+backup_db_monthly_bucket_name = "lexchain-staging-db-monthly-CHANGE-ME"
 
 # App box: everything except OCR. OCR runs on the Azure MinerU box.
 instance_type  = "m7i-flex.large"

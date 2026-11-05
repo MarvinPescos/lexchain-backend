@@ -14,6 +14,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
  && rm -rf /var/lib/apt/lists/*
 
+# pg_dump refuses a server newer than itself, so this must be at least
+# Supabase's Postgres major (`select version();`). Debian's own package lags.
+ARG PG_CLIENT_MAJOR=17
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+ && install -d /etc/apt/keyrings \
+ && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /etc/apt/keyrings/pgdg.asc \
+ && . /etc/os-release \
+ && echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update && apt-get install -y --no-install-recommends postgresql-client-${PG_CLIENT_MAJOR} \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade --retries 10 --timeout 120 -r requirements.txt
 

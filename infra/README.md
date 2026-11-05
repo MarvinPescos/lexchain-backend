@@ -5,7 +5,9 @@ OpenTofu for LexChain's AWS footprint: a **staging** and a **production** enviro
 ```
 infra/
 ├── shared/    Account-wide: GitHub OIDC provider, budget alert. Applied once.
-├── backups/   Object Lock bucket, one per environment. Applied once each, never destroyed.
+├── backups/   Object Lock buckets (documents, hourly and monthly dumps), the missing-dump
+│              alarm and the optional RDS copy. Applied once per environment; the buckets
+│              are never destroyed. Restores: backups/RECOVERY.md.
 └── app/       The app box, the optional Marker GPU box, their IAM, the GitHub deploy role.
                One per environment, destroyed when idle.
 ```
@@ -111,5 +113,5 @@ Staging must never share state with production:
 
 ## Not yet wired
 
-- The app has no S3 backup provider; `BACKUP_PROVIDER` is still `supabase`. It needs `boto3`, and Object Lock rejects a `PutObject` without a checksum, so send `ChecksumAlgorithm`.
+- `BACKUP_PROVIDER` defaults to `supabase`. Set `s3` and `BACKUP_BUCKET` once the backups bucket exists.
 - No `docker-compose.prod.yml` for the app box (cloudflared, no bind mounts or `--reload`), no compose file for the Marker box (`ocr-service` with the GPU), and no `.github/workflows/`. Each box comes up with Docker running and an empty `/opt/lexchain`.

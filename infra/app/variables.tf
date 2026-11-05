@@ -57,6 +57,16 @@ variable "backup_bucket_name" {
   description = "bucket_name output of infra/backups for this environment"
 }
 
+variable "backup_db_bucket_name" {
+  type        = string
+  description = "db_bucket_name output of infra/backups for this environment"
+}
+
+variable "backup_db_monthly_bucket_name" {
+  type        = string
+  description = "db_monthly_bucket_name output of infra/backups for this environment"
+}
+
 variable "github_repo" {
   type        = string
   default     = "MarvinPescos/lexchain-backend"
