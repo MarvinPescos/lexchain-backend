@@ -502,14 +502,20 @@ Verdicts:
 
 | status | meaning |
 |---|---|
-| `NOT_ANCHORED` | still a draft; nothing to verify against |
+| `NOT_ANCHORED` | not finalized and no chain record; nothing to verify against |
 | `AUTHENTIC` | current hash == on-chain hash |
 | `TAMPERED` | mismatch, baseline proven genuine → full tamper report |
-| `SNAPSHOT_COMPROMISED` | both current *and* snapshot disagree with the chain → refuses to diff |
-| `VERIFICATION_UNAVAILABLE` | OCR or storage unreachable — integrity **unknown**, explicitly not a tamper result |
+| `FILE_MISSING` | storage answered `not_found` or the signed copy record is gone, baseline proven genuine → a tamper finding, no diff |
+| `SNAPSHOT_COMPROMISED` | current file changed or deleted *and* snapshot disagrees with the chain → refuses to diff |
+| `VERIFICATION_UNAVAILABLE` | storage or the chain unreachable, or an orphaned anchor (chain record, not finalized, no snapshot; a failed finalize or an edit, the chain reconcile tells them apart) — integrity **unknown**, not a tamper finding by itself |
 
 That last one is a 200 with an honest message rather than a 500, and never
 implies the document is either sound or tampered.
+
+The chain is read before `lifecycle`, which is a database value an attacker can
+edit. A document with a chain record gets the hash check whatever `lifecycle`
+says, and a mismatch logs `blockchain.verify.lifecycle_mismatch`. `lifecycle`
+only decides whether an empty read is retried, so a draft answers at once.
 
 ### 3.12 Tamper localization (`blockchain/tamper.py`)
 
@@ -549,13 +555,17 @@ per-op counts, and a `similarity` ratio.
 ### 3.13 Restore (`documents/workflow/restoration.py`)
 
 `POST /documents/{id}/restore` — owner only, from FINALIZED, run after `verify`
-reports TAMPERED:
+reports TAMPERED or FILE_MISSING. For FILE_MISSING there is nothing to preserve,
+so `preserved_copy_id`, `previous_hash` and the history row's `from_hash` stay
+null. With no signed copy record there is nothing to restore onto → 409
+`NO_SIGNED_COPY`. If `lifecycle` was edited, verify still reports TAMPERED but
+restore refuses: first correct `lifecycle` from a database backup, then restore.
 
 1. Lock the document, then verify (no tamper report). AUTHENTIC → nothing is
    changed and `restored` is false, so a retry is safe. SNAPSHOT_COMPROMISED →
    409; VERIFICATION_UNAVAILABLE → 503.
 2. Fetch the archive (`snapshot.backup_key`) and check it against the snapshot,
-   which TAMPERED guarantees equals the on-chain hash. No archive → 409,
+   which both verdicts guarantee equals the on-chain hash. No archive → 409,
    mismatch → 409, unreadable → 503. Never trust the archive blindly, and never
    copy from the active file.
 3. Keep the tampered file as its own `SignedCopy` (its real hash) — on a

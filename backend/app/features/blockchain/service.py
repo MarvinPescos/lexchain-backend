@@ -16,12 +16,13 @@ from app.infrastructure.backup import BackupProvider
 from app.infrastructure.blockchain import BlockchainProvider, ChainRecord
 from app.infrastructure.nlp.ocr import OCRProvider, build_ocr
 from app.infrastructure.observability.logging_setup import log
-from app.shared.errors.exceptions import NotFoundError
+from app.shared.errors.exceptions import NotFoundError, ServiceUnavailableError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .constants import (
     VERIFY_AUTHENTIC,
+    VERIFY_FILE_MISSING,
     VERIFY_NOT_ANCHORED,
     VERIFY_SNAPSHOT_COMPROMISED,
     VERIFY_TAMPERED,
@@ -160,7 +161,7 @@ class BlockchainService:
         *,
         tamper_report: bool,
     ) -> DocumentVerificationResponse:
-        """Verify a finalized document against its on-chain anchor.
+        """Verify a document against its on-chain anchor, if it has one.
 
         Hashes the stored signed copy as it is right now and compares it with
         the chain. The judgment is made here, server-side; a client is never
@@ -184,7 +185,35 @@ class BlockchainService:
             verified_at=datetime.now(timezone.utc),
         )
 
-        if document.lifecycle != LIFECYCLE_FINALIZED:
+        # `lifecycle` is a database value an attacker can edit, so it never
+        # decides whether the chain is asked. It only sets how hard to ask: a
+        # document that claims to be anchored is worth waiting for a lagging node.
+        finalized = document.lifecycle == LIFECYCLE_FINALIZED
+        try:
+            record: ChainRecord | None = await self.provider.get_document_hash(
+                document_id=str(document_id), retry_empty=finalized
+            )
+        except ServiceUnavailableError as e:
+            log.error(
+                "blockchain.verify.chain_unavailable",
+                document_id=str(document_id),
+                error=f"{type(e).__name__}: {e}",
+            )
+            return DocumentVerificationResponse(
+                status=VERIFY_UNAVAILABLE,
+                is_authentic=False,
+                baseline_trusted=False,
+                message=(
+                    "Could not read the blockchain to verify this document. This "
+                    "is NOT a tamper result; the document's integrity is unknown. "
+                    "Try again once the chain is reachable."
+                ),
+                **common,
+            )
+
+        if record is None:
+            if finalized:
+                raise NotFoundError("No on-chain record found for this document")
             return DocumentVerificationResponse(
                 status=VERIFY_NOT_ANCHORED,
                 is_authentic=False,
@@ -196,16 +225,37 @@ class BlockchainService:
                 **common,
             )
 
-        record: ChainRecord | None = await self.provider.get_document_hash(
-            document_id=str(document_id)
-        )
-        if record is None:
-            raise NotFoundError("No on-chain record found for this document")
+        if not finalized:
+            log.warning(
+                "blockchain.verify.lifecycle_mismatch",
+                document_id=str(document_id),
+                lifecycle=document.lifecycle,
+            )
         onchain_hash = _normalise_hash(record.data_hash)
 
         snapshot = await self.snapshot_repo.get_by_document_id(document_id)
         if not snapshot:
-            raise NotFoundError("No stored original found for this document")
+            if finalized:
+                raise NotFoundError("No stored original found for this document")
+            # Finalize anchors before it commits, so a failed one leaves this
+            # with no attack at all; so does editing `lifecycle` and deleting the
+            # snapshot. With no baseline neither can be told apart, so the verdict
+            # claims nothing either way. The chain reconcile reports these.
+            return DocumentVerificationResponse(
+                status=VERIFY_UNAVAILABLE,
+                is_authentic=False,
+                baseline_trusted=False,
+                onchain_hash=onchain_hash,
+                onchain_timestamp=record.timestamp,
+                issued_by=record.issued_by,
+                message=(
+                    "A hash is anchored on-chain for this document, but it is not "
+                    "finalized and has no frozen record to check against. Finalizing "
+                    "may have failed, or these records were changed. The document's "
+                    "integrity is unknown."
+                ),
+                **common,
+            )
         baseline_trusted = snapshot.file_sha256 == onchain_hash
 
         # The contract read carries no tx hash; it was stored when anchoring.
@@ -219,31 +269,34 @@ class BlockchainService:
             issued_by=record.issued_by,
         )
 
-        assert copy is not None  # finalized, so it has a signed copy
-        try:
-            # Never through the CDN: a cached copy would be compared against the
-            # chain and produce a confident, wrong verdict.
-            current = await get_storage_client().download(copy.storage_url)
-        except (httpx.HTTPError, OSError, StorageException) as e:
-            log.error(
-                "blockchain.verify.unavailable",
-                document_id=str(document_id),
-                error=f"{type(e).__name__}: {e}",
-            )
-            return DocumentVerificationResponse(
-                status=VERIFY_UNAVAILABLE,
-                is_authentic=False,
-                baseline_trusted=baseline_trusted,
-                message=(
-                    "Could not read the stored file to verify it. This is NOT a "
-                    "tamper result; the document's integrity is unknown. Try again "
-                    "once storage is available."
-                ),
-                **common,
-                **chain,
-            )
+        current: bytes | None = None
+        if copy is not None:
+            try:
+                # Never through the CDN: a cached copy would be compared against
+                # the chain and produce a confident, wrong verdict.
+                current = await get_storage_client().download(copy.storage_url)
+            except FileNotFoundError:
+                pass  # Storage answered: the file is gone. Judged below.
+            except (httpx.HTTPError, OSError, StorageException) as e:
+                log.error(
+                    "blockchain.verify.unavailable",
+                    document_id=str(document_id),
+                    error=f"{type(e).__name__}: {e}",
+                )
+                return DocumentVerificationResponse(
+                    status=VERIFY_UNAVAILABLE,
+                    is_authentic=False,
+                    baseline_trusted=baseline_trusted,
+                    message=(
+                        "Could not read the stored file to verify it. This is NOT a "
+                        "tamper result; the document's integrity is unknown. Try "
+                        "again once storage is available."
+                    ),
+                    **common,
+                    **chain,
+                )
 
-        current_hash = hashlib.sha256(current).hexdigest()
+        current_hash = hashlib.sha256(current).hexdigest() if current is not None else None
 
         if current_hash == onchain_hash:
             log.info("blockchain.verify.authentic", document_id=str(document_id))
@@ -270,9 +323,24 @@ class BlockchainService:
                 baseline_trusted=False,
                 current_hash=current_hash,
                 message=(
-                    "The stored file does not match the chain, and the frozen "
-                    "record in the database was altered as well."
+                    (
+                        "The stored file does not match the chain"
+                        if current is not None
+                        else "The stored file is missing"
+                    )
+                    + ", and the frozen record in the database was altered as well."
                 ),
+                **common,
+                **chain,
+            )
+
+        if current is None:
+            log.error("blockchain.verify.file_missing", document_id=str(document_id))
+            return DocumentVerificationResponse(
+                status=VERIFY_FILE_MISSING,
+                is_authentic=False,
+                baseline_trusted=True,
+                message="The stored file is missing, or its record was removed.",
                 **common,
                 **chain,
             )

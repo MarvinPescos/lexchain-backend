@@ -19,4 +19,5 @@ class BlockchainProvider(Protocol):
     async def get_document_hash(
         self,
         document_id: str,
+        retry_empty: bool = True,
     ) -> ChainRecord | None: ...
