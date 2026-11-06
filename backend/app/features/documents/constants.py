@@ -59,6 +59,13 @@ ACTION_RENAME = "rename"
 # A TAMPERED finalized document gets its archived, anchored bytes back.
 # The stage is unchanged and nothing is re-anchored.
 ACTION_RESTORE = "restore"
+# A deleted document put back from the copy its delete left behind.
+ACTION_RECOVER = "recover"
+
+# How a deleted document was found.
+DELETION_SOURCE_TRIGGER = "trigger"
+DELETION_SOURCE_LEDGER = "ledger"
+DELETION_SOURCE_STORAGE = "storage"
 
 # Where a new working draft comes from.
 DRAFT_SOURCE_BLANK = "blank"

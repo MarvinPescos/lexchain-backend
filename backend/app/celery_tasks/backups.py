@@ -17,3 +17,11 @@ def check_replication_task():
     from app.workers.check_replication import check_replication
 
     run_async(check_replication())
+
+
+@celery_task(name="backup.watch_deletions")
+def watch_deletions_task():
+    """Alert on document rows that are gone."""
+    from app.workers.watch_deletions import watch_deletions
+
+    run_async(watch_deletions())

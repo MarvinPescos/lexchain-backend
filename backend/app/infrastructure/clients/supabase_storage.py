@@ -1,8 +1,15 @@
+import asyncio
+import uuid
+from datetime import datetime
+from typing import Any
+
 from storage3.exceptions import StorageApiError
 
 from app.core import settings
 
 from .supabase_client import Client, create_client
+
+_LIST_PAGE = 1000
 
 
 class SupabaseStorageClient:
@@ -75,6 +82,50 @@ class SupabaseStorageClient:
             return True
         except Exception:
             return False
+
+    async def list_document_folders(self) -> list[tuple[str, str]]:
+        """Every `(owner id, document id)` folder holding uploaded files.
+
+        Only `{user_id}/documents/{document_id}/` folders count; previews and
+        anything else in the bucket are left out. A failure raises, so a partial
+        list never passes as complete.
+        """
+
+        def _list() -> list[tuple[str, str]]:
+            return [
+                (owner["name"], folder["name"])
+                for owner in self._entries("")
+                if _is_uuid(owner["name"])
+                for folder in self._entries(f"{owner['name']}/documents")
+                if _is_uuid(folder["name"])
+            ]
+
+        return await asyncio.to_thread(_list)
+
+    async def latest_upload(self, owner: str, document_id: str) -> datetime | None:
+        """When the newest file in a document's folder arrived; None if it's empty."""
+        entries = await asyncio.to_thread(
+            self._entries, f"{owner}/documents/{document_id}"
+        )
+        times = [e["created_at"] for e in entries if e.get("created_at")]
+        return datetime.fromisoformat(max(times)) if times else None
+
+    def _entries(self, path: str) -> list[dict[str, Any]]:
+        bucket = self._get_client().storage.from_(self.bucket_name)
+        entries: list[dict[str, Any]] = []
+        while True:
+            page = bucket.list(path, {"limit": _LIST_PAGE, "offset": len(entries)})
+            entries.extend(page)
+            if len(page) < _LIST_PAGE:
+                return entries
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
 
 
 def object_path_from_url(url: str, bucket: str = "Documents") -> str:

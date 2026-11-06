@@ -38,6 +38,8 @@ class NotificationType(str, enum.Enum):
     ARCHIVE_PROBLEM = "archive_problem"
     # The contract owner key replaced an anchor or changed who may write.
     ANCHOR_CORRECTED = "anchor_corrected"
+    # A document row is gone, whether or not it was ever finalized.
+    DOCUMENT_DELETED = "document_deleted"
 
 
 class Notification(Base, TimestampMixin):

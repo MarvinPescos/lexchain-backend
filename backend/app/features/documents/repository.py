@@ -4,10 +4,11 @@ from datetime import datetime, timedelta, timezone
 from typing import cast
 
 from sqlalchemy import CursorResult, delete, func, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.features.books.models import Book
-from app.infrastructure.database import UserScopeRepository
+from app.infrastructure.database import BaseRepository, UserScopeRepository
 from app.shared.constants import (
     PARTY_STATUS_ACCEPTED,
     PARTY_STATUS_DECLINED,
@@ -25,6 +26,7 @@ from .constants import (
 )
 from .schemas import RegisterReference
 from .models import (
+    DeletedDocument,
     Document,
     DocumentParty,
     DocumentStageChange,
@@ -493,3 +495,71 @@ class DocumentRepository(UserScopeRepository[Document]):
             .where(self.model.status == status)
         )
         return result.scalar() or 0
+
+
+class DeletedDocumentRepository(BaseRepository[DeletedDocument]):
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(DeletedDocument, session)
+
+    async def list_live(self) -> dict[uuid.UUID, tuple[uuid.UUID, str | None]]:
+        """Every document's owner and name, by document ID."""
+        result = await self.session.execute(
+            select(Document.id, Document.user_id, Document.file_name)
+        )
+        return {row.id: (row.user_id, row.file_name) for row in result}
+
+    async def open_document_ids(self) -> set[uuid.UUID]:
+        result = await self.session.execute(
+            select(DeletedDocument.document_id).where(
+                DeletedDocument.recovered_at.is_(None)
+            )
+        )
+        return set(result.scalars().all())
+
+    async def list_unalerted(self) -> list[DeletedDocument]:
+        result = await self.session.execute(
+            select(DeletedDocument).where(
+                DeletedDocument.alerted_at.is_(None),
+                DeletedDocument.recovered_at.is_(None),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def list_open_for_owner(self, user_id: uuid.UUID) -> list[DeletedDocument]:
+        result = await self.session.execute(
+            select(DeletedDocument)
+            .where(
+                DeletedDocument.user_id == user_id,
+                DeletedDocument.recovered_at.is_(None),
+            )
+            .order_by(DeletedDocument.deleted_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def get_open(
+        self, document_id: uuid.UUID, user_id: uuid.UUID
+    ) -> DeletedDocument | None:
+        """The newest open record. Locked: a second click waits, then finds none."""
+        result = await self.session.execute(
+            select(DeletedDocument)
+            .where(
+                DeletedDocument.document_id == document_id,
+                DeletedDocument.user_id == user_id,
+                DeletedDocument.recovered_at.is_(None),
+            )
+            .order_by(DeletedDocument.deleted_at.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def close_recovered(self, at: datetime) -> None:
+        """Close any record whose document is back, as after a database restore."""
+        await self.session.execute(
+            update(DeletedDocument)
+            .where(
+                DeletedDocument.recovered_at.is_(None),
+                DeletedDocument.document_id.in_(select(Document.id)),
+            )
+            .values(recovered_at=at)
+        )

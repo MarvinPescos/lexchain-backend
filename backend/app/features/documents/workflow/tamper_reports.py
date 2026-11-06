@@ -1,5 +1,5 @@
 """Tamper reports: every document with a problem still open, and one action to
-fix them all.
+fix them all. A deleted document is one of them, listed from its deletion record.
 
 History only says which documents to look at. Each one is checked again here, so
 a report never shows a problem that has been fixed, and the changes it lists are
@@ -26,7 +26,8 @@ from app.shared.errors.exceptions import (
 )
 
 from ..constants import LIFECYCLE_FINALIZED
-from ..models import Document
+from ..models import DeletedDocument, Document
+from ..repository import DeletedDocumentRepository
 from ..schemas import (
     RestoreAllResponse,
     RestoreFailure,
@@ -34,7 +35,10 @@ from ..schemas import (
     TamperReportItem,
     TamperReportListResponse,
 )
+from .recovery import DocumentRecovery
 from .restoration import DocumentRestoration
+
+STATUS_DELETED = "DELETED"
 
 
 class TamperReports:
@@ -45,6 +49,8 @@ class TamperReports:
         self.records = restoration.records
         self.snapshot_repo = restoration.snapshot_repo
         self.findings = VerificationResultRepository(restoration.session)
+        self.deletions = DeletedDocumentRepository(restoration.session)
+        self.recovery = DocumentRecovery(restoration.session)
 
     async def list_open(self, user: AuthenticatedUser) -> TamperReportListResponse:
         reports: list[TamperReportItem] = []
@@ -54,13 +60,25 @@ class TamperReports:
             report = await self._report(user, document_id, detected_at)
             if report is not None:
                 reports.append(report)
+        reports.extend(
+            self._deleted(d)
+            for d in await self.deletions.list_open_for_owner(user.user_id)
+        )
+        reports.sort(key=lambda r: r.detected_at, reverse=True)
         return TamperReportListResponse(total=len(reports), reports=reports)
 
     async def restore_all(self, user: AuthenticatedUser) -> RestoreAllResponse:
         result = RestoreAllResponse()
         for report in (await self.list_open(user)).reports:
             try:
-                restored = await self.restoration.restore(user, report.document_id)
+                if report.status == STATUS_DELETED:
+                    result.recovered.append(
+                        await self.recovery.recover(user, report.document_id)
+                    )
+                else:
+                    result.restored.append(
+                        await self.restoration.restore(user, report.document_id)
+                    )
             except BaseAppException as e:
                 await self.session.rollback()
                 log.error(
@@ -75,8 +93,6 @@ class TamperReports:
                         message=e.message,
                     )
                 )
-            else:
-                result.restored.append(restored)
         return result
 
     async def _report(
@@ -173,6 +189,23 @@ class TamperReports:
                 )
             )
         return changes
+
+    @staticmethod
+    def _deleted(deleted: DeletedDocument) -> TamperReportItem:
+        saved = deleted.document is not None
+        return TamperReportItem(
+            document_id=deleted.document_id,
+            file_name=deleted.file_name,
+            detected_at=deleted.deleted_at,
+            status=STATUS_DELETED,
+            changes=[
+                TamperChange(
+                    kind="deleted", field="document", genuine=deleted.file_name
+                )
+            ],
+            restorable=saved,
+            blocked_reason=None if saved else "backup_needed",
+        )
 
     @staticmethod
     def _unknown(
