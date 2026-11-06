@@ -75,8 +75,5 @@ class SupabaseBackupProvider:
             entries = client.storage.from_(self.bucket_name).list(folder)
             return any(e.get("name") == name for e in entries or [])
 
-        try:
-            return await asyncio.to_thread(_list)
-        except Exception as e:
-            log.warning("backup.exists.failed", key=key, error=str(e))
-            return False
+        # A failure propagates, so an outage is never read as a lost archive.
+        return await asyncio.to_thread(_list)

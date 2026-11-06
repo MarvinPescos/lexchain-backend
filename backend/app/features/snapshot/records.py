@@ -104,8 +104,14 @@ class RecordCheck:
         self.chain = chain
         self.backup = backup
 
-    async def metadata(self, document: Document) -> MetadataCheck:
-        """Rebuild the record from the live row and compare it with the anchor."""
+    async def metadata(
+        self, document: Document, *, check_archive: bool = False
+    ) -> MetadataCheck:
+        """Rebuild the record from the live row and compare it with the anchor.
+
+        A match needs no archive. `check_archive` reads it anyway, so that a lost
+        copy shows up before it's needed: `problem` then says what's wrong with it.
+        """
         document_id = str(document.id)
         try:
             anchor = await self.chain.get_document_hash(
@@ -120,7 +126,10 @@ class RecordCheck:
         anchored_hash = normalise_hash(anchor.data_hash)
         live = metadata_record(document)
         if sha256_hex(canonical_json(live)) == anchored_hash:
-            return MetadataCheck("MATCH")
+            if not check_archive:
+                return MetadataCheck("MATCH")
+            problem, _ = await self._archived(document.id, anchored_hash)
+            return MetadataCheck("MATCH", problem=problem)
 
         problem, anchored = await self._archived(document.id, anchored_hash)
         if anchored is None:
@@ -174,6 +183,21 @@ class RecordCheck:
             return "archive_mismatch", None
         return None, json.loads(data)
 
+    async def archived_pdf(
+        self, document_id: uuid.UUID, onchain_hash: str
+    ) -> bytes | None:
+        """The archived PDF if it can be read and is what was anchored."""
+        if self.backup is None:
+            return None
+        try:
+            data = await self.backup.fetch(archive_key(document_id, onchain_hash))
+        except Exception as e:
+            log.warning(
+                "records.archive_unread", document_id=str(document_id), error=str(e)
+            )
+            return None
+        return data if sha256_hex(data) == onchain_hash else None
+
     async def snapshot_changes(
         self,
         snapshot: DocumentSnapshot,
@@ -193,7 +217,11 @@ class RecordCheck:
                 )
             )
         copy = await self.session.get(SignedCopy, snapshot.signed_copy_id)
-        if copy is None or copy.sha256 != onchain_hash:
+        if (
+            copy is None
+            or copy.document_id != snapshot.document_id
+            or copy.sha256 != onchain_hash
+        ):
             changes.append(
                 RecordChange(
                     field="signed_copy_id", anchored=None, current=str(snapshot.signed_copy_id)

@@ -34,7 +34,8 @@ celery_app.conf.update(
         # Its own worker: on the -c 1 documents worker a dump and OCR would
         # block each other.
         "backup.*": {"queue": "backups"},
-        "chain.*": {"queue": "documents"},
+        # A full rescan takes minutes: same reason as above.
+        "chain.*": {"queue": "backups"},
     },
     # Draft comments are polled: Drive's file webhooks do not report comments.
     # Run with `celery -A app.celery_app beat`.

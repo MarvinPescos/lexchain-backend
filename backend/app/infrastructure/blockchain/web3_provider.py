@@ -1,12 +1,13 @@
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 from app.core import settings
 from app.shared.errors.exceptions import BadGatewayError, ServiceUnavailableError
 from ens.constants import HexStr
 from web3 import AsyncWeb3
-from web3.types import TxReceipt
+from web3.types import EventData, TxReceipt
 
 from .base import ChainRecord, OwnerEvent
 
@@ -215,9 +216,12 @@ class Web3BlockchainProvider:
         ]
 
 
-def _owner_event(log) -> OwnerEvent:
+def _owner_event(log: EventData) -> OwnerEvent:
     args = log["args"]
-    common = {"tx_hash": log["transactionHash"].hex(), "block_number": log["blockNumber"]}
+    common: dict[str, Any] = {
+        "tx_hash": log["transactionHash"].hex(),
+        "block_number": log["blockNumber"],
+    }
     if log["event"] == "DocumentRecordCorrected":
         return OwnerEvent(
             kind="correction",

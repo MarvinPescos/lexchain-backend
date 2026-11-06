@@ -99,6 +99,29 @@ async def test_an_altered_snapshot_goes_to_review(session, document, chain, new_
     assert new_chain.records == {}
 
 
+async def test_one_failure_goes_to_review_and_the_run_carries_on(
+    session, intake, queue, document, chain, new_chain, backup, lawyer, open_book, monkeypatch
+):
+    me = as_auth(lawyer)
+    second = await intake.upload_signed(me, pdf("second"), "Second", open_book.id)
+    await mark_processed(session, second.document_id)
+    await DocumentFinalization(session, chain).finalize(me, second.document_id)
+    real_store = new_chain.store_document_hash
+    failing_id = str(document.id)  # the rollback expires `document`
+
+    async def first_fails(document_id, data_hash):
+        if document_id == failing_id:
+            raise ConnectionError("rpc unreachable")
+        return await real_store(document_id, data_hash)
+
+    monkeypatch.setattr(new_chain, "store_document_hash", first_fails)
+
+    report = await reanchor(session, chain, new_chain, backup, apply=True)
+
+    assert report.done == [str(second.document_id)]
+    assert "failed" in report.review[failing_id]
+
+
 async def test_a_document_already_moved_is_not_anchored_twice(
     session, document, chain, new_chain, backup
 ):

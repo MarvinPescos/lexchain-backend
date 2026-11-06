@@ -13,7 +13,6 @@ Dry run by default:
 
 import argparse
 import asyncio
-import hashlib
 from dataclasses import dataclass, field
 
 from app.features.blockchain.repository import OnChainRecordRepository
@@ -21,6 +20,7 @@ from app.features.documents.constants import LIFECYCLE_FINALIZED
 from app.features.documents.models import Document, SignedCopy
 from app.features.snapshot.backups import SnapshotArchive
 from app.features.snapshot.models import DocumentSnapshot
+from app.features.snapshot.repository import DocumentSnaphotRepository
 from app.features.snapshot.records import (
     canonical_json,
     metadata_anchor_id,
@@ -72,7 +72,7 @@ async def _review_reason(
         content = await get_storage_client().download(copy.storage_url)
     except FileNotFoundError:
         return "the live file is missing"
-    if hashlib.sha256(content).hexdigest() != snapshot.file_sha256:
+    if sha256_hex(content) != snapshot.file_sha256:
         return "the live file differs from the snapshot"
     return None
 
@@ -113,12 +113,16 @@ async def reanchor(
 ) -> ReanchorReport:
     """One document's failure lands it in the review list, not the whole run."""
     result = await session.execute(
-        select(DocumentSnapshot).order_by(DocumentSnapshot.created_at)
+        select(DocumentSnapshot.document_id).order_by(DocumentSnapshot.created_at)
     )
+    repo = DocumentSnaphotRepository(session)
     report = ReanchorReport(applied=apply)
-    for snapshot in result.scalars().all():
-        document_id = str(snapshot.document_id)
+    # IDs, not rows: a rollback expires every row loaded so far.
+    for snapshot_document_id in result.scalars().all():
+        document_id = str(snapshot_document_id)
         try:
+            snapshot = await repo.get_by_document_id(snapshot_document_id)
+            assert snapshot is not None
             if await new_chain.get_document_hash(document_id, retry_empty=False):
                 report.review[document_id] = "already anchored on the current contract"
                 continue
@@ -146,9 +150,11 @@ async def reanchor(
 
 async def _main() -> None:
     import app.all_models  # noqa: F401 — registers all SQLAlchemy models
-    from app.features.blockchain.dependencies import get_blockchain_provider
+    from app.features.blockchain.dependencies import (
+        get_blockchain_provider,
+        get_provider_for_contract,
+    )
     from app.infrastructure.backup import build_backup
-    from app.infrastructure.blockchain.web3_provider import Web3BlockchainProvider
     from app.infrastructure.database import AsyncSessionLocal
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -159,7 +165,7 @@ async def _main() -> None:
     async with AsyncSessionLocal() as session:
         report = await reanchor(
             session,
-            Web3BlockchainProvider(args.old_contract),
+            get_provider_for_contract(args.old_contract),
             get_blockchain_provider(),
             build_backup(),
             apply=args.apply,

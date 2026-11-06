@@ -9,3 +9,8 @@ def get_blockchain_provider() -> BlockchainProvider:
     if settings.ENVIRONMENT == "test":
         return MockBlockchainProvider()
     return Web3BlockchainProvider()
+
+
+def get_provider_for_contract(contract_address: str) -> BlockchainProvider:
+    """A reader of another deployment, for moving documents off it."""
+    return Web3BlockchainProvider(contract_address)

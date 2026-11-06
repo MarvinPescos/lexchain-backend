@@ -87,23 +87,34 @@ class OwnerKeyWatch:
         return OwnerWatchResponse(events=len(events), alerted=len(unalerted))
 
     def _without_deployment(self, events: list[OwnerEvent]) -> list[OwnerEvent]:
-        """Drop the constructor's events, and the server wallet being authorized."""
+        """Drop the constructor's events, and the server wallet's first
+        authorization. Any later one means it was removed, so it counts."""
         deployment = {
             e.tx_hash
             for e in events
             if e.kind == "ownership_transferred" and e.previous_owner == _ZERO_ADDRESS
         }
         wallet = self.chain.recorder_address.lower()
-        return [
-            e
-            for e in events
-            if e.tx_hash not in deployment
-            and not (
-                e.kind == "recorder_set"
-                and e.authorized
-                and (e.recorder or "").lower() == wallet
+
+        def authorizes_wallet(event: OwnerEvent) -> bool:
+            return bool(
+                event.kind == "recorder_set"
+                and event.authorized
+                and (event.recorder or "").lower() == wallet
             )
-        ]
+
+        wallet_set = any(
+            authorizes_wallet(e) for e in events if e.tx_hash in deployment
+        )
+        kept: list[OwnerEvent] = []
+        for event in events:
+            if event.tx_hash in deployment:
+                continue
+            if authorizes_wallet(event) and not wallet_set:
+                wallet_set = True
+                continue
+            kept.append(event)
+        return kept
 
     @staticmethod
     async def _email(subject: str, body: str) -> None:

@@ -90,9 +90,12 @@ class LiveFileReport(BaseModel):
     )
 
 
+RecordKind = Literal["metadata", "snapshot", "lifecycle"]
+
+
 class RecordFinding(RecordChange):
     document_id: uuid.UUID
-    kind: Literal["metadata", "snapshot", "lifecycle"]
+    kind: RecordKind
 
 
 class RecordReport(BaseModel):

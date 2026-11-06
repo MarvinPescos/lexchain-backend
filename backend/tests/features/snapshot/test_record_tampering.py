@@ -502,6 +502,25 @@ async def test_storage_outage_is_unavailable_with_no_alert(
     assert alert_emails == []
 
 
+@pytest.mark.parametrize("damage", ["deleted", "corrupted"])
+async def test_a_lost_metadata_archive_alerts_once_on_an_untouched_row(
+    damage, session, finalized, backup, archive, lawyer, alert_emails
+):
+    [key] = _metadata_objects(backup)
+    if damage == "deleted":
+        del backup.objects[key]
+    else:
+        backup.objects[key] = b"damaged"
+
+    await archive.verify()
+    await archive.verify()
+
+    [alert] = await _notifications(session, NotificationType.ARCHIVE_PROBLEM)
+    assert alert.user_id == lawyer.id
+    assert "Restore won't work" in alert.body
+    assert len(alert_emails) == 1
+
+
 async def test_a_failed_email_does_not_fail_the_check(
     session, finalized, backup, archive, monkeypatch
 ):
@@ -689,12 +708,80 @@ async def test_restore_with_a_chain_outage_writes_nothing(
     assert finalized.file_name == "Forged"
 
 
-async def test_can_restore_is_offered_whatever_the_lifecycle_says(
+async def test_a_lifecycle_outside_the_known_stages_does_not_block_restore(
+    session, finalized, restoration, lawyer
+):
+    finalized.lifecycle = "X"
+    await session.flush()
+
+    result = await restoration.restore(as_auth(lawyer), finalized.id)
+
+    assert result.restored is True
+    assert finalized.lifecycle == "FINALIZED"
+
+
+async def test_a_row_claiming_the_chain_hash_is_not_trusted_as_the_copy(
+    session, finalized, storage, intake, restoration, lawyer, open_book
+):
+    from app.features.documents.models import SignedCopy
+
+    snapshot = await _snapshot(session, finalized)
+    genuine = await session.get(SignedCopy, snapshot.signed_copy_id)
+    anchored = genuine.sha256
+    forged_url = storage.locator("forged.pdf")
+    storage.objects[forged_url] = b"forged"
+    forged = SignedCopy(
+        document_id=finalized.id,
+        storage_url=forged_url,
+        sha256=anchored,
+        content_type="application/pdf",
+        size_bytes=6,
+        original_filename="forged.pdf",
+    )
+    session.add(forged)
+    genuine.sha256 = "0" * 64
+    await session.flush()
+
+    result = await restoration.restore(as_auth(lawyer), finalized.id)
+
+    assert snapshot.signed_copy_id == genuine.id
+    assert result.unrepaired == ["snapshot.signed_copy_id"]
+
+
+async def test_restore_clears_finalized_by_when_the_anchored_user_is_gone(
+    session, finalized, chain, backup, restoration, other_lawyer, client, lawyer
+):
+    await _anchor_record_finalized_by(session, finalized, chain, backup, other_lawyer)
+    finalized.finalized_by = client.id
+    await session.flush()
+    await session.execute(delete(User).where(User.id == other_lawyer.id))
+
+    result = await restoration.restore(as_auth(lawyer), finalized.id)
+
+    assert result.restored is True
+    assert finalized.finalized_by is None
+    assert result.verification.metadata_status == "MATCH"
+
+
+async def test_the_full_verify_offers_restore_for_a_size_edit(
+    session, finalized, verifier, lawyer
+):
+    snapshot = await _snapshot(session, finalized)
+    snapshot.size_bytes += 1
+    await session.flush()
+
+    result = await verifier.verify_document(as_auth(lawyer), finalized.id)
+
+    assert result.needs_restore is True
+
+
+async def test_can_restore_is_offered_whatever_the_row_says(
     session, finalized, lawyer, client
 ):
     from app.features.documents.access import DocumentAccess
 
     finalized.lifecycle = "SIGNED"
+    finalized.on_chain = False
     access = DocumentAccess(session)
 
     assert access.permissions(as_auth(lawyer), finalized).can_restore is True

@@ -571,8 +571,9 @@ With no signed copy record there is nothing to restore onto → 409 `NO_SIGNED_C
    active file. A record-only repair goes ahead without the archive, but then
    `size_bytes` can't be judged.
 3. Repair the snapshot from the chain and archive (`RecordCheck.snapshot_changes`).
-   `signed_copy_id` comes from the oldest `signed_copies` row holding the chain
-   hash; with none, the column stays and `unrepaired` says so.
+   `signed_copy_id` comes from the oldest of the document's `signed_copies` whose
+   stored bytes hash to the chain; with none, the column stays and `unrepaired`
+   says so.
 4. Keep the tampered file as its own `SignedCopy` (its real hash) — on a
    notarised document it is potentially evidence. If it can no longer be read
    as the file that was judged, the restore goes ahead without it. Then write

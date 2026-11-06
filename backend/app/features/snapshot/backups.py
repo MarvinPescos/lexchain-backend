@@ -66,6 +66,7 @@ from .schemas import (
     LiveFileReport,
     RecordChange,
     RecordFinding,
+    RecordKind,
     RecordReport,
 )
 
@@ -102,6 +103,16 @@ _ARCHIVE_ALERTS: dict[str, tuple[str, str]] = {
             "The archived original of {file_name} is gone or damaged, and the live "
             "copy can't replace it."
         ),
+    ),
+}
+_METADATA_ARCHIVE_ALERTS: dict[str, tuple[str, str]] = {
+    "archive_missing": (
+        "Recovery copy of the record missing",
+        "The archived metadata record of {file_name} is gone.",
+    ),
+    "archive_mismatch": (
+        "Recovery copy of the record damaged",
+        "The archived metadata record of {file_name} no longer matches its anchor.",
     ),
 }
 _ARCHIVE_ALERT_ADVICE = " Restore won't work for this document until the archive is back."
@@ -246,11 +257,7 @@ class SnapshotArchive:
     async def _metadata_anchored(self, anchor_id: str, expected: str) -> bool:
         assert self.chain is not None
         record = await self.chain.get_document_hash(anchor_id, retry_empty=False)
-        if record is None:
-            return False
-        if normalise_hash(record.data_hash) != expected:
-            log.error("backup.metadata_anchor.hash_differs", anchor_id=anchor_id)
-        return True
+        return record is not None and normalise_hash(record.data_hash) == expected
 
     async def verify(self, repair: bool = False) -> BackupVerificationResponse:
         """Hash every archive against the snapshot and the hash read from the chain.
@@ -303,7 +310,7 @@ class SnapshotArchive:
                 continue
             document = await self.session.get(Document, snapshot.document_id)
             assert document is not None  # the snapshot's foreign key
-            metadata = await self.records.metadata(document)
+            metadata = await self.records.metadata(document, check_archive=True)
             findings = await self._record_findings(
                 document, snapshot, onchain_hash, archived, metadata
             )
@@ -319,11 +326,16 @@ class SnapshotArchive:
                 recipient,
                 record_alerted,
             )
-            email = await self._alert_archive(
-                document, status, recipient, archive_alerted
-            )
-            if email:
-                emails.append(email)
+            for finding, alert in (
+                (status, _ARCHIVE_ALERTS.get(status)),
+                (metadata.problem, _METADATA_ARCHIVE_ALERTS.get(metadata.problem or "")),
+            ):
+                if alert is not None:
+                    email = await self._alert_archive(
+                        document, str(finding), alert, recipient, archive_alerted
+                    )
+                    if email:
+                        emails.append(email)
         await self.session.commit()
         for subject, body in emails:
             try:
@@ -424,7 +436,7 @@ class SnapshotArchive:
         metadata: MetadataCheck,
     ) -> list[RecordFinding]:
         assert self.records is not None
-        changes: list[tuple[str, RecordChange]] = []
+        changes: list[tuple[RecordKind, RecordChange]] = []
         if document.lifecycle != LIFECYCLE_FINALIZED:
             changes.append(
                 (
@@ -444,7 +456,7 @@ class SnapshotArchive:
         ]
         changes += [("metadata", change) for change in metadata.changes]
         return [
-            RecordFinding(document_id=document.id, kind=kind, **change.model_dump())  # type: ignore[arg-type]
+            RecordFinding(document_id=document.id, kind=kind, **change.model_dump())
             for kind, change in changes
         ]
 
@@ -520,24 +532,25 @@ class SnapshotArchive:
     async def _alert_archive(
         self,
         document: Document,
-        status: BackupStatus,
+        finding: str,
+        alert: tuple[str, str],
         recipient: uuid.UUID,
         alerted: set[tuple],
     ) -> tuple[str, str] | None:
-        """Notify once per document and status. Returns the email to send once
+        """Notify once per document and finding. Returns the email to send once
         the notification is committed."""
-        key = (str(document.id), status, None)
-        if status not in _ARCHIVE_ALERTS or key in alerted:
+        key = (str(document.id), finding, None)
+        if key in alerted:
             return None
         alerted.add(key)
-        title, body = _ARCHIVE_ALERTS[status]
+        title, body = alert
         body = body.format(file_name=document.file_name) + _ARCHIVE_ALERT_ADVICE
         await self.notifications.create(
             user_id=recipient,
             type=NotificationType.ARCHIVE_PROBLEM,
             title=title,
             body=body,
-            event_metadata={"document_id": key[0], "finding": status},
+            event_metadata={"document_id": key[0], "finding": finding},
         )
         return title, body
 

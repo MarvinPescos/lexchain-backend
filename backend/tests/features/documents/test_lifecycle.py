@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 
 from app.features.documents import lifecycle
@@ -6,6 +8,7 @@ from app.features.documents.constants import (
     ACTION_CANCEL,
     ACTION_FINALIZE,
     ACTION_OPEN,
+    ACTION_RESTORE,
     ACTION_UPLOAD_SIGNED,
     LIFECYCLES,
 )
@@ -19,7 +22,9 @@ ALLOWED = {
     if stage is not None
 }
 STAGE_ACTIONS = [
-    a for a in lifecycle.TRANSITIONS if a not in (ACTION_OPEN, ACTION_UPLOAD_SIGNED)
+    a
+    for a in lifecycle.TRANSITIONS
+    if a not in (ACTION_OPEN, ACTION_UPLOAD_SIGNED, ACTION_RESTORE)
 ]
 
 
@@ -28,6 +33,15 @@ STAGE_ACTIONS = [
 def test_only_listed_transitions_are_allowed(action, stage):
     allowed = lifecycle.can(action, Document(lifecycle=stage))
     assert allowed == ((action, stage) in ALLOWED)
+
+
+@pytest.mark.parametrize("stage", [*LIFECYCLES, "EDITED"])
+def test_restore_is_allowed_from_any_value_and_ends_finalized(stage):
+    document = Document(lifecycle=stage)
+
+    assert lifecycle.can(ACTION_RESTORE, document)
+    change = lifecycle.transition(ACTION_RESTORE, document, uuid.uuid4())
+    assert (change.from_stage, document.lifecycle) == (stage, "FINALIZED")
 
 
 def test_attach_from_preparing_says_to_mark_ready():

@@ -22,6 +22,7 @@ from app.features.snapshot.models import DocumentSnapshot
 from app.features.snapshot.records import MetadataCheck, RecordCheck, archive_key
 from app.features.snapshot.repository import DocumentSnaphotRepository
 from app.features.snapshot.schemas import RecordChange
+from app.features.users.models import User
 from app.infrastructure.backup import BackupProvider
 from app.infrastructure.blockchain import BlockchainProvider
 from app.infrastructure.clients.supabase_storage import (
@@ -180,7 +181,7 @@ class DocumentRestoration:
                 document.document_hash = onchain_hash
                 change.from_hash = previous_hash
                 change.to_hash = onchain_hash
-            self._repair_metadata(document, metadata, repaired)
+            await self._repair_metadata(document, metadata, repaired)
             change.changes = [r.model_dump() for r in repaired] or None
             await self.repo.add(change)
             await self.session.refresh(change, ["created_at"])
@@ -270,9 +271,7 @@ class DocumentRestoration:
     ) -> None:
         for change in changes:
             if change.field == "signed_copy_id":
-                copy = await self.repo.oldest_signed_copy_with_hash(
-                    snapshot.document_id, onchain_hash
-                )
+                copy = await self._genuine_copy(snapshot.document_id, onchain_hash)
                 if copy is None:
                     unrepaired.append("snapshot.signed_copy_id")
                     continue
@@ -287,15 +286,34 @@ class DocumentRestoration:
                 )
             )
 
-    @staticmethod
-    def _repair_metadata(
-        document: Document, metadata: MetadataCheck, repaired: list[RestoredValue]
+    async def _genuine_copy(
+        self, document_id: uuid.UUID, onchain_hash: str
+    ) -> SignedCopy | None:
+        """The first copy whose stored bytes hash to the chain. Its `sha256`
+        column only narrows the search: a row can be edited to claim the hash."""
+        for copy in await self.repo.signed_copies_with_hash(document_id, onchain_hash):
+            try:
+                content = await get_storage_client().download(copy.storage_url)
+            except _STORAGE_ERRORS:
+                continue
+            if hashlib.sha256(content).hexdigest() == onchain_hash:
+                return copy
+        return None
+
+    async def _repair_metadata(
+        self,
+        document: Document,
+        metadata: MetadataCheck,
+        repaired: list[RestoredValue],
     ) -> None:
         """Values from the archived JSON, which `RecordCheck` proved against the anchor."""
         for change in metadata.changes:
             value: Any = change.anchored
             if value is not None and change.field in _UUID_FIELDS:
                 value = uuid.UUID(str(value))
+                # The anchored user may be gone since, and the column can't name them.
+                if change.field == "finalized_by" and not await self.session.get(User, value):
+                    value = None
             elif value is not None and change.field == "finalized_at":
                 value = datetime.fromisoformat(str(value))
             setattr(document, change.field, value)
@@ -304,7 +322,7 @@ class DocumentRestoration:
                     record="metadata",
                     field=change.field,
                     old=change.current,
-                    new=change.anchored,
+                    new=None if value is None else change.anchored,
                 )
             )
 

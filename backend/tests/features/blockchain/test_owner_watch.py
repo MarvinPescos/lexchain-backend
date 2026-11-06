@@ -148,6 +148,39 @@ async def test_deployment_events_raise_nothing(session, chain, watch, lawyer):
     assert await _alerts(session) == []
 
 
+async def test_authorizing_the_server_wallet_again_later_alerts(
+    session, chain, watch, lawyer
+):
+    deploy = "ee" * 32
+    chain.owner_events = [
+        OwnerEvent(
+            kind="ownership_transferred",
+            tx_hash=deploy,
+            block_number=1,
+            previous_owner=ZERO,
+            new_owner=chain.recorder_address,
+        ),
+        OwnerEvent(
+            kind="recorder_set",
+            tx_hash=deploy,
+            block_number=1,
+            recorder=chain.recorder_address,
+            authorized=True,
+        ),
+        OwnerEvent(
+            kind="recorder_set",
+            tx_hash="ab" * 32,
+            block_number=9,
+            recorder=chain.recorder_address,
+            authorized=True,
+        ),
+    ]
+
+    await watch.run()
+
+    assert len(await _alerts(session)) == 1
+
+
 async def test_removing_the_server_wallet_alerts(session, chain, watch, lawyer):
     chain.owner_events = [
         OwnerEvent(
@@ -193,7 +226,7 @@ def test_the_task_is_scheduled_on_a_queue_a_worker_consumes():
     assert schedule["task"] == "chain.watch_owner_events"
     assert schedule["task"] in celery_app.tasks
     route = celery_app.amqp.router.route({}, "chain.watch_owner_events")
-    assert route["queue"].name == "documents"
+    assert route["queue"].name == "backups"
 
 
 # === On verify ===
