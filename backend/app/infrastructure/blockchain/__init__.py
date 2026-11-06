@@ -1,4 +1,4 @@
-from .base import BlockchainProvider, ChainRecord
+from .base import BlockchainProvider, ChainRecord, OwnerEvent
 
 
-__all__ = ["BlockchainProvider", "ChainRecord"]
+__all__ = ["BlockchainProvider", "ChainRecord", "OwnerEvent"]

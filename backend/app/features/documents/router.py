@@ -992,23 +992,26 @@ async def verify_document(
     tags=[TAG_FINALIZE],
     response_model=RestoreResponse,
     status_code=status.HTTP_200_OK,
-    summary="Restore a tampered or deleted document from its archive",
+    summary="Repair a tampered document from the chain and its archive",
     description=(
-        "For a FINALIZED document whose verification is TAMPERED, FILE_MISSING or "
-        "SNAPSHOT_COMPROMISED. The archive is found from the on-chain hash, so an "
-        "altered snapshot row doesn't block it, and it stays altered until "
-        "restored from a database backup. The archived original is re-hashed "
-        "against the on-chain hash, then "
+        "Repairs everything found wrong, in one transaction: the lifecycle, the "
+        "snapshot row, the file and the metadata. Offer it when the verdict's "
+        "`needs_restore` and `permissions.can_restore` are both true. Every value "
+        "comes from the chain and the archive, which is found from the on-chain "
+        "hash, so an altered row can't block it. The archived original is "
+        "re-hashed against the on-chain hash, then "
         "becomes the current signed copy; a tampered file is kept in "
-        "/signed-copies and the restore is recorded in /history with both hashes. "
+        "/signed-copies and the restore is recorded in /history with both hashes "
+        "and, in `changes`, every record value's old and new form. "
         "For a deleted file nothing is preserved, and `preserved_copy_id`, "
-        "`previous_hash` and the history row's `from_hash` are null. The lifecycle "
-        "and the on-chain record are unchanged. If the document is already "
-        "AUTHENTIC nothing changes and `restored` is false, so a retry is safe. "
+        "`previous_hash` and the history row's `from_hash` are null. `repaired` "
+        "lists what was put back; `unrepaired` lists what needs a database backup. "
+        "The on-chain records are unchanged. If nothing is wrong nothing changes "
+        "and `restored` is false, so a retry is safe. "
         "`verification` is a fresh check of the result."
     ),
     responses={
-        200: {"description": "Restored, or already authentic"},
+        200: {"description": "Repaired, or nothing was wrong"},
         401: {"description": "Not authenticated — missing or invalid bearer token"},
         403: {"description": "Forbidden — only the document owner may restore"},
         404: {"description": "Document not found, or it has no on-chain record"},

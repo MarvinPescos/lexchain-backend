@@ -1,6 +1,8 @@
 import uuid
 from datetime import datetime
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from app.features.blockchain.schemas import DocumentVerificationResponse
@@ -144,6 +146,13 @@ class DocumentPermissions(BaseModel):
     can_request_ecopy: bool = Field(
         False, description="May ask the owner for the unwatermarked signed copy"
     )
+    can_restore: bool = Field(
+        False,
+        description=(
+            "May restore. Offer it when this and the verdict's `needs_restore` are "
+            "both true"
+        ),
+    )
     can_review_ecopy: bool = Field(
         False, description="May approve or decline e-copy requests"
     )
@@ -234,6 +243,15 @@ class CorrectEntryRequest(BaseModel):
     page_no: int = Field(..., ge=1)
 
 
+class RestoredValue(BaseModel):
+    """One database value a restore put back."""
+
+    record: Literal["lifecycle", "snapshot", "metadata"]
+    field: str
+    old: str | int | None
+    new: str | int | None
+
+
 class StageChangeResponse(BaseModel):
     """One lifecycle action on a document."""
 
@@ -246,6 +264,9 @@ class StageChangeResponse(BaseModel):
     )
     to_hash: str | None = Field(
         None, description="Restore only: SHA-256 of the archived bytes restored"
+    )
+    changes: list["RestoredValue"] | None = Field(
+        None, description="Restore only: every record value put back"
     )
     created_at: datetime
 
@@ -427,13 +448,13 @@ class RetryProcessingResponse(BaseModel):
 class RestoreResponse(BaseModel):
     """The outcome of restoring a finalized document from its archive.
 
-    `restored` is false when the document was already authentic: nothing was
-    changed, so a retry is safe. Either way `verification` is a fresh check of
-    the current copy against the chain, to show the resulting integrity status.
+    `restored` is false only when nothing at all was wrong: nothing was changed,
+    so a retry is safe. Either way `verification` is a fresh check of the current
+    copy against the chain, to show the resulting integrity status.
     """
 
     document_id: uuid.UUID
-    restored: bool = Field(..., description="False if it was already authentic")
+    restored: bool = Field(..., description="False if nothing needed repair")
     previous_hash: str | None = Field(
         default=None, description="SHA-256 of the file that was replaced; null if none was"
     )
@@ -444,6 +465,15 @@ class RestoreResponse(BaseModel):
     )
     restored_by: uuid.UUID | None = None
     restored_at: datetime | None = None
+    repaired: list[RestoredValue] = Field(
+        default_factory=list, description="Every record value put back"
+    )
+    unrepaired: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Values with nothing to rebuild them from, which need a database backup"
+        ),
+    )
     verification: DocumentVerificationResponse
 
 

@@ -275,6 +275,7 @@ async def test_report_lists_every_status_distinctly_with_matching_totals(
         "snapshot_compromised": 1,
         "not_anchored": 1,
         "verification_unavailable": 1,
+        "record_altered": 0,
     }
     assert [x["status"] for x in body["results"]] == list(reversed(statuses))
     unavailable = body["results"][0]

@@ -8,21 +8,38 @@ from ens.constants import HexStr
 from web3 import AsyncWeb3
 from web3.types import TxReceipt
 
-from .base import ChainRecord
+from .base import ChainRecord, OwnerEvent
 
 # A just-mined anchor can read as empty on a lagging RPC node.
 _EMPTY_READ_RETRIES = 3
 _EMPTY_READ_DELAY_SECONDS = 2
 
+_OWNER_EVENTS = ("DocumentRecordCorrected", "RecorderSet", "OwnershipTransferred")
+
+
+class _CorrectionScan:
+    """How far `corrected_document_ids` has read, per contract, for this process."""
+
+    def __init__(self, next_block: int) -> None:
+        self.next_block = next_block
+        self.document_ids: set[str] = set()
+
+
+_correction_scans: dict[str, _CorrectionScan] = {}
+
 
 class Web3BlockchainProvider:
-    def __init__(self) -> None:
+    def __init__(self, contract_address: str | None = None) -> None:
         self.w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(settings.WEB_RPC_URL))
-        self.contract_address = settings.CONTRACT_ADDRESS
+        self.contract_address = contract_address or settings.CONTRACT_ADDRESS
         self.private_key = settings.CONTRACT_OWNER_PRIVATE_KEY
 
         self.abi: list[dict] = json.loads(_abi_path().read_text())["abi"]
         self.account = self.w3.eth.account.from_key(self.private_key)
+
+    @property
+    def recorder_address(self) -> str:
+        return self.account.address
 
     @property
     def _contract(self):
@@ -129,6 +146,100 @@ class Web3BlockchainProvider:
                 "The blockchain could not be read to list the anchored documents."
             ) from e
         return document_ids
+
+    async def list_owner_events(self, from_block: int) -> list[OwnerEvent]:
+        """Every use of the owner key from `from_block` to the latest block,
+        oldest first. Any failed chunk raises, like `list_anchored_document_ids`.
+        """
+        chunk_size = settings.CHAIN_LOG_CHUNK_BLOCKS
+        events: list[OwnerEvent] = []
+        try:
+            latest = await self.w3.eth.block_number
+            if from_block > latest:
+                raise ValueError(f"Block {from_block} is past the latest, {latest}")
+            for start in range(from_block, latest + 1, chunk_size):
+                events += await self._owner_events(
+                    start, min(start + chunk_size - 1, latest)
+                )
+        except Exception as e:
+            raise ServiceUnavailableError(
+                "The blockchain could not be read to list the owner key's events."
+            ) from e
+        return events
+
+    async def corrected_document_ids(self, from_block: int) -> set[str]:
+        """The IDs whose anchor was replaced, for verify.
+
+        Verify runs on every open, and a full scan takes minutes, so this keeps
+        its place in memory and reads only what's new. Progress survives a
+        caller that gives up, so a cold process catches up over a few calls.
+        The scheduled watcher doesn't use this: it rescans everything.
+        """
+        scan = _correction_scans.setdefault(
+            self.contract_address, _CorrectionScan(from_block)
+        )
+        chunk_size = settings.CHAIN_LOG_CHUNK_BLOCKS
+        try:
+            latest = await self.w3.eth.block_number
+            while scan.next_block <= latest:
+                end = min(scan.next_block + chunk_size - 1, latest)
+                events = await self._owner_events(scan.next_block, end)
+                scan.document_ids.update(
+                    e.document_id for e in events if e.document_id is not None
+                )
+                scan.next_block = end + 1
+        except Exception as e:
+            raise ServiceUnavailableError(
+                "The blockchain could not be read to list corrected anchors."
+            ) from e
+        return set(scan.document_ids)
+
+    async def _owner_events(self, start: int, end: int) -> list[OwnerEvent]:
+        """One `get_logs` for all three events, decoded in chain order."""
+        contract = self._contract
+        decoders = {
+            event.topic: event
+            for event in (contract.events[name]() for name in _OWNER_EVENTS)
+        }
+        logs = await self.w3.eth.get_logs(
+            {
+                "address": contract.address,
+                "fromBlock": start,
+                "toBlock": end,
+                "topics": [list(decoders)],
+            }
+        )
+        return [
+            _owner_event(decoders[self.w3.to_hex(log["topics"][0])].process_log(log))
+            for log in logs
+        ]
+
+
+def _owner_event(log) -> OwnerEvent:
+    args = log["args"]
+    common = {"tx_hash": log["transactionHash"].hex(), "block_number": log["blockNumber"]}
+    if log["event"] == "DocumentRecordCorrected":
+        return OwnerEvent(
+            kind="correction",
+            document_id=args["documentId"],
+            previous_hash=args["previousHash"].hex(),
+            new_hash=args["dataHash"].hex(),
+            reason=args["reason"],
+            **common,
+        )
+    if log["event"] == "RecorderSet":
+        return OwnerEvent(
+            kind="recorder_set",
+            recorder=args["recorder"],
+            authorized=args["authorized"],
+            **common,
+        )
+    return OwnerEvent(
+        kind="ownership_transferred",
+        previous_owner=args["previousOwner"],
+        new_owner=args["newOwner"],
+        **common,
+    )
 
 
 def _abi_path() -> Path:

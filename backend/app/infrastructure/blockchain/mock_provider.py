@@ -1,9 +1,11 @@
 import asyncio
 
-from .base import ChainRecord
+from .base import ChainRecord, OwnerEvent
 
 
 class MockBlockchainProvider:
+    recorder_address = "0x" + "00" * 20
+
     async def store_document_hash(
         self, document_id: str, data_hash: str
     ) -> ChainRecord:
@@ -22,4 +24,10 @@ class MockBlockchainProvider:
         return None
 
     async def list_anchored_document_ids(self, from_block: int) -> set[str]:
+        return set()
+
+    async def list_owner_events(self, from_block: int) -> list[OwnerEvent]:
+        return []
+
+    async def corrected_document_ids(self, from_block: int) -> set[str]:
         return set()

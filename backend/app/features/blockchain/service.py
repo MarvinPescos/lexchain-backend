@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import uuid
 from collections.abc import Callable
@@ -6,11 +7,13 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from storage3.utils import StorageException
 
+from app.core import settings
 from app.features.documents.constants import LIFECYCLE_FINALIZED
 from app.features.documents.extraction.blocks import blocks_from_text
 from app.features.documents.models import Document
 from app.features.documents.repository import DocumentRepository
 from app.features.snapshot.models import DocumentSnapshot
+from app.features.snapshot.records import RecordCheck, metadata_anchor_id
 from app.features.snapshot.repository import DocumentSnaphotRepository
 from app.infrastructure.backup import BackupProvider
 from app.infrastructure.blockchain import BlockchainProvider, ChainRecord
@@ -25,6 +28,7 @@ from .constants import (
     VERIFY_FILE_MISSING,
     VERIFY_NOT_ANCHORED,
     VERIFY_SNAPSHOT_COMPROMISED,
+    VERIFY_TAMPER_FINDINGS,
     VERIFY_TAMPERED,
     VERIFY_UNAVAILABLE,
 )
@@ -39,6 +43,11 @@ from .tamper import diff_blocks
 
 if TYPE_CHECKING:
     from app.infrastructure.security.dependencies import AuthenticatedUser
+
+
+# Verify runs on open, so it won't wait out a cold event scan. See
+# `corrected_document_ids`: the scan keeps its progress for the next call.
+_EVENT_READ_TIMEOUT_SECONDS = 5
 
 
 def _normalise_hash(value: str) -> str:
@@ -63,6 +72,7 @@ class BlockchainService:
         self.onchain_repo = OnChainRecordRepository(session)
         self.doc_repo = DocumentRepository(session)
         self.snapshot_repo = DocumentSnaphotRepository(session)
+        self.records = RecordCheck(session, provider, backup)
 
     async def record_document(
         self,
@@ -158,6 +168,76 @@ class BlockchainService:
             )
 
     async def _verify(
+        self,
+        user: "AuthenticatedUser",
+        document_id: uuid.UUID,
+        *,
+        tamper_report: bool,
+    ) -> DocumentVerificationResponse:
+        """The file's verdict, plus the state of the records around it.
+
+        `status` stays about the PDF: a record finding never changes it.
+        """
+        result = await self._verify_file(user, document_id, tamper_report=tamper_report)
+        if result.status == VERIFY_NOT_ANCHORED:
+            return result
+
+        document = await self.session.get(Document, document_id)
+        assert document is not None  # just authorized
+        metadata = await self.records.metadata(document)
+        corrected = await self._anchor_corrected(document_id)
+        message = result.message
+        if corrected:
+            message += (
+                " The on-chain anchor of this document was replaced with the "
+                "contract owner key, so it isn't the hash from finalize."
+            )
+        return result.model_copy(
+            update={
+                "metadata_status": metadata.status,
+                "metadata_changes": metadata.changes,
+                "anchor_corrected": corrected,
+                "needs_restore": await self._needs_restore(
+                    document, result, metadata.status == "ALTERED"
+                ),
+                "message": message,
+            }
+        )
+
+    async def _needs_restore(
+        self,
+        document: Document,
+        result: DocumentVerificationResponse,
+        metadata_altered: bool,
+    ) -> bool:
+        if result.status in VERIFY_TAMPER_FINDINGS or metadata_altered:
+            return True
+        snapshot = await self.snapshot_repo.get_by_document_id(document.id)
+        if result.onchain_hash is None or snapshot is None:
+            return False
+        return document.lifecycle != LIFECYCLE_FINALIZED or bool(
+            await self.records.snapshot_changes(snapshot, result.onchain_hash)
+        )
+
+    async def _anchor_corrected(self, document_id: uuid.UUID) -> bool | None:
+        """Whether either of the document's anchors was replaced. None if unknown."""
+        if settings.CHAIN_SCAN_FROM_BLOCK is None:
+            return None
+        try:
+            corrected = await asyncio.wait_for(
+                self.provider.corrected_document_ids(settings.CHAIN_SCAN_FROM_BLOCK),
+                _EVENT_READ_TIMEOUT_SECONDS,
+            )
+        except (ServiceUnavailableError, TimeoutError) as e:
+            log.warning(
+                "blockchain.verify.events_unavailable",
+                document_id=str(document_id),
+                error=f"{type(e).__name__}: {e}",
+            )
+            return None
+        return bool({str(document_id), metadata_anchor_id(document_id)} & corrected)
+
+    async def _verify_file(
         self,
         user: "AuthenticatedUser",
         document_id: uuid.UUID,

@@ -22,15 +22,16 @@ Recovery depends on detection. RDS recovery reaches back up to 35 days and hourl
 
 | Tampered | Detected by | Recovered from | Status |
 |---|---|---|---|
-| Live PDF edited | Verify on open, scheduled live check | Archive | Built; S3 archive not switched on |
-| Live PDF deleted | Verify and scheduled live check (`FILE_MISSING`) | Archive | Built |
-| Archive | Scheduled check; blocked by Object Lock on S3 | Not needed | Built; S3 archive not switched on |
-| Snapshot row | Verify and the scheduled check | File from the archive by on-chain hash; row from a DB backup | Detection and DB backups built, backups not applied. Restore from chain on `feat/restore-from-chain`, not merged |
-| `lifecycle` changed to hide tampering | Verify reads the chain first | DB backup, then restore | Built |
-| Anchor replaced with the owner key (C2) | Not by the app | Not through the app | Gap, deferred |
-| Database wiped | Obvious from the outage | RDS (about 5 minutes lost) or dumps (up to 1 hour lost) | Built, not applied |
-| Single row deleted | Reconcile job | DB backup | Detection built; backups not applied |
-| Metadata | Not detected | DB backup, if noticed in time | Accepted limitation |
+| Live PDF edited | Verify on open, scheduled live check | Archive | Validated on the S3 archive |
+| Live PDF deleted | Verify and scheduled live check (`FILE_MISSING`) | Archive | Validated |
+| Archive | Scheduled check, which notifies the lawyer and `BACKUP_ALERT_EMAIL`; blocked by Object Lock on S3 | Not needed | Blocking validated on S3. Alerts built (#55), rerun pending |
+| Snapshot row | Verify and the scheduled check, which alerts | Restore, from the chain and archive. `signed_copy_id` needs a DB backup if no signed copy matches the chain | Built (#55), rerun pending |
+| `lifecycle` changed to hide tampering | Verify reads the chain first; the scheduled check alerts | Restore | Built (#55), rerun pending |
+| Anchor overwritten with the recorder key (C1) | Blocked by the contract | Not needed | Validated on the current contract. The contract the app still points at allowed it |
+| Anchor replaced with the owner key (C2) | Scheduled watch of the key's events; `anchor_corrected` on verify | Manual, using the previous hash in the alert | Detected, not fixed: the key can still do it. Built (#55), rerun pending |
+| Database wiped | Obvious from the outage | RDS (about 5 minutes lost) or dumps (up to 1 hour lost) | Validated. A dump doesn't restore `auth.identities`; email sign-in still works |
+| Single row deleted | Reconcile job | DB backup | Detection validated; restore validated through RDS |
+| Metadata | Verify and the scheduled check, against the `{document_id}:metadata` anchor | Restore, from the archived JSON | Built (#55), rerun pending. Documents need the re-anchor script to get an anchor |
 | OCR text, chunks, insights | Not detected | Regenerate from the verified PDF; review edits need a DB backup | Accepted limitation |
 | Audit and verification history | Not detected | DB backup, if noticed in time | Accepted limitation |
 
@@ -46,15 +47,15 @@ When a document's database records are damaged, not just its file:
 
 | Order | Work | Tracked in |
 |---|---|---|
-| 1 | Merge restore from the on-chain hash | `feat/restore-from-chain` |
-| 2 | Apply the infra, run the attack tests, tear down | `issues/03-tampering-attacks-and-database-recovery.md` |
+| 1 | Point the app at the current contract and re-anchor | `issues/03-tampering-attacks-and-database-recovery.md` |
+| 2 | Stop denied requests tripping the missing-dump alarm | `issues/03-tampering-attacks-and-database-recovery.md` |
+| 3 | Restore `auth.identities` from a dump | `issues/03-tampering-attacks-and-database-recovery.md` |
 | Deferred | Owner key off the server (C2) | `backup&recovery_implementation.md`, contract ownership step |
 
 ## Accepted limitations
 
 Options if any of these need closing later:
 
-- **Metadata:** anchor a hash of the key fields with the PDF hash. It's the proper fix, but it changes what gets anchored and already-anchored documents won't have it. Worth doing only if those fields carry legal weight.
 - **Chunks and insights:** store a hash at generation and check it before use. RAG answers and risk analysis read this data, so an edited chunk can change an answer while the document still shows `AUTHENTIC`. The stored hash sits in the same database, so a careful attacker could update both.
 - **Audit history:** periodically anchor a hash of the log. Skipped for now because of the added complexity.
 

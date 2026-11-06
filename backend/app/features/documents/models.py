@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -258,6 +259,8 @@ class DocumentStageChange(Base):
     # copy, and of the archived bytes that replaced it.
     from_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     to_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Set only by a restore: every record value it put back, old and new.
+    changes: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.clock_timestamp(),

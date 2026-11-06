@@ -15,6 +15,7 @@ from app.features.documents.constants import LIFECYCLE_FINALIZED
 from app.features.notifications.models import NotificationType
 from app.features.notifications.repository import NotificationRepository
 from app.features.notifications.service import NotificationService
+from app.features.snapshot.records import is_metadata_anchor
 from app.features.snapshot.repository import DocumentSnaphotRepository
 from app.features.users.repository import UserRepository
 from app.infrastructure.blockchain import BlockchainProvider
@@ -70,6 +71,8 @@ class ChainReconciliation:
         except ServiceUnavailableError:
             log.error("chain.reconcile.scan_failed")
             raise
+        # A metadata anchor belongs to a document; it isn't a document itself.
+        anchored = {a for a in anchored if not is_metadata_anchor(a)}
 
         # Read after the scan, so an anchor made during it finds its row.
         rows = {

@@ -50,7 +50,18 @@ TRANSITIONS: dict[str, tuple[tuple[str | None, ...], str | None]] = {
         (LIFECYCLE_PREPARING, LIFECYCLE_READY_FOR_SIGNATURE, LIFECYCLE_SIGNED),
         None,
     ),
-    ACTION_RESTORE: ((LIFECYCLE_FINALIZED,), None),
+    # From any stage: an edited `lifecycle` must not block its own repair. The
+    # chain, not this table, decides whether a document was ever finalized.
+    ACTION_RESTORE: (
+        (
+            LIFECYCLE_PREPARING,
+            LIFECYCLE_READY_FOR_SIGNATURE,
+            LIFECYCLE_SIGNED,
+            LIFECYCLE_CANCELLED,
+            LIFECYCLE_FINALIZED,
+        ),
+        LIFECYCLE_FINALIZED,
+    ),
 }
 
 # What to tell the lawyer when an action is refused from a given stage.

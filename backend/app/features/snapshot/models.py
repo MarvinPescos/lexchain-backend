@@ -35,6 +35,9 @@ class DocumentSnapshot(Base, TimestampMixin):
     backed_up_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Only locates the archived metadata record for the anchor retry. No check
+    # trusts it: the hash that counts is the one on-chain.
+    metadata_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # relationship
 

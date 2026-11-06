@@ -30,6 +30,7 @@ from .constants import (
     ACTION_RENAME,
     ACTION_REOPEN,
     ACTION_REPLACE_SIGNED_COPY,
+    ACTION_RESTORE,
     ACTION_VIEW,
     LIFECYCLE_FINALIZED,
     STATUS_COMPLETED,
@@ -107,5 +108,7 @@ class DocumentAccess:
             can_request_ecopy=not is_owner
             and document.lifecycle == LIFECYCLE_FINALIZED
             and document.signed_copy_id is not None,
+            # Not by stage: `lifecycle` may be the very thing that was edited.
+            can_restore=allowed(ACTION_RESTORE) and document.on_chain,
             can_review_ecopy=is_owner,
         )

@@ -3,7 +3,10 @@
 Allowed only once the signed copy has been processed (COMPLETED), so the
 lawyer has seen its risk clauses while it could still be replaced. Freeze the
 current signed copy, archive it (read back and checked), and anchor the
-SHA-256 of its bytes on-chain. Nothing is queued: processing already ran.
+SHA-256 of its bytes on-chain. The metadata record is archived the same way and
+anchored last: the PDF anchor is the point of no return, so a failed metadata
+anchor leaves the document finalized for the scheduled retry. With no archive
+there is no metadata anchor either. Nothing is queued: processing already ran.
 Moves to an `attestation/` feature once chain anchoring becomes its own
 background job.
 """
@@ -15,6 +18,12 @@ from datetime import datetime, timezone
 from app.features.blockchain.schemas import RecordResponse
 from app.features.snapshot import DocumentSnapshotService
 from app.features.snapshot.backups import SnapshotArchive
+from app.features.snapshot.records import (
+    canonical_json,
+    metadata_anchor_id,
+    metadata_record,
+    sha256_hex,
+)
 from app.features.snapshot.repository import DocumentSnaphotRepository
 from app.infrastructure.backup import BackupProvider
 from app.infrastructure.blockchain import BlockchainProvider
@@ -76,6 +85,7 @@ class DocumentFinalization:
         # None when BACKUP_ENABLED is off: finalize then leaves no archive, and
         # the document is not recoverable until backup verification repairs it.
         self.archive = SnapshotArchive(session, backup) if backup else None
+        self.provider = provider
         from app.features.blockchain.service import BlockchainService
 
         self.blockchain_service = BlockchainService(session, provider)
@@ -121,6 +131,10 @@ class DocumentFinalization:
         await self.snapshot_service.create_snapshot(
             document_id, copy.id, file_sha256, len(content)
         )
+        # Set first: both are part of the metadata record.
+        document.finalized_by = user_id
+        document.finalized_at = datetime.now(timezone.utc)
+        metadata: bytes | None = None
         if self.archive:
             snapshot = await self.snapshot_repo.get_by_document_id(document_id)
             assert snapshot is not None
@@ -131,13 +145,19 @@ class DocumentFinalization:
                 raise ServiceUnavailableError(
                     "The finalized copy could not be archived. Try finalizing again."
                 )
+            metadata = canonical_json(metadata_record(document))
+            if not await self.archive.archive_metadata(snapshot, metadata):
+                raise ServiceUnavailableError(
+                    "The finalized record could not be archived. Try finalizing again."
+                )
         record = await self.blockchain_service.record_document(document, file_sha256)
 
         change = lifecycle.transition(ACTION_FINALIZE, document, user_id)
-        document.finalized_by = user_id
-        document.finalized_at = datetime.now(timezone.utc)
         await self.repo.add(change)
         await self.session.commit()
+
+        if metadata is not None:
+            await self._anchor_metadata(document_id, metadata)
 
         from app.celery_tasks import handle_document_recorded
 
@@ -156,3 +176,16 @@ class DocumentFinalization:
             file_sha256=file_sha256,
         )
         return record
+
+    async def _anchor_metadata(self, document_id: uuid.UUID, metadata: bytes) -> None:
+        """Never undoes finalize: `retry-metadata-anchors` picks up a failure."""
+        try:
+            await self.provider.store_document_hash(
+                metadata_anchor_id(document_id), sha256_hex(metadata)
+            )
+        except Exception as e:
+            log.error(
+                "document.finalize.metadata_anchor_failed",
+                document_id=str(document_id),
+                error=f"{type(e).__name__}: {e}",
+            )

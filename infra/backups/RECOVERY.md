@@ -44,7 +44,7 @@ Use a **fresh Supabase project**. A local Postgres lacks Supabase's `auth` and `
    The new project already has Supabase's own objects, so expect `already exists` errors for those. Read the rest of the log.
 3. Compare table row counts with the source, and sign in with a real user.
 4. Run the chain reconcile job. Documents finalized after the dump have an archive and an anchor but no database row, and it lists them. Re-enter those from the archive.
-5. If `lifecycle` was edited on a document, verify shows `TAMPERED` but restore refuses it. Put the column back from the dump first, then restore the file.
+5. If `lifecycle`, the snapshot or the metadata was edited on a document, its Restore action repairs them with the file, from the chain and the archive. Nothing needs fixing by hand first.
 6. Note the time taken.
 
 ## Set up the RDS copy

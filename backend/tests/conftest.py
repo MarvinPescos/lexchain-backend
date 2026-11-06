@@ -35,7 +35,7 @@ from app.features.documents.workflow.intake import DocumentIntake
 from app.features.documents.workflow.sharing import DocumentSharing
 from app.features.google.service import GoogleConnectionService
 from app.features.users.models import User
-from app.infrastructure.blockchain.base import ChainRecord
+from app.infrastructure.blockchain.base import ChainRecord, OwnerEvent
 from app.infrastructure.database import Base
 from app.infrastructure.drafts.mock_workspace import MockDraftWorkspace
 from app.infrastructure.google.mock_oauth import MockGoogleOAuth
@@ -130,9 +130,18 @@ class RecordingQueue:
 class FakeChain:
     """Stores what it is given, so verify works without a node."""
 
+    recorder_address = "0x" + "aa" * 20
+
     def __init__(self) -> None:
         self.records: dict[str, ChainRecord] = {}
         self.retry_empty_reads: list[bool] = []
+        self.owner_events: list[OwnerEvent] = []
+
+    async def list_owner_events(self, from_block: int) -> list[OwnerEvent]:
+        return list(self.owner_events)
+
+    async def corrected_document_ids(self, from_block: int) -> set[str]:
+        return {e.document_id for e in self.owner_events if e.document_id}
 
     async def list_anchored_document_ids(self, from_block: int) -> set[str]:
         return set(self.records)
@@ -151,7 +160,8 @@ class FakeChain:
     async def get_document_hash(
         self, document_id: str, retry_empty: bool = True
     ) -> ChainRecord | None:
-        self.retry_empty_reads.append(retry_empty)
+        if not document_id.endswith(":metadata"):
+            self.retry_empty_reads.append(retry_empty)
         return self.records.get(document_id)
 
 

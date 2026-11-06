@@ -10,7 +10,9 @@ is reused if it checks out and never overwritten if it doesn't.
 
 `verify` also checks each document's live signed copy against the chain, so a
 document nobody opens is still covered. A mismatch is recorded and alerted once
-per tampered file; a read failure is unknown and neither.
+per tampered file; a read failure is unknown and neither. The same pass checks
+the metadata, snapshot and lifecycle (see `records`), and alerts on a lost or
+bad archive, because nobody otherwise learns of it until they need it.
 """
 
 import hashlib
@@ -22,8 +24,8 @@ from typing import get_args
 from app.features.blockchain.constants import (
     VERIFY_AUTHENTIC,
     VERIFY_FILE_MISSING,
+    VERIFY_RECORD_ALTERED,
     VERIFY_SNAPSHOT_COMPROMISED,
-    VERIFY_TAMPER_FINDINGS,
     VERIFY_TAMPERED,
     VERIFY_UNAVAILABLE,
 )
@@ -32,23 +34,39 @@ from app.features.blockchain.repository import (
     OnChainRecordRepository,
     VerificationResultRepository,
 )
+from app.features.documents.constants import LIFECYCLE_FINALIZED
 from app.features.documents.models import Document, SignedCopy
 from app.features.notifications.models import NotificationType
+from app.features.notifications.repository import NotificationRepository
 from app.features.notifications.service import NotificationService
+from app.features.users.models import User
 from app.infrastructure.backup import BackupProvider
 from app.infrastructure.blockchain import BlockchainProvider
 from app.infrastructure.clients.supabase_storage import get_storage_client
 from app.infrastructure.observability.logging_setup import log
+from app.workers.backup_alerts import send_backup_alert
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import DocumentSnapshot
+from .records import (
+    MetadataCheck,
+    RecordCheck,
+    archive_key,
+    metadata_anchor_id,
+    metadata_key,
+    normalise_hash,
+    sha256_hex,
+)
 from .schemas import (
     BackupCheck,
     BackupStatus,
     BackupVerificationResponse,
     LiveFileCheck,
     LiveFileReport,
+    RecordChange,
+    RecordFinding,
+    RecordReport,
 )
 
 BACKUP_STATUSES = get_args(BackupStatus)
@@ -72,17 +90,25 @@ _LIVE_ALERTS: dict[str, tuple[str, str]] = {
 }
 
 
-def archive_key(document_id: uuid.UUID, file_hash: str) -> str:
-    return f"{document_id}/{file_hash}.pdf"
+_ARCHIVE_ALERTS: dict[str, tuple[str, str]] = {
+    "missing": ("Recovery copy missing", "The archived original of {file_name} is gone."),
+    "mismatch": (
+        "Recovery copy damaged",
+        "The archived original of {file_name} no longer matches the hash anchored on-chain.",
+    ),
+    "unrecoverable": (
+        "Recovery copy lost",
+        (
+            "The archived original of {file_name} is gone or damaged, and the live "
+            "copy can't replace it."
+        ),
+    ),
+}
+_ARCHIVE_ALERT_ADVICE = " Restore won't work for this document until the archive is back."
 
 
 def backup_key(snapshot: DocumentSnapshot) -> str:
     return archive_key(snapshot.document_id, snapshot.file_sha256)
-
-
-def _normalise(value: str) -> str:
-    """Chain reads come back with or without the 0x prefix depending on the provider."""
-    return value.lower().removeprefix("0x")
 
 
 def matches_snapshot(snapshot: DocumentSnapshot, data: bytes) -> bool:
@@ -103,7 +129,9 @@ class SnapshotArchive:
         self.backup = backup
         # Needed by verify and repair. Without it nothing can be called good.
         self.chain = chain
+        self.records = RecordCheck(session, chain, backup) if chain else None
         self.notifications = NotificationService(session)
+        self.notification_repo = NotificationRepository(session)
         self.onchain_repo = OnChainRecordRepository(session)
         self.verification_repo = VerificationResultRepository(session)
 
@@ -137,6 +165,93 @@ class SnapshotArchive:
         snapshot.backed_up_at = datetime.now(timezone.utc)
         return True
 
+    async def archive_metadata(self, snapshot: DocumentSnapshot, record: bytes) -> bool:
+        """Store the canonical metadata record beside the PDF, then read it back
+        and check it. Its name is its hash, so it is never overwritten.
+        """
+        record_hash = sha256_hex(record)
+        key = metadata_key(snapshot.document_id, record_hash)
+        try:
+            if not await self.backup.exists(key):
+                await self.backup.store(key, record, "application/json")
+            stored = await self.backup.fetch(key)
+        except Exception as e:
+            log.error(
+                "backup.archive.metadata_failed",
+                document_id=str(snapshot.document_id),
+                key=key,
+                error=str(e),
+            )
+            return False
+        if stored != record:
+            log.error(
+                "backup.archive.metadata_readback_mismatch",
+                document_id=str(snapshot.document_id),
+                key=key,
+            )
+            return False
+        snapshot.metadata_sha256 = record_hash
+        return True
+
+    async def anchor_pending_metadata(self) -> int:
+        """Anchor archived metadata records finalize couldn't. Returns how many.
+
+        The hash comes from the archived JSON, never the live row, which may
+        have changed since. One document's failure doesn't stop the rest.
+        """
+        assert self.chain is not None
+        result = await self.session.execute(
+            select(DocumentSnapshot)
+            .where(DocumentSnapshot.metadata_sha256.is_not(None))
+            .order_by(DocumentSnapshot.created_at)
+        )
+        anchored = 0
+        for snapshot in result.scalars().all():
+            try:
+                anchored += await self._anchor_metadata(snapshot)
+            except Exception as e:
+                log.error(
+                    "backup.metadata_anchor.failed",
+                    document_id=str(snapshot.document_id),
+                    error=str(e),
+                )
+        return anchored
+
+    async def _anchor_metadata(self, snapshot: DocumentSnapshot) -> bool:
+        assert self.chain is not None and snapshot.metadata_sha256 is not None
+        anchor_id = metadata_anchor_id(snapshot.document_id)
+        if await self._metadata_anchored(anchor_id, snapshot.metadata_sha256):
+            return False
+        data = await self.backup.fetch(
+            metadata_key(snapshot.document_id, snapshot.metadata_sha256)
+        )
+        data_hash = sha256_hex(data)
+        if data_hash != snapshot.metadata_sha256:
+            log.error(
+                "backup.metadata_anchor.archive_mismatch",
+                document_id=str(snapshot.document_id),
+            )
+            return False
+        try:
+            await self.chain.store_document_hash(anchor_id, data_hash)
+        except Exception:
+            # The contract refuses a second write, so an anchor from a run that
+            # lost its answer lands here. It's done if it holds this hash.
+            if not await self._metadata_anchored(anchor_id, data_hash):
+                raise
+            return False
+        log.info("backup.metadata_anchor.done", document_id=str(snapshot.document_id))
+        return True
+
+    async def _metadata_anchored(self, anchor_id: str, expected: str) -> bool:
+        assert self.chain is not None
+        record = await self.chain.get_document_hash(anchor_id, retry_empty=False)
+        if record is None:
+            return False
+        if normalise_hash(record.data_hash) != expected:
+            log.error("backup.metadata_anchor.hash_differs", anchor_id=anchor_id)
+        return True
+
     async def verify(self, repair: bool = False) -> BackupVerificationResponse:
         """Hash every archive against the snapshot and the hash read from the chain.
 
@@ -145,7 +260,9 @@ class SnapshotArchive:
         only when the snapshot matches the chain and the live copy matches the
         snapshot. A bad archive is reported, never overwritten.
 
-        Every live file is checked too, whatever its archive's status.
+        Every live file is checked too, whatever its archive's status, and so
+        are the records, even when the file is authentic. When the chain can't be
+        read, nothing is recorded or alerted.
         """
         result = await self.session.execute(
             select(DocumentSnapshot).order_by(DocumentSnapshot.created_at)
@@ -156,9 +273,14 @@ class SnapshotArchive:
         problems: list[BackupCheck] = []
         live_counts: Counter[str] = Counter()
         live_problems: list[LiveFileCheck] = []
+        record_counts: Counter[str] = Counter()
+        record_problems: list[RecordFinding] = []
+        record_alerted = await self._alerted(NotificationType.RECORD_ALTERED)
+        archive_alerted = await self._alerted(NotificationType.ARCHIVE_PROBLEM)
+        emails: list[tuple[str, str]] = []
         for snapshot in snapshots:
             onchain_hash = await self._onchain_hash(snapshot)
-            status = await self._check(snapshot, onchain_hash)
+            status, archived = await self._check(snapshot, onchain_hash)
             if status in ("missing", "mismatch") and repair:
                 status = await self._repair(snapshot)
             counts[status] += 1
@@ -176,8 +298,38 @@ class SnapshotArchive:
                 live_problems.append(
                     LiveFileCheck(document_id=snapshot.document_id, status=live_status)
                 )
-        if repair or any(live_counts[s] for s in VERIFY_TAMPER_FINDINGS):
-            await self.session.commit()
+            if onchain_hash is None or self.records is None:
+                record_counts["unavailable"] += 1
+                continue
+            document = await self.session.get(Document, snapshot.document_id)
+            assert document is not None  # the snapshot's foreign key
+            metadata = await self.records.metadata(document)
+            findings = await self._record_findings(
+                document, snapshot, onchain_hash, archived, metadata
+            )
+            record_problems += findings
+            record_counts[self._record_outcome(findings, metadata)] += 1
+            recipient = await self._recipient(document, metadata)
+            await self._alert_records(
+                document,
+                snapshot,
+                findings,
+                onchain_hash,
+                live_status,
+                recipient,
+                record_alerted,
+            )
+            email = await self._alert_archive(
+                document, status, recipient, archive_alerted
+            )
+            if email:
+                emails.append(email)
+        await self.session.commit()
+        for subject, body in emails:
+            try:
+                await send_backup_alert(subject, body)
+            except Exception as e:
+                log.error("backup.alert.email_failed", error=str(e))
 
         live = LiveFileReport(
             checked=len(snapshots),
@@ -188,50 +340,206 @@ class SnapshotArchive:
             unavailable=live_counts[VERIFY_UNAVAILABLE],
             problems=live_problems,
         )
-        log_fn = log.warning if problems or live_problems else log.info
+        records = RecordReport(
+            checked=len(snapshots),
+            ok=record_counts["ok"],
+            altered=record_counts["altered"],
+            not_anchored=record_counts["not_anchored"],
+            unavailable=record_counts["unavailable"],
+            problems=record_problems,
+        )
+        log_fn = log.warning if problems or live_problems or record_problems else log.info
         log_fn(
             "backup.verify.done",
             checked=len(snapshots),
             repair=repair,
             live=dict(live_counts),
+            records=dict(record_counts),
             **counts,
         )
         return BackupVerificationResponse(
-            checked=len(snapshots), problems=problems, live=live, **counts
+            checked=len(snapshots),
+            problems=problems,
+            live=live,
+            records=records,
+            **counts,
         )
 
     async def _check(
         self, snapshot: DocumentSnapshot, onchain_hash: str | None
-    ) -> BackupStatus:
-        if snapshot.backup_key is None:
-            return "missing"
+    ) -> tuple[BackupStatus, bytes | None]:
+        """The archive's status, and its bytes if the chain proved them.
+
+        The chain hash picks the archive and judges it, so an edited snapshot
+        row is a record finding and not also a bad archive. Only when the chain
+        can't be read does the row stand in, and then nothing counts as good.
+        """
+        key = (
+            archive_key(snapshot.document_id, onchain_hash)
+            if onchain_hash is not None
+            else snapshot.backup_key
+        )
+        if key is None:
+            return "missing", None
+        document_id = str(snapshot.document_id)
         try:
-            data = await self.backup.fetch(snapshot.backup_key)
+            # Asked first: a fetch error alone can't tell lost from unreachable.
+            if not await self.backup.exists(key):
+                log.error("backup.verify.not_found", document_id=document_id, key=key)
+                return "missing", None
+            data = await self.backup.fetch(key)
         except Exception as e:
             log.error(
                 "backup.verify.fetch_failed",
-                document_id=str(snapshot.document_id),
-                key=snapshot.backup_key,
+                document_id=document_id,
+                key=key,
                 error=str(e),
             )
-            return "missing"
-        if not matches_snapshot(snapshot, data):
-            log.error(
-                "backup.verify.mismatch",
-                document_id=str(snapshot.document_id),
-                key=snapshot.backup_key,
-            )
-            return "mismatch"
+            return "unavailable", None
         if onchain_hash is None:
-            return "unverified"
-        if onchain_hash != snapshot.file_sha256:
-            log.error(
-                "backup.verify.chain_mismatch",
-                document_id=str(snapshot.document_id),
-                key=snapshot.backup_key,
+            if not matches_snapshot(snapshot, data):
+                log.error("backup.verify.mismatch", document_id=document_id, key=key)
+                return "mismatch", None
+            return "unverified", None
+        if sha256_hex(data) != onchain_hash:
+            log.error("backup.verify.chain_mismatch", document_id=document_id, key=key)
+            return "mismatch", None
+        return "ok", data
+
+    async def _alerted(self, type: NotificationType) -> set[tuple]:
+        """What was already alerted. A record finding can sit on an authentic
+        file, so `latest_scheduled_finding` can't answer this.
+        """
+        return {
+            (m.get("document_id"), m.get("finding"), m.get("value"))
+            for m in await self.notification_repo.get_metadata_by_type(type)
+        }
+
+    async def _record_findings(
+        self,
+        document: Document,
+        snapshot: DocumentSnapshot,
+        onchain_hash: str,
+        archived: bytes | None,
+        metadata: MetadataCheck,
+    ) -> list[RecordFinding]:
+        assert self.records is not None
+        changes: list[tuple[str, RecordChange]] = []
+        if document.lifecycle != LIFECYCLE_FINALIZED:
+            changes.append(
+                (
+                    "lifecycle",
+                    RecordChange(
+                        field="lifecycle",
+                        anchored=LIFECYCLE_FINALIZED,
+                        current=document.lifecycle,
+                    ),
+                )
             )
-            return "mismatch"
-        return "ok"
+        changes += [
+            ("snapshot", change)
+            for change in await self.records.snapshot_changes(
+                snapshot, onchain_hash, archived
+            )
+        ]
+        changes += [("metadata", change) for change in metadata.changes]
+        return [
+            RecordFinding(document_id=document.id, kind=kind, **change.model_dump())  # type: ignore[arg-type]
+            for kind, change in changes
+        ]
+
+    @staticmethod
+    def _record_outcome(findings: list[RecordFinding], metadata: MetadataCheck) -> str:
+        if findings:
+            return "altered"
+        if metadata.status == "UNAVAILABLE":
+            return "unavailable"
+        return "not_anchored" if metadata.status == "NOT_ANCHORED" else "ok"
+
+    async def _recipient(
+        self, document: Document, metadata: MetadataCheck
+    ) -> uuid.UUID:
+        """`finalized_by`, falling back to the owner, as anchored if known: an
+        edit to either column must not send the alert to the one who made it.
+        """
+        anchored = metadata.anchored or {}
+        for candidate in (anchored.get("finalized_by"), anchored.get("user_id")):
+            if candidate and await self.session.get(User, uuid.UUID(candidate)):
+                return uuid.UUID(candidate)
+        # `finalized_by` is cleared when that user is deleted.
+        return document.finalized_by or document.user_id
+
+    async def _alert_records(
+        self,
+        document: Document,
+        snapshot: DocumentSnapshot,
+        findings: list[RecordFinding],
+        onchain_hash: str,
+        live_status: str,
+        recipient: uuid.UUID,
+        alerted: set[tuple],
+    ) -> None:
+        """Record and notify each finding, once per altered value."""
+        for finding in findings:
+            key = (
+                str(document.id),
+                f"{finding.kind}:{finding.field}",
+                str(finding.current),
+            )
+            if key in alerted:
+                continue
+            alerted.add(key)
+            self.session.add(
+                VerificationResult(
+                    document_id=document.id,
+                    verified_by=None,
+                    verified_at=datetime.now(timezone.utc),
+                    status=VERIFY_RECORD_ALTERED,
+                    is_authentic=live_status == VERIFY_AUTHENTIC,
+                    baseline_trusted=snapshot.file_sha256 == onchain_hash,
+                    onchain_hash=onchain_hash,
+                    snapshot_hash=snapshot.file_sha256,
+                    tamper_report_status="NOT_APPLICABLE",
+                )
+            )
+            await self.notifications.create(
+                user_id=recipient,
+                type=NotificationType.RECORD_ALTERED,
+                title="Document record altered",
+                body=(
+                    f"`{finding.field}` of {document.file_name} was changed from "
+                    f"{finding.anchored} to {finding.current}."
+                ),
+                event_metadata={
+                    "document_id": key[0],
+                    "finding": key[1],
+                    "value": key[2],
+                },
+            )
+
+    async def _alert_archive(
+        self,
+        document: Document,
+        status: BackupStatus,
+        recipient: uuid.UUID,
+        alerted: set[tuple],
+    ) -> tuple[str, str] | None:
+        """Notify once per document and status. Returns the email to send once
+        the notification is committed."""
+        key = (str(document.id), status, None)
+        if status not in _ARCHIVE_ALERTS or key in alerted:
+            return None
+        alerted.add(key)
+        title, body = _ARCHIVE_ALERTS[status]
+        body = body.format(file_name=document.file_name) + _ARCHIVE_ALERT_ADVICE
+        await self.notifications.create(
+            user_id=recipient,
+            type=NotificationType.ARCHIVE_PROBLEM,
+            title=title,
+            body=body,
+            event_metadata={"document_id": key[0], "finding": status},
+        )
+        return title, body
 
     async def _check_live(
         self, snapshot: DocumentSnapshot, onchain_hash: str | None
@@ -374,4 +682,4 @@ class SnapshotArchive:
         if record is None:
             log.error("backup.chain.no_record", document_id=document_id)
             return None
-        return _normalise(record.data_hash)
+        return normalise_hash(record.data_hash)

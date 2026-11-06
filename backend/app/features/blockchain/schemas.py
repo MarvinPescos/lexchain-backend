@@ -3,6 +3,8 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
+from app.features.snapshot.schemas import MetadataStatus, RecordChange
+
 
 class RecordResponse(BaseModel):
     """Response returned after recording a document on-chain."""
@@ -137,6 +139,34 @@ class DocumentVerificationResponse(BaseModel):
 
     message: str = Field(..., description="Human-readable verdict")
 
+    metadata_status: MetadataStatus = Field(
+        "NOT_ANCHORED",
+        description=(
+            "MATCH — the record agrees with its anchor; ALTERED — it does not, and "
+            "`metadata_changes` names the fields; NOT_ANCHORED — the document has "
+            "no metadata anchor; UNAVAILABLE — the chain or archive could not be "
+            "read, so it is unknown. Independent of `status`, which is about the PDF"
+        ),
+    )
+    metadata_changes: list[RecordChange] = Field(
+        default_factory=list, description="Present only when `metadata_status` is ALTERED"
+    )
+    anchor_corrected: bool | None = Field(
+        None,
+        description=(
+            "True if the contract owner replaced this document's anchor, so "
+            "`onchain_hash` isn't the hash from finalize. Null if unknown: the "
+            "events could not be read"
+        ),
+    )
+    needs_restore: bool = Field(
+        False,
+        description=(
+            "Whether something is wrong that POST /restore repairs: the file, the "
+            "metadata, the snapshot row or the lifecycle"
+        ),
+    )
+
     tamper_report_status: Literal["AVAILABLE", "UNAVAILABLE", "NOT_APPLICABLE"] = Field(
         "NOT_APPLICABLE",
         description=(
@@ -167,7 +197,10 @@ class VerificationResultResponse(BaseModel):
         description=(
             "AUTHENTIC | TAMPERED | FILE_MISSING | SNAPSHOT_COMPROMISED | "
             "NOT_ANCHORED | VERIFICATION_UNAVAILABLE — as on DocumentVerificationResponse. "
-            "VERIFICATION_UNAVAILABLE means integrity was unknown, not tampered"
+            "VERIFICATION_UNAVAILABLE means integrity was unknown, not tampered. "
+            "RECORD_ALTERED — the scheduled check found a metadata, snapshot or "
+            "lifecycle value that differs from the chain; `is_authentic` is still "
+            "about the file"
         ),
     )
     is_authentic: bool
@@ -193,6 +226,7 @@ class IntegrityReportSummary(BaseModel):
     snapshot_compromised: int = 0
     not_anchored: int = 0
     verification_unavailable: int = 0
+    record_altered: int = 0
 
 
 class IntegrityReportResponse(BaseModel):
@@ -229,6 +263,15 @@ class ChainReconcileCheck(BaseModel):
             "tampering. document_missing: the document row is gone."
         ),
     )
+
+
+class OwnerWatchResponse(BaseModel):
+    skipped: bool = Field(
+        default=False,
+        description="True when CHAIN_SCAN_FROM_BLOCK isn't set: nothing was checked",
+    )
+    events: int = Field(default=0, description="Owner key events, deployment excluded")
+    alerted: int = Field(default=0, description="Events alerted for the first time")
 
 
 class ChainReconcileResponse(BaseModel):

@@ -186,8 +186,7 @@ async def test_altered_snapshot_does_not_block_restore(
     assert result.restored is True
     assert result.restored_hash == anchored
     assert result.verification.status == "AUTHENTIC"
-    # The file is back; the row itself still needs a database backup.
-    assert result.verification.baseline_trusted is False
+    assert result.verification.baseline_trusted is True
     assert anchored in {hashlib.sha256(b).hexdigest() for b in storage.objects.values()}
 
 
@@ -211,7 +210,7 @@ async def test_altered_snapshot_with_a_bad_archive_is_refused(
 ):
     document_id, url, _ = tampered
     await _alter_snapshot(session, document_id, file_sha256="0" * 64)
-    [key] = backup.objects
+    [key] = [k for k in backup.objects if k.endswith(".pdf")]
     backup.objects[key] = storage.objects[url]
     objects = dict(storage.objects)
 
@@ -306,7 +305,7 @@ async def test_corrupted_archive_is_refused(
     restoration, queries, tampered, backup, storage, lawyer
 ):
     document_id, url, _ = tampered
-    [key] = backup.objects
+    [key] = [k for k in backup.objects if k.endswith(".pdf")]
     backup.objects[key] = storage.objects[url]
     objects = dict(storage.objects)
 
@@ -491,12 +490,16 @@ async def test_finalized_document_with_no_signed_copy_is_refused(
         await restoration.restore(as_auth(lawyer), document_id)
 
 
-async def test_edited_lifecycle_is_refused(session, restoration, tampered, lawyer):
+async def test_edited_lifecycle_no_longer_blocks_restore(
+    session, restoration, tampered, lawyer
+):
     document_id, _, _ = tampered
 
     document = await session.get(Document, document_id)
     document.lifecycle = "SIGNED"
     await session.flush()
 
-    with pytest.raises(ConflictError):
-        await restoration.restore(as_auth(lawyer), document_id)
+    result = await restoration.restore(as_auth(lawyer), document_id)
+
+    assert result.restored is True
+    assert document.lifecycle == "FINALIZED"

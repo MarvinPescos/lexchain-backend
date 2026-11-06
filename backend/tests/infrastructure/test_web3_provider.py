@@ -137,3 +137,127 @@ async def test_unreachable_chain_is_not_reported_as_missing():
     p = provider(FakeContract(reads=ConnectionError("rpc down")))
     with pytest.raises(ServiceUnavailableError):
         await p.get_document_hash("d1")
+
+
+# === Owner key events ===
+
+
+class _EventDecoder:
+    def __init__(self, name):
+        self.topic = f"0x{name}"
+        self.name = name
+
+    def process_log(self, log):
+        return {
+            "event": self.name,
+            "args": log["args"],
+            "transactionHash": log["transactionHash"],
+            "blockNumber": log["blockNumber"],
+        }
+
+
+class _Topic:
+    def __init__(self, name):
+        self.name = name
+
+
+def owner_provider(logs_by_start, latest=399, fail_at=None):
+    """A provider whose `get_logs` serves `logs_by_start`, keyed by chunk start."""
+
+    class Contract:
+        address = "0xContract"
+        events = {
+            name: (lambda n=name: _EventDecoder(n))
+            for name in ("DocumentRecordCorrected", "RecorderSet", "OwnershipTransferred")
+        }
+
+    class Provider(Web3BlockchainProvider):
+        _contract = property(lambda self: Contract())
+
+    p = Provider.__new__(Provider)
+    calls: list[int] = []
+
+    class Eth:
+        @property
+        def block_number(self):
+            async def read():
+                return latest
+
+            return read()
+
+        async def get_logs(self, params):
+            calls.append(params["fromBlock"])
+            if params["fromBlock"] == fail_at:
+                raise ConnectionError("rpc unreachable")
+            return logs_by_start.get(params["fromBlock"], [])
+
+    class W3:
+        eth = Eth()
+
+        def to_hex(self, value):
+            return f"0x{value.name}"
+
+    p.w3 = W3()
+    p.contract_address = f"0xContract{id(p)}"
+    p.calls = calls
+    return p
+
+
+def correction_log(document_id):
+    return {
+        "topics": [_Topic("DocumentRecordCorrected")],
+        "args": {
+            "documentId": document_id,
+            "previousHash": bytes.fromhex("11" * 32),
+            "dataHash": bytes.fromhex("22" * 32),
+            "reason": "typo",
+        },
+        "transactionHash": bytes.fromhex("cd" * 32),
+        "blockNumber": 7,
+    }
+
+
+@pytest.fixture
+def small_chunks(monkeypatch):
+    monkeypatch.setattr(web3_provider.settings, "CHAIN_LOG_CHUNK_BLOCKS", 200)
+
+
+async def test_owner_events_are_read_in_chunks_and_decoded(small_chunks):
+    p = owner_provider({200: [correction_log("d1")]})
+
+    [event] = await p.list_owner_events(0)
+
+    assert p.calls == [0, 200]
+    assert event.kind == "correction"
+    assert (event.document_id, event.reason) == ("d1", "typo")
+    assert (event.previous_hash, event.new_hash) == ("11" * 32, "22" * 32)
+    assert event.tx_hash == "cd" * 32
+
+
+async def test_a_failed_chunk_raises_rather_than_returning_a_partial_list(small_chunks):
+    p = owner_provider({0: [correction_log("d1")]}, fail_at=200)
+
+    with pytest.raises(ServiceUnavailableError):
+        await p.list_owner_events(0)
+
+
+async def test_corrected_ids_read_only_new_blocks_after_the_first_call(small_chunks):
+    p = owner_provider({200: [correction_log("d1")]})
+
+    assert await p.corrected_document_ids(0) == {"d1"}
+    p.calls.clear()
+
+    assert await p.corrected_document_ids(0) == {"d1"}
+    assert p.calls == []
+
+
+async def test_corrected_ids_keep_their_progress_through_a_failure(small_chunks):
+    p = owner_provider({0: [correction_log("d1")]}, fail_at=200)
+
+    with pytest.raises(ServiceUnavailableError):
+        await p.corrected_document_ids(0)
+    p.calls.clear()
+
+    with pytest.raises(ServiceUnavailableError):
+        await p.corrected_document_ids(0)
+    assert p.calls == [200]

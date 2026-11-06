@@ -187,6 +187,21 @@ class Settings(BaseSettings):
         description="How often the database is reconciled against the chain",
     )
 
+    CHAIN_OWNER_WATCH_SECONDS: int = Field(
+        default=3600,
+        ge=60,
+        description="How often the chain is scanned for use of the owner key",
+    )
+    CHAIN_EXPLORER_TX_URL: str = Field(
+        default="https://sepolia.basescan.org/tx/",
+        description="Prefix of a transaction link in owner key alerts",
+    )
+    METADATA_ANCHOR_RETRY_SECONDS: int = Field(
+        default=600,
+        ge=60,
+        description="How often metadata anchors that failed at finalize are retried",
+    )
+
     WEB_RPC_URL: str = Field(..., description="")
     CONTRACT_ADDRESS: str = Field(..., description="")
     CONTRACT_OWNER_PRIVATE_KEY: str = Field(..., description="")
