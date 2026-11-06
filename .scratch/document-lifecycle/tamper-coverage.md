@@ -24,14 +24,14 @@ Recovery depends on detection. RDS recovery reaches back up to 35 days and hourl
 |---|---|---|---|
 | Live PDF edited | Verify on open, scheduled live check | Archive | Validated on the S3 archive |
 | Live PDF deleted | Verify and scheduled live check (`FILE_MISSING`) | Archive | Validated |
-| Archive | Scheduled check, which notifies the lawyer and `BACKUP_ALERT_EMAIL`; blocked by Object Lock on S3 | Not needed | Blocking validated on S3. Alerts built (#55), rerun pending |
-| Snapshot row | Verify and the scheduled check, which alerts | Restore, from the chain and archive. `signed_copy_id` needs a DB backup if no signed copy matches the chain | Built (#55), rerun pending |
-| `lifecycle` changed to hide tampering | Verify reads the chain first; the scheduled check alerts | Restore | Built (#55), rerun pending |
+| Archive | Scheduled check, which notifies the lawyer and `BACKUP_ALERT_EMAIL`; blocked by Object Lock on S3 | Not needed | Blocking validated on S3. Alerts validated (#55) |
+| Snapshot row | Verify and the scheduled check, which alerts | Restore, from the chain and archive. `signed_copy_id` needs a DB backup if no signed copy matches the chain | Validated (#55) |
+| `lifecycle` changed to hide tampering | Verify reads the chain first; the scheduled check alerts | Restore | Validated (#55) |
 | Anchor overwritten with the recorder key (C1) | Blocked by the contract | Not needed | Validated on the current contract. The contract the app still points at allowed it |
-| Anchor replaced with the owner key (C2) | Scheduled watch of the key's events; `anchor_corrected` on verify | Manual, using the previous hash in the alert | Detected, not fixed: the key can still do it. Built (#55), rerun pending |
+| Anchor replaced with the owner key (C2) | Scheduled watch of the key's events; `anchor_corrected` on verify | Manual, using the previous hash in the alert | Detected, not fixed: the key can still do it. Alert validated on a throwaway anchor (#55); `anchor_corrected` on a real document not exercised |
 | Database wiped | Obvious from the outage | RDS (about 5 minutes lost) or dumps (up to 1 hour lost) | Validated. A dump doesn't restore `auth.identities`; email sign-in still works |
 | Single row deleted | Reconcile job | DB backup | Detection validated; restore validated through RDS |
-| Metadata | Verify and the scheduled check, against the `{document_id}:metadata` anchor | Restore, from the archived JSON | Built (#55), rerun pending. Documents need the re-anchor script to get an anchor |
+| Metadata | Verify and the scheduled check, against the `{document_id}:metadata` anchor | Restore, from the archived JSON | Validated (#55). The 3 documents left out of the re-anchor have no anchor |
 | OCR text, chunks, insights | Not detected | Regenerate from the verified PDF; review edits need a DB backup | Accepted limitation |
 | Audit and verification history | Not detected | DB backup, if noticed in time | Accepted limitation |
 
