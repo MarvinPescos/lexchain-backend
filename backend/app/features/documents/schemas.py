@@ -476,6 +476,51 @@ class RestoreResponse(BaseModel):
     verification: DocumentVerificationResponse
 
 
+class TamperChange(BaseModel):
+    """One thing found wrong with a document."""
+
+    kind: Literal["file", "metadata", "snapshot", "lifecycle"]
+    field: str = Field(..., description="`file` for the PDF, else the changed value")
+    genuine: str | int | None = Field(
+        None, description="What it should be; null if nothing proves it"
+    )
+    current: str | int | None = Field(
+        None, description="What it is now; null for a deleted file"
+    )
+
+
+class TamperReportItem(BaseModel):
+    """A document with a problem still open, as checked just now."""
+
+    document_id: uuid.UUID
+    file_name: str | None = None
+    detected_at: datetime = Field(..., description="When it was first seen")
+    status: str = Field(..., description="The PDF's verdict, as on /verify")
+    changes: list[TamperChange] = Field(default_factory=list)
+    restorable: bool = Field(..., description="Whether Restore can fix it now")
+    blocked_reason: Literal["archive_missing", "metadata_unreadable", "check_unavailable"] | None = Field(
+        None, description="Why not, when `restorable` is false"
+    )
+
+
+class TamperReportListResponse(BaseModel):
+    total: int
+    reports: list[TamperReportItem] = Field(default_factory=list)
+
+
+class RestoreFailure(BaseModel):
+    document_id: uuid.UUID
+    file_name: str | None = None
+    message: str
+
+
+class RestoreAllResponse(BaseModel):
+    """One document failing doesn't stop the rest."""
+
+    restored: list[RestoreResponse] = Field(default_factory=list)
+    failed: list[RestoreFailure] = Field(default_factory=list)
+
+
 # === E-copy requests ===
 
 ECOPY_STATUS_DESCRIPTION = "PENDING | APPROVED | DECLINED"

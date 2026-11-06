@@ -420,12 +420,17 @@ class SnapshotArchive:
 
     async def _alerted(self, type: NotificationType) -> set[tuple]:
         """What was already alerted. A record finding can sit on an authentic
-        file, so `latest_scheduled_finding` can't answer this.
+        file, so `latest_scheduled_finding` can't answer this. An alert from
+        before a restore doesn't count: the same edit again is a new tampering.
         """
-        return {
-            (m.get("document_id"), m.get("finding"), m.get("value"))
-            for m in await self.notification_repo.get_metadata_by_type(type)
-        }
+        restores = await self.verification_repo.last_restores()
+        alerted: set[tuple] = set()
+        for metadata, sent_at in await self.notification_repo.get_sent_by_type(type):
+            document_id = metadata.get("document_id")
+            restored_at = restores.get(document_id)
+            if restored_at is None or sent_at > restored_at:
+                alerted.add((document_id, metadata.get("finding"), metadata.get("value")))
+        return alerted
 
     async def _record_findings(
         self,

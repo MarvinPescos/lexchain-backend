@@ -22,6 +22,7 @@ from .dependencies import (
     get_finalization,
     get_intake,
     get_integrity_report,
+    get_tamper_reports,
     get_processing,
     get_queries,
     get_restoration,
@@ -52,7 +53,9 @@ from .schemas import (
     RegisterLookupResponse,
     RegisterReference,
     RemovePartyResponse,
+    RestoreAllResponse,
     RestoreResponse,
+    TamperReportListResponse,
     RetryProcessingResponse,
 )
 from .workflow.drafting import DocumentDrafting
@@ -62,6 +65,7 @@ from .workflow.intake import DocumentIntake
 from .workflow.processing import DocumentProcessing
 from .workflow.restoration import DocumentRestoration
 from .workflow.sharing import DocumentSharing, party_response
+from .workflow.tamper_reports import TamperReports
 
 # Swagger groups, in the order a document moves through them. Order and
 # descriptions are set in main.py (`openapi_tags`).
@@ -149,6 +153,59 @@ async def get_integrity_report_results(
     return await report.for_owner(
         current_user.user_id, verified_from, verified_to, limit, offset
     )
+
+
+# ── Tamper reports ──────────────────────────────────────
+# Declared before /{document_id}: "tamper-reports" is not a document id.
+
+
+@router.get(
+    "/tamper-reports",
+    tags=[TAG_FINALIZE],
+    response_model=TamperReportListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Documents with a tamper problem still open",
+    description=(
+        "The lawyer's own documents that a check flagged and that haven't been "
+        "fixed, newest first. Each is checked again now, so a fixed document "
+        "drops off and `changes` is current: the PDF, the metadata, the snapshot "
+        "row or the lifecycle. A document with no on-chain record isn't listed."
+    ),
+    responses={
+        200: {"description": "The open reports"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only lawyers have tamper reports"},
+    },
+)
+async def list_tamper_reports(
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    reports: TamperReports = Depends(get_tamper_reports),
+) -> TamperReportListResponse:
+    return await reports.list_open(current_user)
+
+
+@router.post(
+    "/tamper-reports/restore-all",
+    tags=[TAG_FINALIZE],
+    response_model=RestoreAllResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Restore every open tamper report",
+    description=(
+        "Runs POST /documents/{document_id}/restore on each open report, one "
+        "document at a time. A document that can't be restored goes in `failed` "
+        "and the rest carry on."
+    ),
+    responses={
+        200: {"description": "What was restored, and what failed"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only lawyers have tamper reports"},
+    },
+)
+async def restore_all_tamper_reports(
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    reports: TamperReports = Depends(get_tamper_reports),
+) -> RestoreAllResponse:
+    return await reports.restore_all(current_user)
 
 
 # ── E-copy requests: queues ─────────────────────────────────────────
