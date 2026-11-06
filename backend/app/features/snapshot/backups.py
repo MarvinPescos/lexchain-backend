@@ -44,7 +44,7 @@ from app.infrastructure.backup import BackupProvider
 from app.infrastructure.blockchain import BlockchainProvider
 from app.infrastructure.clients.supabase_storage import get_storage_client
 from app.infrastructure.observability.logging_setup import log
-from app.workers.backup_alerts import send_backup_alert
+from app.infrastructure.backup.alerts import send_backup_alert
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 

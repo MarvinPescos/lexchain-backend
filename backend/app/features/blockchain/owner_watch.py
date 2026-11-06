@@ -19,7 +19,7 @@ from app.infrastructure.blockchain import BlockchainProvider, OwnerEvent
 from app.infrastructure.observability.logging_setup import log
 from app.shared.constants import ROLE_LAWYER
 from app.shared.errors.exceptions import ServiceUnavailableError
-from app.workers.backup_alerts import send_backup_alert
+from app.infrastructure.backup.alerts import send_backup_alert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .schemas import OwnerWatchResponse
