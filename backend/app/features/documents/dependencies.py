@@ -25,6 +25,7 @@ from .workflow.intake import DocumentIntake
 from .workflow.processing import DocumentProcessing
 from .workflow.restoration import DocumentRestoration
 from .workflow.sharing import DocumentSharing
+from .workflow.tamper_reports import TamperReports
 
 
 def get_document_queue() -> DocumentQueue:
@@ -90,6 +91,12 @@ def get_restoration(
 ) -> DocumentRestoration:
     backup = build_backup() if settings.BACKUP_ENABLED else None
     return DocumentRestoration(db, provider, backup)
+
+
+def get_tamper_reports(
+    restoration: DocumentRestoration = Depends(get_restoration),
+) -> TamperReports:
+    return TamperReports(restoration)
 
 
 def get_verification(

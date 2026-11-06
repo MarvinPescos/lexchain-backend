@@ -32,6 +32,12 @@ class NotificationType(str, enum.Enum):
     ANCHORED_RECORD_MISSING = "anchored_record_missing"
     # The scheduled check found a live file that differs from the chain.
     LIVE_FILE_TAMPERED = "live_file_tampered"
+    # A metadata, snapshot or lifecycle value differs from the chain.
+    RECORD_ALTERED = "record_altered"
+    # A recovery copy is gone or bad, so restore won't work for that document.
+    ARCHIVE_PROBLEM = "archive_problem"
+    # The contract owner key replaced an anchor or changed who may write.
+    ANCHOR_CORRECTED = "anchor_corrected"
 
 
 class Notification(Base, TimestampMixin):

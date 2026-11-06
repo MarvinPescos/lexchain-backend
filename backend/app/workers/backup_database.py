@@ -17,7 +17,7 @@ from sqlalchemy.engine import URL, make_url
 from app.core import settings
 from app.infrastructure.backup import build_dump_store
 from app.infrastructure.observability.logging_setup import log
-from app.workers.backup_alerts import send_backup_alert
+from app.infrastructure.backup.alerts import send_backup_alert
 
 DUMP_CONTENT_TYPE = "application/gzip"
 DUMP_FAILED = "database backup failed"

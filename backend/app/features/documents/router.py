@@ -22,6 +22,7 @@ from .dependencies import (
     get_finalization,
     get_intake,
     get_integrity_report,
+    get_tamper_reports,
     get_processing,
     get_queries,
     get_restoration,
@@ -52,7 +53,9 @@ from .schemas import (
     RegisterLookupResponse,
     RegisterReference,
     RemovePartyResponse,
+    RestoreAllResponse,
     RestoreResponse,
+    TamperReportListResponse,
     RetryProcessingResponse,
 )
 from .workflow.drafting import DocumentDrafting
@@ -62,6 +65,7 @@ from .workflow.intake import DocumentIntake
 from .workflow.processing import DocumentProcessing
 from .workflow.restoration import DocumentRestoration
 from .workflow.sharing import DocumentSharing, party_response
+from .workflow.tamper_reports import TamperReports
 
 # Swagger groups, in the order a document moves through them. Order and
 # descriptions are set in main.py (`openapi_tags`).
@@ -149,6 +153,59 @@ async def get_integrity_report_results(
     return await report.for_owner(
         current_user.user_id, verified_from, verified_to, limit, offset
     )
+
+
+# ── Tamper reports ──────────────────────────────────────
+# Declared before /{document_id}: "tamper-reports" is not a document id.
+
+
+@router.get(
+    "/tamper-reports",
+    tags=[TAG_FINALIZE],
+    response_model=TamperReportListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Documents with a tamper problem still open",
+    description=(
+        "The lawyer's own documents that a check flagged and that haven't been "
+        "fixed, newest first. Each is checked again now, so a fixed document "
+        "drops off and `changes` is current: the PDF, the metadata, the snapshot "
+        "row or the lifecycle. A document with no on-chain record isn't listed."
+    ),
+    responses={
+        200: {"description": "The open reports"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only lawyers have tamper reports"},
+    },
+)
+async def list_tamper_reports(
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    reports: TamperReports = Depends(get_tamper_reports),
+) -> TamperReportListResponse:
+    return await reports.list_open(current_user)
+
+
+@router.post(
+    "/tamper-reports/restore-all",
+    tags=[TAG_FINALIZE],
+    response_model=RestoreAllResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Restore every open tamper report",
+    description=(
+        "Runs POST /documents/{document_id}/restore on each open report, one "
+        "document at a time. A document that can't be restored goes in `failed` "
+        "and the rest carry on."
+    ),
+    responses={
+        200: {"description": "What was restored, and what failed"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only lawyers have tamper reports"},
+    },
+)
+async def restore_all_tamper_reports(
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    reports: TamperReports = Depends(get_tamper_reports),
+) -> RestoreAllResponse:
+    return await reports.restore_all(current_user)
 
 
 # ── E-copy requests: queues ─────────────────────────────────────────
@@ -992,23 +1049,26 @@ async def verify_document(
     tags=[TAG_FINALIZE],
     response_model=RestoreResponse,
     status_code=status.HTTP_200_OK,
-    summary="Restore a tampered or deleted document from its archive",
+    summary="Repair a tampered document from the chain and its archive",
     description=(
-        "For a FINALIZED document whose verification is TAMPERED, FILE_MISSING or "
-        "SNAPSHOT_COMPROMISED. The archive is found from the on-chain hash, so an "
-        "altered snapshot row doesn't block it, and it stays altered until "
-        "restored from a database backup. The archived original is re-hashed "
-        "against the on-chain hash, then "
+        "Repairs everything found wrong, in one transaction: the lifecycle, the "
+        "snapshot row, the file and the metadata. Offer it when the verdict's "
+        "`needs_restore` and `permissions.can_restore` are both true. Every value "
+        "comes from the chain and the archive, which is found from the on-chain "
+        "hash, so an altered row can't block it. The archived original is "
+        "re-hashed against the on-chain hash, then "
         "becomes the current signed copy; a tampered file is kept in "
-        "/signed-copies and the restore is recorded in /history with both hashes. "
+        "/signed-copies and the restore is recorded in /history with both hashes "
+        "and, in `changes`, every record value's old and new form. "
         "For a deleted file nothing is preserved, and `preserved_copy_id`, "
-        "`previous_hash` and the history row's `from_hash` are null. The lifecycle "
-        "and the on-chain record are unchanged. If the document is already "
-        "AUTHENTIC nothing changes and `restored` is false, so a retry is safe. "
+        "`previous_hash` and the history row's `from_hash` are null. `repaired` "
+        "lists what was put back; `unrepaired` lists what needs a database backup. "
+        "The on-chain records are unchanged. If nothing is wrong nothing changes "
+        "and `restored` is false, so a retry is safe. "
         "`verification` is a fresh check of the result."
     ),
     responses={
-        200: {"description": "Restored, or already authentic"},
+        200: {"description": "Repaired, or nothing was wrong"},
         401: {"description": "Not authenticated — missing or invalid bearer token"},
         403: {"description": "Forbidden — only the document owner may restore"},
         404: {"description": "Document not found, or it has no on-chain record"},

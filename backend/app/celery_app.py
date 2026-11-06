@@ -34,6 +34,8 @@ celery_app.conf.update(
         # Its own worker: on the -c 1 documents worker a dump and OCR would
         # block each other.
         "backup.*": {"queue": "backups"},
+        # A full rescan takes minutes: same reason as above.
+        "chain.*": {"queue": "backups"},
     },
     # Draft comments are polled: Drive's file webhooks do not report comments.
     # Run with `celery -A app.celery_app beat`.
@@ -66,6 +68,14 @@ celery_app.conf.update(
         "reconcile-chain": {
             "task": "document.reconcile_chain",
             "schedule": settings.CHAIN_RECONCILE_SECONDS,
+        },
+        "retry-metadata-anchors": {
+            "task": "document.retry_metadata_anchors",
+            "schedule": settings.METADATA_ANCHOR_RETRY_SECONDS,
+        },
+        "watch-owner-events": {
+            "task": "chain.watch_owner_events",
+            "schedule": settings.CHAIN_OWNER_WATCH_SECONDS,
         },
     },
 )

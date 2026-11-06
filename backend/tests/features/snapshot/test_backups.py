@@ -117,7 +117,7 @@ async def test_finalize_can_be_retried_after_an_archive_outage(
 
     snapshot = await DocumentSnaphotRepository(session).get_by_document_id(doc.document_id)
     assert hashlib.sha256(backup.objects[snapshot.backup_key]).hexdigest() == snapshot.file_sha256
-    assert len(chain.records) == 1
+    assert set(chain.records) == {str(doc.document_id), f"{doc.document_id}:metadata"}
 
 
 async def test_retry_after_a_failed_anchor_reuses_the_archive(
@@ -144,7 +144,9 @@ async def test_retry_after_a_failed_anchor_reuses_the_archive(
 
     snapshot = await DocumentSnaphotRepository(session).get_by_document_id(doc.document_id)
     assert snapshot.backup_key in archived
-    assert backup.objects == archived
+    # The metadata record has a new `finalized_at`, so it gets its own object.
+    assert backup.objects[snapshot.backup_key] == archived[snapshot.backup_key]
+    assert set(archived) <= set(backup.objects)
 
 
 async def test_finalize_never_overwrites_a_bad_existing_archive(
@@ -444,7 +446,8 @@ async def test_live_check_compares_with_the_chain_not_the_snapshot_row(
     report = await SnapshotArchive(session, backup, chain).verify()
 
     assert report.live.snapshot_compromised == 1
-    [row] = await _findings(session, snapshot.document_id)
+    rows = await _findings(session, snapshot.document_id)
+    [row] = [r for r in rows if r.status != "RECORD_ALTERED"]
     assert row.status == "SNAPSHOT_COMPROMISED"
     assert row.baseline_trusted is False
 

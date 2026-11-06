@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import settings
 from app.infrastructure.database import AsyncSessionLocal
 from app.infrastructure.observability.logging_setup import log
-from app.workers.backup_alerts import send_backup_alert
+from app.infrastructure.backup.alerts import send_backup_alert
 
 ReplicationProblem = Literal["slot_missing", "subscription_stopped", "lag_exceeded"]
 

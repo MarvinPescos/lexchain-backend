@@ -292,7 +292,7 @@ async def test_archive_that_does_not_match_the_chain_is_not_a_baseline(
 ):
     document_id, url = finalized
     await _tamper(storage, ocr, url, laid_out(ORIGINAL[0]))
-    [key] = backup.objects
+    [key] = [k for k in backup.objects if k.endswith(".pdf")]
     backup.objects[key] = storage.objects[url]
 
     result = await verifier.verify_document(as_auth(lawyer), document_id)

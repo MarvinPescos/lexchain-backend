@@ -1,21 +1,28 @@
-"""Restore: a TAMPERED or FILE_MISSING finalized document gets its anchored bytes back.
+"""Restore: repair everything found wrong with a finalized document.
 
-The bytes come only from the archive written at finalize, and only once they
-re-hash to the on-chain hash — never from the active file, which is the one
-that no longer matches. The archive is found from the on-chain hash, so an
-altered snapshot row can neither block a restore nor choose what is restored.
-The file found in its place, if any, is kept as its own signed copy. The document stays FINALIZED and nothing is re-anchored: the original
-chain record is what the restored copy verifies against.
+Every value comes from the chain and the archive written at finalize, never from
+the database or the active file, which are what no longer match. Bytes are used
+only once they re-hash to the on-chain hash, so an altered row can neither block
+a restore nor choose what is restored. The file found in place of the original,
+if any, is kept as its own signed copy. Nothing is re-anchored: the original
+chain records are what the document verifies against. It stays a person's click,
+never automatic.
 """
 
 import hashlib
 import uuid
+from datetime import datetime
+from typing import Any
 
 import httpx
 from storage3.utils import StorageException
 
-from app.features.documents.schemas import RestoreResponse
-from app.features.snapshot.backups import archive_key
+from app.features.documents.schemas import RestoredValue, RestoreResponse
+from app.features.snapshot.models import DocumentSnapshot
+from app.features.snapshot.records import MetadataCheck, RecordCheck, archive_key
+from app.features.snapshot.repository import DocumentSnaphotRepository
+from app.features.snapshot.schemas import RecordChange
+from app.features.users.models import User
 from app.infrastructure.backup import BackupProvider
 from app.infrastructure.blockchain import BlockchainProvider
 from app.infrastructure.clients.supabase_storage import (
@@ -29,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import lifecycle
 from ..access import DocumentAccess
-from ..constants import ACTION_RESTORE
+from ..constants import ACTION_RESTORE, LIFECYCLE_FINALIZED
 from ..models import Document, SignedCopy
 from ..repository import DocumentRepository
 
@@ -40,6 +47,7 @@ RESTORED_REASON = (
 RESTORED_MISSING_REASON = "Restored from the archived original: the stored file was missing."
 
 _STORAGE_ERRORS = (httpx.HTTPError, OSError, StorageException)
+_UUID_FIELDS = ("book_id", "finalized_by", "user_id")
 
 
 class DocumentRestoration:
@@ -56,24 +64,57 @@ class DocumentRestoration:
         self.backup = backup
         from app.features.blockchain.service import BlockchainService
 
-        self.verifier = BlockchainService(session, provider)
+        self.verifier = BlockchainService(session, provider, backup)
+        self.records = RecordCheck(session, provider, backup)
+        self.snapshot_repo = DocumentSnaphotRepository(session)
 
     async def restore(
         self, user: AuthenticatedUser, document_id: uuid.UUID
     ) -> RestoreResponse:
-        """Make the archived, anchored bytes the current signed copy again.
+        """Repair the lifecycle, snapshot, file and metadata, in that order.
 
-        Only from TAMPERED, FILE_MISSING or SNAPSHOT_COMPROMISED. Every refusal happens
-        before anything is written. Already AUTHENTIC answers `restored=False`.
+        Every refusal happens before anything is written, and the repairs commit
+        together. With nothing wrong, answers `restored=False`.
         """
         document = await self.access.authorize(user, document_id, ACTION_RESTORE)
         # One restore at a time: a concurrent retry waits, then finds it authentic.
         await self.session.refresh(document, with_for_update=True)
 
+        # The chain is read before `lifecycle` is looked at: it may be the edit.
         verdict = await self.verifier.verify_document(
             user, document_id, tamper_report=False
         )
-        if verdict.status == "AUTHENTIC":
+        if verdict.status == "NOT_ANCHORED":
+            raise ConflictError("Only a finalized document can be restored.")
+        if verdict.status not in (
+            "AUTHENTIC",
+            "TAMPERED",
+            "FILE_MISSING",
+            "SNAPSHOT_COMPROMISED",
+        ):
+            raise ServiceUnavailableError(
+                "Could not read the stored file or the chain to confirm it was "
+                "tampered with. Try again once both are available."
+            )
+
+        onchain_hash = verdict.onchain_hash
+        assert onchain_hash is not None
+        file_bad = verdict.status != "AUTHENTIC"
+        snapshot = await self.snapshot_repo.get_by_document_id(document_id)
+        assert snapshot is not None  # no verdict above is reached without one
+        metadata = await self.records.metadata(document)
+        if metadata.status == "UNAVAILABLE":
+            self._refuse_metadata(metadata)
+
+        snapshot_edited = snapshot.file_sha256 != onchain_hash
+        original = await self._restore_source(
+            document_id, onchain_hash, required=file_bad or snapshot_edited
+        )
+        snapshot_changes = await self.records.snapshot_changes(
+            snapshot, onchain_hash, original
+        )
+        lifecycle_edited = document.lifecycle != LIFECYCLE_FINALIZED
+        if not (file_bad or lifecycle_edited or snapshot_changes or metadata.changes):
             assert verdict.current_hash is not None
             assert document.signed_copy_id is not None
             return RestoreResponse(
@@ -83,23 +124,14 @@ class DocumentRestoration:
                 restored_copy_id=document.signed_copy_id,
                 verification=verdict,
             )
-        if verdict.status not in ("TAMPERED", "FILE_MISSING", "SNAPSHOT_COMPROMISED"):
-            raise ServiceUnavailableError(
-                "Could not read the stored file or the chain to confirm it was "
-                "tampered with. Try again once both are available."
-            )
 
         current = document.signed_copy
-        if current is None:
+        if file_bad and current is None:
             raise ConflictError(
                 "This document has no signed copy record to restore onto.",
                 details={"reason": "NO_SIGNED_COPY"},
             )
-
-        onchain_hash = verdict.onchain_hash
-        previous_hash = verdict.current_hash  # None for a deleted file
-        assert onchain_hash is not None
-        original = await self._archived_original(document_id, onchain_hash)
+        previous_hash = verdict.current_hash if file_bad else None  # None if deleted
         tampered = (
             await self._current_bytes(document, previous_hash)
             if previous_hash is not None
@@ -107,26 +139,50 @@ class DocumentRestoration:
         )
 
         uploaded: list[str] = []
+        repaired: list[RestoredValue] = []
+        unrepaired: list[str] = []
+        preserved = None
         try:
-            preserved = None
-            if tampered is not None and previous_hash is not None:
-                preserved = await self._store(
-                    document, current, tampered, previous_hash, uploaded
-                )
-            restored = await self._store(
-                document,
-                current,
-                original,
-                onchain_hash,
-                uploaded,
-                uploaded_by=user.user_id,
-                reason=RESTORED_REASON if previous_hash is not None else RESTORED_MISSING_REASON,
-            )
-            document.signed_copy_id = restored.id
-            document.document_hash = onchain_hash
+            from_stage = document.lifecycle
             change = lifecycle.transition(ACTION_RESTORE, document, user.user_id)
-            change.from_hash = previous_hash
-            change.to_hash = onchain_hash
+            if lifecycle_edited:
+                repaired.append(
+                    RestoredValue(
+                        record="lifecycle",
+                        field="lifecycle",
+                        old=from_stage,
+                        new=document.lifecycle,
+                    )
+                )
+            await self._repair_snapshot(
+                snapshot, snapshot_changes, onchain_hash, repaired, unrepaired
+            )
+            restored_copy_id = document.signed_copy_id
+            if file_bad:
+                assert current is not None and original is not None
+                if tampered is not None and previous_hash is not None:
+                    preserved = await self._store(
+                        document, current, tampered, previous_hash, uploaded
+                    )
+                restored = await self._store(
+                    document,
+                    current,
+                    original,
+                    onchain_hash,
+                    uploaded,
+                    uploaded_by=user.user_id,
+                    reason=(
+                        RESTORED_REASON
+                        if previous_hash is not None
+                        else RESTORED_MISSING_REASON
+                    ),
+                )
+                document.signed_copy_id = restored_copy_id = restored.id
+                document.document_hash = onchain_hash
+                change.from_hash = previous_hash
+                change.to_hash = onchain_hash
+            await self._repair_metadata(document, metadata, repaired)
+            change.changes = [r.model_dump() for r in repaired] or None
             await self.repo.add(change)
             await self.session.refresh(change, ["created_at"])
             await self.session.commit()
@@ -156,20 +212,119 @@ class DocumentRestoration:
             document_id=str(document_id),
             previous_hash=previous_hash,
             restored_hash=onchain_hash,
+            repaired=[f"{r.record}.{r.field}" for r in repaired],
+            unrepaired=unrepaired,
         )
+        assert restored_copy_id is not None
         return RestoreResponse(
             document_id=document_id,
             restored=True,
             previous_hash=previous_hash,
             restored_hash=onchain_hash,
-            restored_copy_id=restored.id,
+            restored_copy_id=restored_copy_id,
             preserved_copy_id=preserved.id if preserved else None,
             restored_by=user.user_id,
             restored_at=change.created_at,
+            repaired=repaired,
+            unrepaired=unrepaired,
             verification=await self.verifier.verify_document(
                 user, document_id, tamper_report=False
             ),
         )
+
+    async def _restore_source(
+        self, document_id: uuid.UUID, onchain_hash: str, *, required: bool
+    ) -> bytes | None:
+        """The archived PDF. When only its size would be judged by it, a lost
+        archive isn't a reason to refuse the rest of the restore."""
+        try:
+            return await self._archived_original(document_id, onchain_hash)
+        except (ConflictError, ServiceUnavailableError):
+            if required:
+                raise
+            return None
+
+    @staticmethod
+    def _refuse_metadata(metadata: MetadataCheck) -> None:
+        """An unproven record is never written, and it can't be told to be fine."""
+        if metadata.problem == "archive_mismatch":
+            raise ConflictError(
+                "The archived record does not match the hash anchored on-chain.",
+                details={"reason": "BACKUP_MISMATCH"},
+            )
+        if metadata.problem == "archive_missing":
+            raise ConflictError(
+                "The archived record is missing, so this document cannot be restored.",
+                details={"reason": "NO_BACKUP"},
+            )
+        raise ServiceUnavailableError(
+            "The chain or the archived record could not be read. Try restoring again."
+        )
+
+    async def _repair_snapshot(
+        self,
+        snapshot: DocumentSnapshot,
+        changes: list[RecordChange],
+        onchain_hash: str,
+        repaired: list[RestoredValue],
+        unrepaired: list[str],
+    ) -> None:
+        for change in changes:
+            if change.field == "signed_copy_id":
+                copy = await self._genuine_copy(snapshot.document_id, onchain_hash)
+                if copy is None:
+                    unrepaired.append("snapshot.signed_copy_id")
+                    continue
+                new: str | int | None = str(copy.id)
+                snapshot.signed_copy_id = copy.id
+            else:
+                new = change.anchored
+                setattr(snapshot, change.field, new)
+            repaired.append(
+                RestoredValue(
+                    record="snapshot", field=change.field, old=change.current, new=new
+                )
+            )
+
+    async def _genuine_copy(
+        self, document_id: uuid.UUID, onchain_hash: str
+    ) -> SignedCopy | None:
+        """The first copy whose stored bytes hash to the chain. Its `sha256`
+        column only narrows the search: a row can be edited to claim the hash."""
+        for copy in await self.repo.signed_copies_with_hash(document_id, onchain_hash):
+            try:
+                content = await get_storage_client().download(copy.storage_url)
+            except _STORAGE_ERRORS:
+                continue
+            if hashlib.sha256(content).hexdigest() == onchain_hash:
+                return copy
+        return None
+
+    async def _repair_metadata(
+        self,
+        document: Document,
+        metadata: MetadataCheck,
+        repaired: list[RestoredValue],
+    ) -> None:
+        """Values from the archived JSON, which `RecordCheck` proved against the anchor."""
+        for change in metadata.changes:
+            value: Any = change.anchored
+            if value is not None and change.field in _UUID_FIELDS:
+                value = uuid.UUID(str(value))
+                # The anchored user may be gone since, and the column can't name them.
+                if change.field == "finalized_by" and not await self.session.get(User, value):
+                    value = None
+            elif value is not None and change.field == "finalized_at":
+                value = datetime.fromisoformat(str(value))
+            setattr(document, change.field, value)
+            repaired.append(
+                RestoredValue(
+                    record="metadata",
+                    field=change.field,
+                    old=change.current,
+                    new=None if value is None else change.anchored,
+                )
+            )
 
     async def _archived_original(
         self, document_id: uuid.UUID, onchain_hash: str

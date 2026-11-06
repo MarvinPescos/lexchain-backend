@@ -121,3 +121,19 @@ def reconcile_chain_task():
     from app.workers.reconcile_chain import reconcile_chain
 
     run_async(reconcile_chain())
+
+
+@celery_task(name="document.retry_metadata_anchors")
+def retry_metadata_anchors_task():
+    """Anchor archived metadata records whose anchor failed at finalize."""
+    from app.workers.retry_metadata_anchors import retry_metadata_anchors
+
+    run_async(retry_metadata_anchors())
+
+
+@celery_task(name="chain.watch_owner_events")
+def watch_owner_events_task():
+    """Alert on every use of the contract owner key."""
+    from app.workers.watch_owner_events import watch_owner_events
+
+    run_async(watch_owner_events())

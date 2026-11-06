@@ -1,7 +1,7 @@
 import pytest
 
 from app.core import settings
-from app.workers import backup_alerts
+from app.infrastructure.backup import alerts as backup_alerts
 from app.workers import check_replication as job
 from app.workers.check_replication import SlotState, replication_problem
 

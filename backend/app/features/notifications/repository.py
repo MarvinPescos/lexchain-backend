@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from typing import List, cast
 
 from app.infrastructure.database.base_repository import BaseRepository
@@ -31,6 +32,16 @@ class NotificationRepository(BaseRepository[Notification]):
             select(Notification.event_metadata).where(Notification.type == type)
         )
         return list(result.scalars().all())
+
+    async def get_sent_by_type(
+        self, type: NotificationType
+    ) -> list[tuple[dict, datetime]]:
+        result = await self.session.execute(
+            select(Notification.event_metadata, Notification.created_at).where(
+                Notification.type == type
+            )
+        )
+        return list(result.tuples().all())
 
     async def get_unread_count(self, user_id: uuid.UUID) -> int:
         result = await self.session.execute(
