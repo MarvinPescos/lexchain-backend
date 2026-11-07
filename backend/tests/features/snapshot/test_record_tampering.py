@@ -4,7 +4,7 @@ import hashlib
 import json
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from app.core import settings
 from app.features.blockchain.models import VerificationResult
@@ -374,6 +374,68 @@ async def test_snapshot_only_edit_notifies_once_and_the_pdf_stays_authentic(
     alerts = await _notifications(session, NotificationType.RECORD_ALTERED)
     assert len(alerts) == 1
     assert alerts[0].user_id == lawyer.id
+
+
+async def test_document_hash_edit_is_detected_and_alerted_once(
+    session, finalized, verifier, archive, lawyer, alert_emails
+):
+    finalized.document_hash = "0" * 64
+    await session.flush()
+
+    first = await archive.verify()
+    await archive.verify()
+
+    result = await verifier.verify_document(as_auth(lawyer), finalized.id, tamper_report=False)
+    assert result.status == "AUTHENTIC"
+    assert result.needs_restore is True
+    assert [(p.kind, p.field) for p in first.records.problems] == [
+        ("document", "document_hash")
+    ]
+    alerts = await _notifications(session, NotificationType.RECORD_ALTERED)
+    assert len(alerts) == 1
+    assert alerts[0].user_id == lawyer.id
+
+
+async def test_restore_puts_an_edited_document_hash_back_from_the_chain(
+    session, finalized, restoration, chain, backup, lawyer
+):
+    anchored = chain.records[str(finalized.id)].data_hash
+    copy_id = finalized.signed_copy_id
+    finalized.document_hash = "0" * 64
+    await session.flush()
+    backup.objects.clear()  # the chain alone is enough for this repair
+
+    result = await restoration.restore(as_auth(lawyer), finalized.id)
+
+    assert result.restored is True
+    assert [(r.record, r.field, r.old, r.new) for r in result.repaired] == [
+        ("document", "document_hash", "0" * 64, anchored)
+    ]
+    assert result.restored_copy_id == copy_id
+    assert result.verification.needs_restore is False
+    await session.refresh(finalized)
+    assert finalized.document_hash == anchored
+
+
+async def test_restore_refuses_a_document_hash_another_document_now_holds(
+    session, intake, finalized, restoration, chain, lawyer, open_book
+):
+    anchored = chain.records[str(finalized.id)].data_hash
+    other = await intake.upload_signed(as_auth(lawyer), pdf("other"), "Other", open_book.id)
+    finalized_id = finalized.id
+    finalized.document_hash = "0" * 64
+    await session.flush()
+    await session.execute(
+        update(Document).where(Document.id == other.document_id).values(document_hash=anchored)
+    )
+    await session.commit()
+
+    with pytest.raises(ConflictError):
+        await restoration.restore(as_auth(lawyer), finalized_id)
+
+    held = await session.get(Document, finalized_id)
+    await session.refresh(held)
+    assert held.document_hash == "0" * 64
 
 
 async def test_snapshot_only_edit_raises_no_archive_alert(

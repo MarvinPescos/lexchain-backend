@@ -50,6 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import DocumentSnapshot
 from .records import (
+    document_hash_change,
     MetadataCheck,
     RecordCheck,
     archive_key,
@@ -453,6 +454,9 @@ class SnapshotArchive:
                     ),
                 )
             )
+        hash_change = document_hash_change(document, onchain_hash)
+        if hash_change is not None:
+            changes.append(("document", hash_change))
         changes += [
             ("snapshot", change)
             for change in await self.records.snapshot_changes(

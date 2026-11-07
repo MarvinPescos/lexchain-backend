@@ -245,7 +245,7 @@ class CorrectEntryRequest(BaseModel):
 class RestoredValue(BaseModel):
     """One database value a restore put back."""
 
-    record: Literal["lifecycle", "snapshot", "metadata"]
+    record: Literal["lifecycle", "document", "snapshot", "metadata"]
     field: str
     old: str | int | None
     new: str | int | None
@@ -479,7 +479,7 @@ class RestoreResponse(BaseModel):
 class TamperChange(BaseModel):
     """One thing found wrong with a document."""
 
-    kind: Literal["file", "metadata", "snapshot", "lifecycle", "deleted"]
+    kind: Literal["file", "metadata", "snapshot", "lifecycle", "document", "deleted"]
     field: str = Field(
         ...,
         description="`file` for the PDF, `document` for a deleted one, else the changed value",

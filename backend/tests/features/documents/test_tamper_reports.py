@@ -128,6 +128,23 @@ async def test_edited_snapshot_and_lifecycle_are_listed(
     assert ("lifecycle", "lifecycle") in kinds
 
 
+async def test_edited_document_hash_is_listed_and_needs_no_archive(
+    session, reports, document_id, backup, lawyer
+):
+    document = await session.get(Document, document_id)
+    anchored = document.document_hash
+    document.document_hash = "0" * 64
+    await flag(session, document_id)
+    backup.objects.clear()
+
+    [report] = (await reports.list_open(as_auth(lawyer))).reports
+
+    assert [(c.kind, c.field, c.genuine, c.current) for c in report.changes] == [
+        ("document", "document_hash", anchored, "0" * 64)
+    ]
+    assert report.restorable is True
+
+
 async def test_a_problem_already_fixed_is_not_listed(
     session, reports, document_id, lawyer
 ):

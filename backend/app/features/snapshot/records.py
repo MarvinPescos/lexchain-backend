@@ -54,6 +54,16 @@ def is_metadata_anchor(anchored_id: str) -> bool:
     return anchored_id.endswith(METADATA_ANCHOR_SUFFIX)
 
 
+def document_hash_change(document: Document, onchain_hash: str) -> RecordChange | None:
+    """`document_hash` is a working copy of the anchored hash. E-copy access and
+    the duplicate check read it, so an edit cuts a client off with a genuine PDF."""
+    if document.document_hash == onchain_hash:
+        return None
+    return RecordChange(
+        field="document_hash", anchored=onchain_hash, current=document.document_hash
+    )
+
+
 def metadata_record(document: Document) -> dict[str, Any]:
     """What the app never changes after finalize, in fixed formats."""
     finalized_at = document.finalized_at

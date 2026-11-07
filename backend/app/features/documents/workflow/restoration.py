@@ -19,7 +19,12 @@ from storage3.utils import StorageException
 
 from app.features.documents.schemas import RestoredValue, RestoreResponse
 from app.features.snapshot.models import DocumentSnapshot
-from app.features.snapshot.records import MetadataCheck, RecordCheck, archive_key
+from app.features.snapshot.records import (
+    MetadataCheck,
+    RecordCheck,
+    archive_key,
+    document_hash_change,
+)
 from app.features.snapshot.repository import DocumentSnaphotRepository
 from app.features.snapshot.schemas import RecordChange
 from app.features.users.models import User
@@ -32,6 +37,7 @@ from app.infrastructure.clients.supabase_storage import (
 from app.infrastructure.observability.logging_setup import log
 from app.infrastructure.security.dependencies import AuthenticatedUser
 from app.shared.errors.exceptions import ConflictError, ServiceUnavailableError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import lifecycle
@@ -114,7 +120,14 @@ class DocumentRestoration:
             snapshot, onchain_hash, original
         )
         lifecycle_edited = document.lifecycle != LIFECYCLE_FINALIZED
-        if not (file_bad or lifecycle_edited or snapshot_changes or metadata.changes):
+        hash_change = document_hash_change(document, onchain_hash)
+        if not (
+            file_bad
+            or lifecycle_edited
+            or hash_change
+            or snapshot_changes
+            or metadata.changes
+        ):
             assert verdict.current_hash is not None
             assert document.signed_copy_id is not None
             return RestoreResponse(
@@ -154,6 +167,16 @@ class DocumentRestoration:
                         new=document.lifecycle,
                     )
                 )
+            if hash_change is not None:
+                document.document_hash = onchain_hash
+                repaired.append(
+                    RestoredValue(
+                        record="document",
+                        field=hash_change.field,
+                        old=hash_change.current,
+                        new=onchain_hash,
+                    )
+                )
             await self._repair_snapshot(
                 snapshot, snapshot_changes, onchain_hash, repaired, unrepaired
             )
@@ -178,7 +201,6 @@ class DocumentRestoration:
                     ),
                 )
                 document.signed_copy_id = restored_copy_id = restored.id
-                document.document_hash = onchain_hash
                 change.from_hash = previous_hash
                 change.to_hash = onchain_hash
             await self._repair_metadata(document, metadata, repaired)
@@ -195,6 +217,18 @@ class DocumentRestoration:
                         document_id=str(document_id),
                         url=url,
                     )
+            if isinstance(e, IntegrityError):
+                # The genuine hash is on another document of this lawyer's.
+                log.error(
+                    "document.restore.refused",
+                    document_id=str(document_id),
+                    error=str(e.orig),
+                )
+                raise ConflictError(
+                    "This document can't be restored while another document holds "
+                    "its hash. Restore that document first.",
+                    details={"reason": "RESTORE_CONFLICT"},
+                ) from e
             if isinstance(e, _STORAGE_ERRORS):
                 log.error(
                     "document.restore.store_failed",

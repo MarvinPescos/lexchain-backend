@@ -14,6 +14,7 @@ from app.features.documents.models import Document
 from app.features.documents.repository import DocumentRepository
 from app.features.snapshot.models import DocumentSnapshot
 from app.features.snapshot.records import (
+    document_hash_change,
     RecordCheck,
     metadata_anchor_id,
     normalise_hash,
@@ -217,6 +218,8 @@ class BlockchainService:
         if result.onchain_hash is None or snapshot is None:
             return False
         if document.lifecycle != LIFECYCLE_FINALIZED:
+            return True
+        if document_hash_change(document, result.onchain_hash) is not None:
             return True
         archived = (
             await self.records.archived_pdf(document.id, result.onchain_hash)
