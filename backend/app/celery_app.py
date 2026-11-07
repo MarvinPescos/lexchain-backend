@@ -30,6 +30,8 @@ celery_app.conf.update(
         # Wildcard so renaming or adding a document task cannot silently strand
         # it in the default queue, which no worker consumes.
         "document.*": {"queue": "documents"},
+        # Reads every document, so a short interval must not hold up OCR.
+        "document.verify_backups": {"queue": "backups"},
         "notifications.*": {"queue": "notifications"},
         # Its own worker: on the -c 1 documents worker a dump and OCR would
         # block each other.

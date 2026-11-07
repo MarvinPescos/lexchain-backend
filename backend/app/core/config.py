@@ -122,7 +122,7 @@ class Settings(BaseSettings):
     )
     BACKUP_VERIFY_SECONDS: int = Field(
         default=86400,
-        ge=3600,
+        ge=60,
         description="How often every archive is checked against its anchored hash",
     )
     AWS_REGION: str = Field(
