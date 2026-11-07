@@ -1,0 +1,120 @@
+# The app box: the image CI built, no source mounts, Postgres on Supabase.
+# .github/workflows/deploy.yml copies this to /opt/lexchain, next to that
+# environment's .env. Set DB_URL and MINERU_API_URL=http://mineru-tunnel:8888
+# there. The box also needs cloudflared/ (config.yml and the tunnel credentials)
+# and mineru-key.pem in the same directory.
+x-app: &app
+  image: ghcr.io/marvinpescos/lexchain-backend:latest
+  env_file: .env
+  restart: unless-stopped
+  networks:
+    - app
+
+x-redis-env: &redis-env
+  CELERY_BROKER_URL: redis://redis:6379/0
+
+x-worker-deps: &worker-deps
+  migrate: { condition: service_completed_successfully }
+  redis: { condition: service_healthy }
+
+services:
+  migrate:
+    <<: *app
+    command: alembic upgrade head
+    restart: "no"
+
+  backend:
+    <<: *app
+    container_name: lexChain-backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-use-colors
+    environment:
+      <<: *redis-env
+      REDIS_URL: redis://redis:6379
+      RATE_LIMIT_STORAGE_URL: redis://redis:6379/1
+    depends_on: *worker-deps
+    # Liveness only: /health/ready also needs a Celery worker, which would
+    # mark the API unhealthy for a worker outage it can still serve through.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - app
+
+  celery-notifications:
+    <<: *app
+    container_name: lexchain-celery-notifications
+    command: celery -A app.celery_app worker -Q notifications -c 4 --loglevel=info
+    environment: *redis-env
+    depends_on: *worker-deps
+
+  celery-documents:
+    <<: *app
+    container_name: lexchain-celery-documents
+    command: celery -A app.celery_app worker -Q documents -c 1 --loglevel=info
+    environment: *redis-env
+    depends_on: *worker-deps
+
+  celery-backups:
+    <<: *app
+    container_name: lexchain-celery-backups
+    command: celery -A app.celery_app worker -Q backups -c 1 --loglevel=info
+    environment: *redis-env
+    depends_on: *worker-deps
+
+  # /app is root-owned in the image, so the schedule file goes in /tmp.
+  celery-beat:
+    <<: *app
+    container_name: lexchain-celery-beat
+    command: celery -A app.celery_app beat --loglevel=info -s /tmp/celerybeat-schedule
+    environment: *redis-env
+    depends_on: *worker-deps
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared:/etc/cloudflared:ro
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - app
+
+  # MinerU only listens on the Azure VM's localhost, so the workers reach it
+  # through this tunnel.
+  mineru-tunnel:
+    image: alpine:3.20
+    command: >
+      sh -c "apk add --no-cache openssh-client &&
+      exec ssh -i /run/mineru-key.pem -N
+      -o StrictHostKeyChecking=accept-new
+      -o ServerAliveInterval=30
+      -o ExitOnForwardFailure=yes
+      -L 0.0.0.0:8888:127.0.0.1:8888
+      azureuser@40.115.186.198"
+    volumes:
+      - ./mineru-key.pem:/run/mineru-key.pem:ro
+    restart: unless-stopped
+    networks:
+      - app
+
+volumes:
+  redis_data:
+
+networks:
+  app:

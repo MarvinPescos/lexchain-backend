@@ -78,6 +78,12 @@ After apply:
 - **Tunnel:** each environment gets its own Cloudflare tunnel and hostname: `api.lexchain.me` for production, `staging-api.lexchain.me` for staging. Ingress goes to `http://backend:8000`. Two connectors on **one** tunnel share its traffic, so stop the laptop's `cloudflared` before production's takes over `lexchain-backend`.
 - **GitHub:** create Environments `staging` and `production` in the repo settings. Put each `github_deploy_role_arn`, `instance_id` and (production) `marker_instance_id` in that environment's secrets. The deploy role may run commands on both boxes. Add yourself as a required reviewer on `production`.
 
+## Deploy
+
+A push to `main` builds the image, pushes it to GHCR and rolls it out on the staging box over SSM. It fails if the API doesn't come up healthy.
+
+Before the first push, put that environment's `.env` at `/opt/lexchain/.env` on the box. It needs `DB_URL` and `MINERU_API_URL=http://mineru-tunnel:8888` on top of the usual values. `cloudflared/` (tunnel `config.yml` and credentials) and `mineru-key.pem` go in the same directory. The workflow doesn't touch it, so a change there needs a re-run of the deploy.
+
 ## Tear down
 
 ```bash
@@ -114,4 +120,5 @@ Staging must never share state with production:
 ## Not yet wired
 
 - `BACKUP_PROVIDER` defaults to `supabase`. Set `s3` and `BACKUP_BUCKET` once the backups bucket exists.
-- No `docker-compose.prod.yml` for the app box (cloudflared, no bind mounts or `--reload`), no compose file for the Marker box (`ocr-service` with the GPU), and no `.github/workflows/`. Each box comes up with Docker running and an empty `/opt/lexchain`.
+- No compose file for the Marker box (`ocr-service` with the GPU). Each box comes up with Docker running and an empty `/opt/lexchain`.
+- `.github/workflows/deploy.yml` only targets staging.
