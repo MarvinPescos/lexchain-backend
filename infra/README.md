@@ -82,7 +82,7 @@ After apply:
 
 A push to `main` builds the image, pushes it to GHCR and rolls it out on the staging box over SSM. It fails if the API doesn't come up healthy.
 
-Before the first push, put that environment's `.env` at `/opt/lexchain/.env` on the box. It needs `DB_URL` and `TUNNEL_TOKEN` on top of the usual values. The workflow doesn't touch it, so a change there needs a re-run of the deploy.
+Before the first push, put that environment's `.env` at `/opt/lexchain/.env` on the box. It needs `DB_URL` and `MINERU_API_URL=http://mineru-tunnel:8888` on top of the usual values. `cloudflared/` (tunnel `config.yml` and credentials) and `mineru-key.pem` go in the same directory. The workflow doesn't touch it, so a change there needs a re-run of the deploy.
 
 ## Tear down
 

@@ -1,6 +1,8 @@
 # The app box: the image CI built, no source mounts, Postgres on Supabase.
 # .github/workflows/deploy.yml copies this to /opt/lexchain, next to that
-# environment's .env. Set DB_URL and TUNNEL_TOKEN there.
+# environment's .env. Set DB_URL and MINERU_API_URL=http://mineru-tunnel:8888
+# there. The box also needs cloudflared/ (config.yml and the tunnel credentials)
+# and mineru-key.pem in the same directory.
 x-app: &app
   image: ghcr.io/marvinpescos/lexchain-backend:latest
   env_file: .env
@@ -84,11 +86,30 @@ services:
 
   cloudflared:
     image: cloudflare/cloudflared:latest
-    command: tunnel --no-autoupdate run
-    env_file: .env
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared:/etc/cloudflared:ro
     restart: unless-stopped
     depends_on:
       - backend
+    networks:
+      - app
+
+  # MinerU only listens on the Azure VM's localhost, so the workers reach it
+  # through this tunnel.
+  mineru-tunnel:
+    image: alpine:3.20
+    command: >
+      sh -c "apk add --no-cache openssh-client &&
+      exec ssh -i /run/mineru-key.pem -N
+      -o StrictHostKeyChecking=accept-new
+      -o ServerAliveInterval=30
+      -o ExitOnForwardFailure=yes
+      -L 0.0.0.0:8888:127.0.0.1:8888
+      azureuser@40.115.186.198"
+    volumes:
+      - ./mineru-key.pem:/run/mineru-key.pem:ro
+    restart: unless-stopped
     networks:
       - app
 
