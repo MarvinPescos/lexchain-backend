@@ -17,6 +17,7 @@ from app.features.blockchain.constants import (
 )
 from app.features.blockchain.repository import VerificationResultRepository
 from app.features.blockchain.schemas import DocumentVerificationResponse
+from app.features.snapshot.records import document_hash_change
 from app.infrastructure.observability.logging_setup import log
 from app.infrastructure.security.dependencies import AuthenticatedUser
 from app.shared.errors.exceptions import (
@@ -178,6 +179,20 @@ class TamperReports:
             )
             for c in verdict.metadata_changes
         )
+        hash_change = (
+            document_hash_change(document, verdict.onchain_hash)
+            if verdict.onchain_hash is not None
+            else None
+        )
+        if hash_change is not None:
+            changes.append(
+                TamperChange(
+                    kind="document",
+                    field=hash_change.field,
+                    genuine=hash_change.anchored,
+                    current=hash_change.current,
+                )
+            )
         snapshot = await self.snapshot_repo.get_by_document_id(document.id)
         if snapshot is not None and verdict.onchain_hash is not None:
             changes.extend(

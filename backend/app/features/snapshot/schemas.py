@@ -90,7 +90,7 @@ class LiveFileReport(BaseModel):
     )
 
 
-RecordKind = Literal["metadata", "snapshot", "lifecycle"]
+RecordKind = Literal["metadata", "snapshot", "lifecycle", "document"]
 
 
 class RecordFinding(RecordChange):
