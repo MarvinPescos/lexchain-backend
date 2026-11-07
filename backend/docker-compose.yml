@@ -105,6 +105,8 @@ services:
     container_name: lexchain-celery-backups
     command: celery -A app.celery_app worker -Q backups -c 1 --loglevel=info
     volumes:
+      # The owner key watch reads the contract ABI from here.
+      - ../blockchain:/app/blockchain:ro
       - .:/app
     env_file: .env
     environment:
