@@ -31,6 +31,7 @@ Recovery depends on detection. RDS recovery reaches back up to 35 days and hourl
 | Anchor replaced with the owner key (C2) | Scheduled watch of the key's events; `anchor_corrected` on verify | Manual, using the previous hash in the alert | Detected, not fixed: the key can still do it. Alert validated on a throwaway anchor (#55); `anchor_corrected` on a real document not exercised |
 | Database wiped | Obvious from the outage | RDS (about 5 minutes lost) or dumps (up to 1 hour lost) | Validated. A dump doesn't restore `auth.identities`; email sign-in still works |
 | Single row deleted | Reconcile job | DB backup | Detection validated; restore validated through RDS |
+| Any document row deleted, finalized or not | Delete trigger, then the hourly ID list, then stored files with no row | Saved copy through Tamper Reports; DB backup if the trigger was off | Covered by tests; not yet run on the real stack |
 | Metadata | Verify and the scheduled check, against the `{document_id}:metadata` anchor | Restore, from the archived JSON | Validated (#55). The 3 documents left out of the re-anchor have no anchor |
 | OCR text, chunks, insights | Not detected | Regenerate from the verified PDF; review edits need a DB backup | Accepted limitation |
 | Audit and verification history | Not detected | DB backup, if noticed in time | Accepted limitation |
@@ -63,5 +64,8 @@ Already out of scope in the backup plan:
 
 - Tampering by the firm itself
 - Compromise of the owner's AWS admin credentials or owner wallet
+- Edits to an unfinalized document. Drafts are meant to change, so nothing says which value is genuine
+- A deleted unfinalized document whose PDF is deleted too. Only finalized PDFs are archived, so the row can come back without the file
+- Someone with full database access can turn the delete trigger off. The ID list and the stored-file check still find the deletion, but a document made and deleted between lists, with its file also deleted, leaves no trace
 - Tampering before anchoring. A review prompt before finalize would reduce wrong files being anchored, since nothing else can tell whether the upload was the correct document
 - Verdicts while the server itself is compromised, since verify runs there

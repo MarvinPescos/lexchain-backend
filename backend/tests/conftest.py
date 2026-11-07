@@ -13,6 +13,7 @@ Google (mock sign-in + in-memory Drive).
 import io
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import UploadFile
@@ -85,6 +86,7 @@ class FakeStorage:
 
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
+        self.uploaded_at = datetime.now(timezone.utc) - timedelta(days=1)
 
     def locator(self, file_path: str) -> str:
         return self.BASE_URL + file_path
@@ -110,6 +112,18 @@ class FakeStorage:
 
     async def delete_path(self, file_path: str) -> bool:
         return self.objects.pop(self.BASE_URL + file_path, None) is not None
+
+    def _paths(self) -> list[list[str]]:
+        return [u.removeprefix(self.BASE_URL).split("/") for u in self.objects]
+
+    async def list_document_folders(self) -> list[tuple[str, str]]:
+        return sorted(
+            {(p[0], p[2]) for p in self._paths() if len(p) == 4 and p[1] == "documents"}
+        )
+
+    async def latest_upload(self, owner: str, document_id: str) -> datetime | None:
+        found = any(p[0] == owner and p[2] == document_id for p in self._paths())
+        return self.uploaded_at if found else None
 
 
 class RecordingQueue:
@@ -168,7 +182,7 @@ class FakeChain:
 @pytest.fixture
 def storage(monkeypatch: pytest.MonkeyPatch) -> FakeStorage:
     fake = FakeStorage()
-    for module in ("intake", "finalization", "restoration", "ecopy"):
+    for module in ("intake", "finalization", "restoration", "recovery", "ecopy"):
         monkeypatch.setattr(
             f"app.features.documents.workflow.{module}.get_storage_client", lambda: fake
         )

@@ -73,6 +73,10 @@ celery_app.conf.update(
             "task": "document.retry_metadata_anchors",
             "schedule": settings.METADATA_ANCHOR_RETRY_SECONDS,
         },
+        "watch-deletions": {
+            "task": "backup.watch_deletions",
+            "schedule": settings.DELETION_WATCH_SECONDS,
+        },
         "watch-owner-events": {
             "task": "chain.watch_owner_events",
             "schedule": settings.CHAIN_OWNER_WATCH_SECONDS,

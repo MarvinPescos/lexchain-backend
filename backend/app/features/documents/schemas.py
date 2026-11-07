@@ -479,8 +479,11 @@ class RestoreResponse(BaseModel):
 class TamperChange(BaseModel):
     """One thing found wrong with a document."""
 
-    kind: Literal["file", "metadata", "snapshot", "lifecycle"]
-    field: str = Field(..., description="`file` for the PDF, else the changed value")
+    kind: Literal["file", "metadata", "snapshot", "lifecycle", "deleted"]
+    field: str = Field(
+        ...,
+        description="`file` for the PDF, `document` for a deleted one, else the changed value",
+    )
     genuine: str | int | None = Field(
         None, description="What it should be; null if nothing proves it"
     )
@@ -495,10 +498,14 @@ class TamperReportItem(BaseModel):
     document_id: uuid.UUID
     file_name: str | None = None
     detected_at: datetime = Field(..., description="When it was first seen")
-    status: str = Field(..., description="The PDF's verdict, as on /verify")
+    status: str = Field(
+        ..., description="The PDF's verdict, as on /verify, or `DELETED`"
+    )
     changes: list[TamperChange] = Field(default_factory=list)
     restorable: bool = Field(..., description="Whether Restore can fix it now")
-    blocked_reason: Literal["archive_missing", "metadata_unreadable", "check_unavailable"] | None = Field(
+    blocked_reason: Literal[
+        "archive_missing", "metadata_unreadable", "check_unavailable", "backup_needed"
+    ] | None = Field(
         None, description="Why not, when `restorable` is false"
     )
 
@@ -506,6 +513,22 @@ class TamperReportItem(BaseModel):
 class TamperReportListResponse(BaseModel):
     total: int
     reports: list[TamperReportItem] = Field(default_factory=list)
+
+
+class RecoverResponse(BaseModel):
+    """A deleted document put back from the copy its delete left behind."""
+
+    document_id: uuid.UUID
+    file_name: str | None = None
+    file_present: bool | None = Field(
+        ...,
+        description=(
+            "Whether the PDF is still in storage; false if the row came back "
+            "without it, null if there's no PDF on record or storage couldn't "
+            "be read"
+        ),
+    )
+    recovered_at: datetime
 
 
 class RestoreFailure(BaseModel):
@@ -518,6 +541,7 @@ class RestoreAllResponse(BaseModel):
     """One document failing doesn't stop the rest."""
 
     restored: list[RestoreResponse] = Field(default_factory=list)
+    recovered: list[RecoverResponse] = Field(default_factory=list)
     failed: list[RestoreFailure] = Field(default_factory=list)
 
 

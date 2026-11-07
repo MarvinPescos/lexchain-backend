@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
@@ -195,6 +197,29 @@ class Settings(BaseSettings):
     CHAIN_EXPLORER_TX_URL: str = Field(
         default="https://sepolia.basescan.org/tx/",
         description="Prefix of a transaction link in owner key alerts",
+    )
+    DELETION_WATCH_SECONDS: int = Field(
+        default=3600, ge=60, description="How often deleted documents are looked for"
+    )
+    DELETION_ORPHAN_GRACE_SECONDS: int = Field(
+        default=3600,
+        ge=60,
+        description=(
+            "How old a stored file with no document row must be to count. An "
+            "upload stores the file before its row commits"
+        ),
+    )
+    DELETION_ORPHANS_SINCE: datetime | None = Field(
+        default=None,
+        description=(
+            "Ignore stored files older than this, so leftovers from before the "
+            "watch existed don't alert"
+        ),
+    )
+    DELETION_LEDGER_LOOKBACK_HOURS: int = Field(
+        default=72,
+        ge=1,
+        description="How far back to look for the last list of document IDs",
     )
     METADATA_ANCHOR_RETRY_SECONDS: int = Field(
         default=600,

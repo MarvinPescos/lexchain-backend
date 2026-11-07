@@ -33,6 +33,7 @@ from .extraction.router import router as extraction_router
 from .queries import DocumentQueries
 from .workflow.discussion import DocumentDiscussion
 from .schemas import (
+    RecoverResponse,
     AddPartyRequest,
     CorrectEntryRequest,
     DeclineEcopyRequest,
@@ -206,6 +207,32 @@ async def restore_all_tamper_reports(
     reports: TamperReports = Depends(get_tamper_reports),
 ) -> RestoreAllResponse:
     return await reports.restore_all(current_user)
+
+
+@router.post(
+    "/tamper-reports/{document_id}/recover",
+    tags=[TAG_FINALIZE],
+    response_model=RecoverResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Bring back a deleted document",
+    description=(
+        "Puts back a document listed with status `DELETED` and `restorable` true, "
+        "with its related rows, from the copy saved when it was deleted."
+    ),
+    responses={
+        200: {"description": "The document is back"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Forbidden — only lawyers have tamper reports"},
+        404: {"description": "No deleted document of yours with this ID"},
+        409: {"description": "No saved copy, or the copy no longer fits; use a backup"},
+    },
+)
+async def recover_deleted_document(
+    document_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(require_lawyer),
+    reports: TamperReports = Depends(get_tamper_reports),
+) -> RecoverResponse:
+    return await reports.recovery.recover(current_user, document_id)
 
 
 # ── E-copy requests: queues ─────────────────────────────────────────

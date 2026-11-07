@@ -16,7 +16,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infrastructure.database import Base, TimestampMixin, UserOwned
@@ -579,3 +579,52 @@ class EcopyEvent(Base):
     )
 
     request: Mapped["EcopyRequest"] = relationship(back_populates="events")
+
+
+class DeletedDocument(Base):
+    """A document that vanished, and what was saved of it.
+
+    The app has no way to delete a document, so a row here is an attack or a
+    mistake. `capture_deleted_document`, a trigger on `documents`, writes these
+    with `document` and `related` filled in, so the document can be put back.
+    The scheduled watch adds a row with neither when it finds a deletion the
+    trigger missed, because the trigger can be turned off.
+
+    No foreign keys: this has to outlive what it describes.
+    """
+
+    __tablename__ = "deleted_documents"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    # The `documents` row, and its child rows by table name.
+    document: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    related: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # True when the row went with its user or book, not on its own.
+    cascaded: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # The database role that ran the delete. Null when the watch found it.
+    deleted_by: Mapped[str | None] = mapped_column(String(63), nullable=True)
+    deleted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.clock_timestamp(),
+        default=func.clock_timestamp(),
+    )
+    alerted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Set once the document is back, by a recover or by a database restore.
+    recovered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
