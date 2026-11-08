@@ -84,7 +84,7 @@ def _break_chain(monkeypatch, chain) -> None:
 
 
 def _metadata_objects(backup) -> dict[str, bytes]:
-    return {k: v for k, v in backup.objects.items() if k.endswith(".json")}
+    return {k: v for k, v in backup.objects.items() if "/metadata-" in k}
 
 
 # === Freeze and anchor ===
@@ -473,7 +473,7 @@ async def test_chain_outage_produces_no_alert_and_no_finding(
 
     report = await archive.verify()
 
-    assert report.records.unavailable == 1
+    assert report.records.unavailable == 2
     assert report.records.problems == []
     assert await _notifications(session, NotificationType.RECORD_ALTERED) == []
     assert await _notifications(session, NotificationType.ARCHIVE_PROBLEM) == []

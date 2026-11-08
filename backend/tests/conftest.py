@@ -174,7 +174,7 @@ class FakeChain:
     async def get_document_hash(
         self, document_id: str, retry_empty: bool = True
     ) -> ChainRecord | None:
-        if not document_id.endswith(":metadata"):
+        if not document_id.endswith((":metadata", ":analysis")):
             self.retry_empty_reads.append(retry_empty)
         return self.records.get(document_id)
 

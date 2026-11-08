@@ -90,7 +90,7 @@ class LiveFileReport(BaseModel):
     )
 
 
-RecordKind = Literal["metadata", "snapshot", "lifecycle", "document"]
+RecordKind = Literal["metadata", "analysis", "snapshot", "lifecycle", "document"]
 
 
 class RecordFinding(RecordChange):
@@ -99,10 +99,13 @@ class RecordFinding(RecordChange):
 
 
 class RecordReport(BaseModel):
+    """Counted per record: each document has its metadata record (with the
+    snapshot and lifecycle) and its analysis record."""
+
     checked: int
     ok: int
     altered: int
-    not_anchored: int = Field(..., description="Finalized with no metadata anchor")
+    not_anchored: int = Field(..., description="Finalized with no anchor for the record")
     unavailable: int = Field(..., description="Unknown: the chain or archive wasn't read")
     problems: list[RecordFinding] = Field(
         default_factory=list, description="Every altered value"
@@ -127,5 +130,7 @@ class BackupVerificationResponse(BaseModel):
     )
     records: RecordReport = Field(
         ...,
-        description="Each document's metadata, snapshot and lifecycle against the chain",
+        description=(
+            "Each document's metadata, analysis, snapshot and lifecycle against the chain"
+        ),
     )

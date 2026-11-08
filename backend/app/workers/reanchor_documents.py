@@ -6,9 +6,15 @@ snapshot and the old contract's hash all agree; the rest are listed for a person
 to review. Each one re-anchored also gets its metadata record, which is built
 from the row as it stands now: nothing earlier exists to check it against.
 
+`--analysis` instead freezes the analysis record (approved text, chunks and
+insight) of documents finalized on the current contract before it existed. It is
+built from the rows as they stand, so each document's insight is listed for a
+person to review before it is frozen.
+
 Dry run by default:
 
     python -m app.workers.reanchor_documents --old-contract 0x... [--apply]
+    python -m app.workers.reanchor_documents --analysis [--apply]
 """
 
 import argparse
@@ -22,6 +28,8 @@ from app.features.snapshot.backups import SnapshotArchive
 from app.features.snapshot.models import DocumentSnapshot
 from app.features.snapshot.repository import DocumentSnaphotRepository
 from app.features.snapshot.records import (
+    analysis_anchor_id,
+    analysis_rows,
     canonical_json,
     metadata_anchor_id,
     metadata_record,
@@ -42,6 +50,8 @@ class ReanchorReport:
     ready: list[str] = field(default_factory=list)
     done: list[str] = field(default_factory=list)
     review: dict[str, str] = field(default_factory=dict)
+    # --analysis: what would be frozen, for a person to read first.
+    insights: dict[str, str] = field(default_factory=dict)
 
 
 async def _review_reason(
@@ -148,6 +158,73 @@ async def reanchor(
     return report
 
 
+def _describe_insight(rows) -> str:
+    insight = rows.insight
+    if insight is None:
+        return f"no insight; {len(rows.chunks)} chunks"
+    flags = len((insight.risk_flags or {}).get("items") or [])
+    labels = ", ".join(map(str, (insight.labels or {}).get("items") or [])) or "none"
+    return (
+        f"{insight.summary or '(no summary)'} | labels: {labels} | "
+        f"{flags} risk flag{'' if flags == 1 else 's'} | {len(rows.chunks)} chunks"
+    )
+
+
+async def reanchor_analysis(
+    session: AsyncSession,
+    chain: BlockchainProvider,
+    backup: BackupProvider,
+    *,
+    apply: bool = False,
+) -> ReanchorReport:
+    """Freeze and anchor the analysis record of each finalized document that
+    has its PDF anchor on `chain` but no analysis anchor."""
+    result = await session.execute(
+        select(DocumentSnapshot.document_id).order_by(DocumentSnapshot.created_at)
+    )
+    repo = DocumentSnaphotRepository(session)
+    report = ReanchorReport(applied=apply)
+    for snapshot_document_id in result.scalars().all():
+        document_id = str(snapshot_document_id)
+        try:
+            document = await session.get(Document, snapshot_document_id)
+            assert document is not None  # the snapshot's foreign key
+            if document.lifecycle != LIFECYCLE_FINALIZED:
+                report.review[document_id] = f"lifecycle is {document.lifecycle}"
+                continue
+            if not await chain.get_document_hash(document_id, retry_empty=False):
+                report.review[document_id] = "no anchor on the current contract"
+                continue
+            anchor_id = analysis_anchor_id(snapshot_document_id)
+            if await chain.get_document_hash(anchor_id, retry_empty=False):
+                continue
+            rows = await analysis_rows(session, snapshot_document_id)
+            report.insights[document_id] = _describe_insight(rows)
+            if not apply:
+                report.ready.append(document_id)
+                continue
+            snapshot = await repo.get_by_document_id(snapshot_document_id)
+            assert snapshot is not None
+            record = canonical_json(rows.record())
+            if not await SnapshotArchive(session, backup).archive_analysis(snapshot, record):
+                raise RuntimeError("the analysis record could not be archived")
+            await session.commit()
+            await chain.store_document_hash(anchor_id, sha256_hex(record))
+            report.done.append(document_id)
+        except Exception as e:
+            await session.rollback()
+            log.error("reanchor.analysis_failed", document_id=document_id, error=str(e))
+            report.review[document_id] = f"failed: {type(e).__name__}: {e}"
+    log.info(
+        "reanchor.analysis_done",
+        applied=apply,
+        ready=len(report.ready),
+        done=len(report.done),
+        review=len(report.review),
+    )
+    return report
+
+
 async def _main() -> None:
     import app.all_models  # noqa: F401 — registers all SQLAlchemy models
     from app.features.blockchain.dependencies import (
@@ -158,21 +235,34 @@ async def _main() -> None:
     from app.infrastructure.database import AsyncSessionLocal
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--old-contract", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--old-contract")
+    mode.add_argument(
+        "--analysis",
+        action="store_true",
+        help="Freeze the analysis record of documents finalized before it existed",
+    )
     parser.add_argument("--apply", action="store_true", help="Write to the chain")
     args = parser.parse_args()
 
     async with AsyncSessionLocal() as session:
-        report = await reanchor(
-            session,
-            get_provider_for_contract(args.old_contract),
-            get_blockchain_provider(),
-            build_backup(),
-            apply=args.apply,
-        )
+        if args.analysis:
+            report = await reanchor_analysis(
+                session, get_blockchain_provider(), build_backup(), apply=args.apply
+            )
+        else:
+            report = await reanchor(
+                session,
+                get_provider_for_contract(args.old_contract),
+                get_blockchain_provider(),
+                build_backup(),
+                apply=args.apply,
+            )
     print(f"{'Re-anchored' if args.apply else 'Would re-anchor'}:")
     for document_id in report.done or report.ready:
         print(f"  {document_id}")
+        if document_id in report.insights:
+            print(f"    {report.insights[document_id]}")
     print("Needs review:")
     for document_id, reason in report.review.items():
         print(f"  {document_id}: {reason}")

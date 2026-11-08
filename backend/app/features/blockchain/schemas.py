@@ -151,6 +151,21 @@ class DocumentVerificationResponse(BaseModel):
     metadata_changes: list[RecordChange] = Field(
         default_factory=list, description="Present only when `metadata_status` is ALTERED"
     )
+    analysis_status: MetadataStatus = Field(
+        "NOT_ANCHORED",
+        description=(
+            "The same as `metadata_status`, for the approved text, chunks and "
+            "insight frozen at finalize"
+        ),
+    )
+    analysis_changes: list[RecordChange] = Field(
+        default_factory=list,
+        description=(
+            "Present only when `analysis_status` is ALTERED. Fields name the part, "
+            "such as `approved_text`, `chunks[3].text` or `insight.risk_flags`; "
+            "long text is an excerpt around the change"
+        ),
+    )
     anchor_corrected: bool | None = Field(
         None,
         description=(
@@ -163,7 +178,7 @@ class DocumentVerificationResponse(BaseModel):
         False,
         description=(
             "Whether something is wrong that POST /restore repairs: the file, the "
-            "metadata, the snapshot row or the lifecycle"
+            "metadata, the analysis, the snapshot row or the lifecycle"
         ),
     )
 

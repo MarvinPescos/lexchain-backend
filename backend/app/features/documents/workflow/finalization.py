@@ -3,10 +3,10 @@
 Allowed only once the signed copy has been processed (COMPLETED), so the
 lawyer has seen its risk clauses while it could still be replaced. Freeze the
 current signed copy, archive it (read back and checked), and anchor the
-SHA-256 of its bytes on-chain. The metadata record is archived the same way and
-anchored last: the PDF anchor is the point of no return, so a failed metadata
-anchor leaves the document finalized for the scheduled retry. With no archive
-there is no metadata anchor either. Nothing is queued: processing already ran.
+SHA-256 of its bytes on-chain. The metadata and analysis records are archived
+the same way and anchored last: the PDF anchor is the point of no return, so a
+failed record anchor leaves the document finalized for the scheduled retry. With
+no archive there are no record anchors either. Nothing is queued: processing already ran.
 Moves to an `attestation/` feature once chain anchoring becomes its own
 background job.
 """
@@ -19,6 +19,8 @@ from app.features.blockchain.schemas import RecordResponse
 from app.features.snapshot import DocumentSnapshotService
 from app.features.snapshot.backups import SnapshotArchive
 from app.features.snapshot.records import (
+    analysis_anchor_id,
+    analysis_rows,
     canonical_json,
     metadata_anchor_id,
     metadata_record,
@@ -95,9 +97,9 @@ class DocumentFinalization:
     ) -> RecordResponse:
         """Freeze the signed copy and anchor it. Refused until processing is COMPLETED.
 
-        What is anchored is the SHA-256 of the final PDF bytes. OCR text,
-        review edits and insights were built before this and never feed the
-        chain.
+        What is anchored as the document is the SHA-256 of the final PDF bytes.
+        The approved text, chunks and insight are frozen beside it as the
+        analysis record: processing is complete, so all of it exists now.
         """
         user_id = user.user_id
         document = await self.access.authorize(user, document_id, ACTION_FINALIZE)
@@ -135,6 +137,7 @@ class DocumentFinalization:
         document.finalized_by = user_id
         document.finalized_at = datetime.now(timezone.utc)
         metadata: bytes | None = None
+        analysis: bytes | None = None
         if self.archive:
             snapshot = await self.snapshot_repo.get_by_document_id(document_id)
             assert snapshot is not None
@@ -150,6 +153,13 @@ class DocumentFinalization:
                 raise ServiceUnavailableError(
                     "The finalized record could not be archived. Try finalizing again."
                 )
+            analysis = canonical_json(
+                (await analysis_rows(self.session, document_id)).record()
+            )
+            if not await self.archive.archive_analysis(snapshot, analysis):
+                raise ServiceUnavailableError(
+                    "The document's analysis could not be archived. Try finalizing again."
+                )
         record = await self.blockchain_service.record_document(document, file_sha256)
 
         change = lifecycle.transition(ACTION_FINALIZE, document, user_id)
@@ -157,7 +167,9 @@ class DocumentFinalization:
         await self.session.commit()
 
         if metadata is not None:
-            await self._anchor_metadata(document_id, metadata)
+            await self._anchor_record(metadata_anchor_id(document_id), metadata)
+        if analysis is not None:
+            await self._anchor_record(analysis_anchor_id(document_id), analysis)
 
         from app.celery_tasks import handle_document_recorded
 
@@ -177,15 +189,13 @@ class DocumentFinalization:
         )
         return record
 
-    async def _anchor_metadata(self, document_id: uuid.UUID, metadata: bytes) -> None:
+    async def _anchor_record(self, anchor_id: str, record: bytes) -> None:
         """Never undoes finalize: `retry-metadata-anchors` picks up a failure."""
         try:
-            await self.provider.store_document_hash(
-                metadata_anchor_id(document_id), sha256_hex(metadata)
-            )
+            await self.provider.store_document_hash(anchor_id, sha256_hex(record))
         except Exception as e:
             log.error(
-                "document.finalize.metadata_anchor_failed",
-                document_id=str(document_id),
+                "document.finalize.record_anchor_failed",
+                anchor_id=anchor_id,
                 error=f"{type(e).__name__}: {e}",
             )

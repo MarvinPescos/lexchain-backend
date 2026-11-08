@@ -245,7 +245,7 @@ class CorrectEntryRequest(BaseModel):
 class RestoredValue(BaseModel):
     """One database value a restore put back."""
 
-    record: Literal["lifecycle", "document", "snapshot", "metadata"]
+    record: Literal["lifecycle", "document", "snapshot", "metadata", "analysis"]
     field: str
     old: str | int | None
     new: str | int | None
@@ -479,7 +479,9 @@ class RestoreResponse(BaseModel):
 class TamperChange(BaseModel):
     """One thing found wrong with a document."""
 
-    kind: Literal["file", "metadata", "snapshot", "lifecycle", "document", "deleted"]
+    kind: Literal[
+        "file", "metadata", "analysis", "snapshot", "lifecycle", "document", "deleted"
+    ]
     field: str = Field(
         ...,
         description="`file` for the PDF, `document` for a deleted one, else the changed value",
@@ -504,7 +506,11 @@ class TamperReportItem(BaseModel):
     changes: list[TamperChange] = Field(default_factory=list)
     restorable: bool = Field(..., description="Whether Restore can fix it now")
     blocked_reason: Literal[
-        "archive_missing", "metadata_unreadable", "check_unavailable", "backup_needed"
+        "archive_missing",
+        "metadata_unreadable",
+        "analysis_unreadable",
+        "check_unavailable",
+        "backup_needed",
     ] | None = Field(
         None, description="Why not, when `restorable` is false"
     )

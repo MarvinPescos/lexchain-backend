@@ -7,6 +7,10 @@ a restore nor choose what is restored. The file found in place of the original,
 if any, is kept as its own signed copy. Nothing is re-anchored: the original
 chain records are what the document verifies against. It stays a person's click,
 never automatic.
+
+Restored chunks have no embedding until `document.reembed_chunks` runs, queued
+after the commit. Until then they are missing from vector search, which beats
+searching tampered text.
 """
 
 import hashlib
@@ -17,11 +21,17 @@ from typing import Any
 import httpx
 from storage3.utils import StorageException
 
+from app.features.chunks.models import DocumentChunk
+from app.features.documents.extraction.models import DocumentExtraction
 from app.features.documents.schemas import RestoredValue, RestoreResponse
+from app.features.insights.models import DocumentInsight
 from app.features.snapshot.models import DocumentSnapshot
 from app.features.snapshot.records import (
+    CHUNK_FIELDS,
+    INSIGHT_FIELDS,
     MetadataCheck,
     RecordCheck,
+    analysis_rows,
     archive_key,
     document_hash_change,
 )
@@ -77,7 +87,7 @@ class DocumentRestoration:
     async def restore(
         self, user: AuthenticatedUser, document_id: uuid.UUID
     ) -> RestoreResponse:
-        """Repair the lifecycle, snapshot, file and metadata, in that order.
+        """Repair the lifecycle, snapshot, file, metadata and analysis, in that order.
 
         Every refusal happens before anything is written, and the repairs commit
         together. With nothing wrong, answers `restored=False`.
@@ -111,6 +121,9 @@ class DocumentRestoration:
         metadata = await self.records.metadata(document)
         if metadata.status == "UNAVAILABLE":
             self._refuse_metadata(metadata)
+        analysis = await self.records.analysis(document)
+        if analysis.status == "UNAVAILABLE":
+            self._refuse_metadata(analysis, "analysis")
 
         snapshot_edited = snapshot.file_sha256 != onchain_hash
         original = await self._restore_source(
@@ -127,6 +140,7 @@ class DocumentRestoration:
             or hash_change
             or snapshot_changes
             or metadata.changes
+            or analysis.changes
         ):
             assert verdict.current_hash is not None
             assert document.signed_copy_id is not None
@@ -204,6 +218,7 @@ class DocumentRestoration:
                 change.from_hash = previous_hash
                 change.to_hash = onchain_hash
             await self._repair_metadata(document, metadata, repaired)
+            reembed = await self._repair_analysis(document, analysis, repaired)
             change.changes = [r.model_dump() for r in repaired] or None
             await self.repo.add(change)
             await self.session.refresh(change, ["created_at"])
@@ -240,6 +255,8 @@ class DocumentRestoration:
                 ) from e
             raise
 
+        if reembed:
+            self._queue_reembed(document_id)
         log.info(
             "document.restore",
             user_id=str(user.user_id),
@@ -279,21 +296,126 @@ class DocumentRestoration:
             return None
 
     @staticmethod
-    def _refuse_metadata(metadata: MetadataCheck) -> None:
+    def _refuse_metadata(check: MetadataCheck, record: str = "record") -> None:
         """An unproven record is never written, and it can't be told to be fine."""
-        if metadata.problem == "archive_mismatch":
+        if check.problem == "archive_mismatch":
             raise ConflictError(
-                "The archived record does not match the hash anchored on-chain.",
+                f"The archived {record} does not match the hash anchored on-chain.",
                 details={"reason": "BACKUP_MISMATCH"},
             )
-        if metadata.problem == "archive_missing":
+        if check.problem == "archive_missing":
             raise ConflictError(
-                "The archived record is missing, so this document cannot be restored.",
+                f"The archived {record} is missing, so this document cannot be restored.",
                 details={"reason": "NO_BACKUP"},
             )
         raise ServiceUnavailableError(
-            "The chain or the archived record could not be read. Try restoring again."
+            f"The chain or the archived {record} could not be read. Try restoring again."
         )
+
+    async def _repair_analysis(
+        self,
+        document: Document,
+        analysis: MetadataCheck,
+        repaired: list[RestoredValue],
+    ) -> bool:
+        """Write the archived approved text, chunks and insight back. Returns
+        whether any chunk was rewritten and so needs a new embedding."""
+        if not analysis.changes:
+            return False
+        anchored = analysis.anchored
+        assert anchored is not None  # ALTERED is only judged against the archive
+        rows = await analysis_rows(self.session, document.id)
+        extraction = rows.extraction
+        approved = anchored["approved_text"]
+        if extraction is None and (approved is not None or anchored["chunks"]):
+            # Chunks hang off an extraction. The raw OCR isn't archived.
+            extraction = DocumentExtraction(
+                document_id=document.id,
+                engine="restored",
+                text="",
+                page_count=0,
+                meta={"restored_from": "analysis archive"},
+            )
+            self.session.add(extraction)
+            await self.session.flush()
+        if extraction is not None:
+            if extraction.approved_text != approved:
+                # The raw OCR is never rewritten: it is what the machine read.
+                unreviewed = anchored["reviewed_at"] is None and extraction.text == approved
+                extraction.reviewed_text = None if unreviewed else approved
+            reviewer = anchored["reviewed_by"]
+            extraction.reviewed_by = (
+                uuid.UUID(reviewer)
+                if reviewer and await self.session.get(User, uuid.UUID(reviewer))
+                else None
+            )
+            extraction.reviewed_at = (
+                datetime.fromisoformat(anchored["reviewed_at"])
+                if anchored["reviewed_at"]
+                else None
+            )
+
+        reembed = False
+        live_chunks = {c.chunk_index: c for c in rows.chunks}
+        for frozen in anchored["chunks"]:
+            chunk = live_chunks.pop(frozen["chunk_index"], None)
+            if chunk is not None and all(
+                getattr(chunk, f) == frozen[f] for f in CHUNK_FIELDS
+            ):
+                continue
+            if chunk is None:
+                assert extraction is not None
+                chunk = DocumentChunk(
+                    document_id=document.id,
+                    extraction_id=extraction.id,
+                    chunk_index=frozen["chunk_index"],
+                )
+                self.session.add(chunk)
+            for f in CHUNK_FIELDS:
+                setattr(chunk, f, frozen[f])
+            chunk.char_count = len(frozen["text"])
+            chunk.embedding = None
+            chunk.embedding_vec = None
+            reembed = True
+        for extra in live_chunks.values():
+            await self.session.delete(extra)
+
+        frozen_insight = anchored["insight"]
+        insight = rows.insight
+        if frozen_insight is None:
+            if insight is not None:
+                await self.session.delete(insight)
+        else:
+            if insight is None:
+                insight = DocumentInsight(
+                    document_id=document.id,
+                    extraction_id=extraction.id if extraction else None,
+                )
+                self.session.add(insight)
+            for f in INSIGHT_FIELDS:
+                setattr(insight, f, frozen_insight[f])
+
+        repaired.extend(
+            RestoredValue(
+                record="analysis", field=c.field, old=c.current, new=c.anchored
+            )
+            for c in analysis.changes
+        )
+        return reembed
+
+    @staticmethod
+    def _queue_reembed(document_id: uuid.UUID) -> None:
+        """A broker outage leaves the restore done: the chunks wait for the next run."""
+        from app.celery_tasks.documents import reembed_chunks_task
+
+        try:
+            reembed_chunks_task.delay()
+        except Exception as e:
+            log.error(
+                "document.restore.reembed_not_queued",
+                document_id=str(document_id),
+                error=f"{type(e).__name__}: {e}",
+            )
 
     async def _repair_snapshot(
         self,

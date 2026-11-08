@@ -11,7 +11,7 @@ is reused if it checks out and never overwritten if it doesn't.
 `verify` also checks each document's live signed copy against the chain, so a
 document nobody opens is still covered. A mismatch is recorded and alerted once
 per tampered file; a read failure is unknown and neither. The same pass checks
-the metadata, snapshot and lifecycle (see `records`), and alerts on a lost or
+the metadata, analysis, snapshot and lifecycle (see `records`), and alerts on a lost or
 bad archive, because nobody otherwise learns of it until they need it.
 """
 
@@ -53,6 +53,8 @@ from .records import (
     document_hash_change,
     MetadataCheck,
     RecordCheck,
+    analysis_anchor_id,
+    analysis_key,
     archive_key,
     metadata_anchor_id,
     metadata_key,
@@ -116,6 +118,19 @@ _METADATA_ARCHIVE_ALERTS: dict[str, tuple[str, str]] = {
         "The archived metadata record of {file_name} no longer matches its anchor.",
     ),
 }
+_ANALYSIS_ARCHIVE_ALERTS: dict[str, tuple[str, str]] = {
+    "archive_missing": (
+        "Recovery copy of the analysis missing",
+        "The archived analysis record of {file_name} is gone.",
+    ),
+    "archive_mismatch": (
+        "Recovery copy of the analysis damaged",
+        "The archived analysis record of {file_name} no longer matches its anchor.",
+    ),
+}
+# Each document holds two anchored records, counted apart so one record's
+# outcome never hides the other's.
+RECORDS_PER_DOCUMENT = 2
 _ARCHIVE_ALERT_ADVICE = " Restore won't work for this document until the archive is back."
 
 
@@ -181,67 +196,107 @@ class SnapshotArchive:
         """Store the canonical metadata record beside the PDF, then read it back
         and check it. Its name is its hash, so it is never overwritten.
         """
-        record_hash = sha256_hex(record)
-        key = metadata_key(snapshot.document_id, record_hash)
+        record_hash = await self._archive_record(
+            "metadata", snapshot, record, metadata_key(snapshot.document_id, sha256_hex(record))
+        )
+        if record_hash is None:
+            return False
+        snapshot.metadata_sha256 = record_hash
+        return True
+
+    async def archive_analysis(self, snapshot: DocumentSnapshot, record: bytes) -> bool:
+        """The same for the analysis record."""
+        record_hash = await self._archive_record(
+            "analysis", snapshot, record, analysis_key(snapshot.document_id, sha256_hex(record))
+        )
+        if record_hash is None:
+            return False
+        snapshot.analysis_sha256 = record_hash
+        return True
+
+    async def _archive_record(
+        self, name: str, snapshot: DocumentSnapshot, record: bytes, key: str
+    ) -> str | None:
+        """The record's hash once it is stored and reads back intact."""
         try:
             if not await self.backup.exists(key):
                 await self.backup.store(key, record, "application/json")
             stored = await self.backup.fetch(key)
         except Exception as e:
             log.error(
-                "backup.archive.metadata_failed",
+                f"backup.archive.{name}_failed",
                 document_id=str(snapshot.document_id),
                 key=key,
                 error=str(e),
             )
-            return False
+            return None
         if stored != record:
             log.error(
-                "backup.archive.metadata_readback_mismatch",
+                f"backup.archive.{name}_readback_mismatch",
                 document_id=str(snapshot.document_id),
                 key=key,
             )
-            return False
-        snapshot.metadata_sha256 = record_hash
-        return True
+            return None
+        return sha256_hex(record)
 
     async def anchor_pending_metadata(self) -> int:
-        """Anchor archived metadata records finalize couldn't. Returns how many.
+        """Anchor archived metadata and analysis records finalize couldn't.
+        Returns how many.
 
-        The hash comes from the archived JSON, never the live row, which may
+        The hash comes from the archived JSON, never the live rows, which may
         have changed since. One document's failure doesn't stop the rest.
         """
         assert self.chain is not None
         result = await self.session.execute(
             select(DocumentSnapshot)
-            .where(DocumentSnapshot.metadata_sha256.is_not(None))
+            .where(
+                DocumentSnapshot.metadata_sha256.is_not(None)
+                | DocumentSnapshot.analysis_sha256.is_not(None)
+            )
             .order_by(DocumentSnapshot.created_at)
         )
         anchored = 0
         for snapshot in result.scalars().all():
-            try:
-                anchored += await self._anchor_metadata(snapshot)
-            except Exception as e:
-                log.error(
-                    "backup.metadata_anchor.failed",
-                    document_id=str(snapshot.document_id),
-                    error=str(e),
-                )
+            for anchor_id, key, record_hash in (
+                (
+                    metadata_anchor_id(snapshot.document_id),
+                    metadata_key,
+                    snapshot.metadata_sha256,
+                ),
+                (
+                    analysis_anchor_id(snapshot.document_id),
+                    analysis_key,
+                    snapshot.analysis_sha256,
+                ),
+            ):
+                if record_hash is None:
+                    continue
+                try:
+                    anchored += await self._anchor_record(
+                        snapshot, anchor_id, key(snapshot.document_id, record_hash), record_hash
+                    )
+                except Exception as e:
+                    log.error(
+                        "backup.metadata_anchor.failed",
+                        document_id=str(snapshot.document_id),
+                        anchor_id=anchor_id,
+                        error=str(e),
+                    )
         return anchored
 
-    async def _anchor_metadata(self, snapshot: DocumentSnapshot) -> bool:
-        assert self.chain is not None and snapshot.metadata_sha256 is not None
-        anchor_id = metadata_anchor_id(snapshot.document_id)
-        if await self._metadata_anchored(anchor_id, snapshot.metadata_sha256):
+    async def _anchor_record(
+        self, snapshot: DocumentSnapshot, anchor_id: str, key: str, record_hash: str
+    ) -> bool:
+        assert self.chain is not None
+        if await self._metadata_anchored(anchor_id, record_hash):
             return False
-        data = await self.backup.fetch(
-            metadata_key(snapshot.document_id, snapshot.metadata_sha256)
-        )
+        data = await self.backup.fetch(key)
         data_hash = sha256_hex(data)
-        if data_hash != snapshot.metadata_sha256:
+        if data_hash != record_hash:
             log.error(
                 "backup.metadata_anchor.archive_mismatch",
                 document_id=str(snapshot.document_id),
+                anchor_id=anchor_id,
             )
             return False
         try:
@@ -252,7 +307,11 @@ class SnapshotArchive:
             if not await self._metadata_anchored(anchor_id, data_hash):
                 raise
             return False
-        log.info("backup.metadata_anchor.done", document_id=str(snapshot.document_id))
+        log.info(
+            "backup.metadata_anchor.done",
+            document_id=str(snapshot.document_id),
+            anchor_id=anchor_id,
+        )
         return True
 
     async def _metadata_anchored(self, anchor_id: str, expected: str) -> bool:
@@ -307,16 +366,26 @@ class SnapshotArchive:
                     LiveFileCheck(document_id=snapshot.document_id, status=live_status)
                 )
             if onchain_hash is None or self.records is None:
-                record_counts["unavailable"] += 1
+                record_counts["unavailable"] += RECORDS_PER_DOCUMENT
                 continue
             document = await self.session.get(Document, snapshot.document_id)
             assert document is not None  # the snapshot's foreign key
             metadata = await self.records.metadata(document, check_archive=True)
+            analysis = await self.records.analysis(document, check_archive=True)
             findings = await self._record_findings(
-                document, snapshot, onchain_hash, archived, metadata
+                document, snapshot, onchain_hash, archived, metadata, analysis
             )
             record_problems += findings
-            record_counts[self._record_outcome(findings, metadata)] += 1
+            record_counts[
+                self._record_outcome(
+                    [f for f in findings if f.kind != "analysis"], metadata
+                )
+            ] += 1
+            record_counts[
+                self._record_outcome(
+                    [f for f in findings if f.kind == "analysis"], analysis
+                )
+            ] += 1
             recipient = await self._recipient(document, metadata)
             await self._alert_records(
                 document,
@@ -330,6 +399,10 @@ class SnapshotArchive:
             for finding, alert in (
                 (status, _ARCHIVE_ALERTS.get(status)),
                 (metadata.problem, _METADATA_ARCHIVE_ALERTS.get(metadata.problem or "")),
+                (
+                    f"analysis_{analysis.problem}",
+                    _ANALYSIS_ARCHIVE_ALERTS.get(analysis.problem or ""),
+                ),
             ):
                 if alert is not None:
                     email = await self._alert_archive(
@@ -354,7 +427,7 @@ class SnapshotArchive:
             problems=live_problems,
         )
         records = RecordReport(
-            checked=len(snapshots),
+            checked=len(snapshots) * RECORDS_PER_DOCUMENT,
             ok=record_counts["ok"],
             altered=record_counts["altered"],
             not_anchored=record_counts["not_anchored"],
@@ -440,6 +513,7 @@ class SnapshotArchive:
         onchain_hash: str,
         archived: bytes | None,
         metadata: MetadataCheck,
+        analysis: MetadataCheck,
     ) -> list[RecordFinding]:
         assert self.records is not None
         changes: list[tuple[RecordKind, RecordChange]] = []
@@ -464,6 +538,7 @@ class SnapshotArchive:
             )
         ]
         changes += [("metadata", change) for change in metadata.changes]
+        changes += [("analysis", change) for change in analysis.changes]
         return [
             RecordFinding(document_id=document.id, kind=kind, **change.model_dump())
             for kind, change in changes
