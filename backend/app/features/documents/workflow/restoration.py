@@ -120,10 +120,10 @@ class DocumentRestoration:
         assert snapshot is not None  # no verdict above is reached without one
         metadata = await self.records.metadata(document)
         if metadata.status == "UNAVAILABLE":
-            self._refuse_metadata(metadata)
+            self._refuse_record(metadata)
         analysis = await self.records.analysis(document)
         if analysis.status == "UNAVAILABLE":
-            self._refuse_metadata(analysis, "analysis")
+            self._refuse_record(analysis, "analysis")
 
         snapshot_edited = snapshot.file_sha256 != onchain_hash
         original = await self._restore_source(
@@ -296,7 +296,7 @@ class DocumentRestoration:
             return None
 
     @staticmethod
-    def _refuse_metadata(check: MetadataCheck, record: str = "record") -> None:
+    def _refuse_record(check: MetadataCheck, record: str = "record") -> None:
         """An unproven record is never written, and it can't be told to be fine."""
         if check.problem == "archive_mismatch":
             raise ConflictError(

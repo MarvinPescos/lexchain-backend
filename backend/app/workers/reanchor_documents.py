@@ -28,6 +28,7 @@ from app.features.snapshot.backups import SnapshotArchive
 from app.features.snapshot.models import DocumentSnapshot
 from app.features.snapshot.repository import DocumentSnaphotRepository
 from app.features.snapshot.records import (
+    AnalysisRows,
     analysis_anchor_id,
     analysis_rows,
     canonical_json,
@@ -158,7 +159,7 @@ async def reanchor(
     return report
 
 
-def _describe_insight(rows) -> str:
+def _describe_insight(rows: AnalysisRows) -> str:
     insight = rows.insight
     if insight is None:
         return f"no insight; {len(rows.chunks)} chunks"
@@ -198,13 +199,20 @@ async def reanchor_analysis(
             anchor_id = analysis_anchor_id(snapshot_document_id)
             if await chain.get_document_hash(anchor_id, retry_empty=False):
                 continue
+            snapshot = await repo.get_by_document_id(snapshot_document_id)
+            assert snapshot is not None
+            if snapshot.analysis_sha256 is not None:
+                # Frozen at finalize: the rows may have changed since, and the
+                # scheduled retry anchors the archive instead.
+                report.review[document_id] = (
+                    "archived at finalize; retry-metadata-anchors anchors it"
+                )
+                continue
             rows = await analysis_rows(session, snapshot_document_id)
             report.insights[document_id] = _describe_insight(rows)
             if not apply:
                 report.ready.append(document_id)
                 continue
-            snapshot = await repo.get_by_document_id(snapshot_document_id)
-            assert snapshot is not None
             record = canonical_json(rows.record())
             if not await SnapshotArchive(session, backup).archive_analysis(snapshot, record):
                 raise RuntimeError("the analysis record could not be archived")

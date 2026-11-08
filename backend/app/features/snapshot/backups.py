@@ -18,6 +18,7 @@ bad archive, because nobody otherwise learns of it until they need it.
 import hashlib
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import get_args
 
@@ -196,9 +197,7 @@ class SnapshotArchive:
         """Store the canonical metadata record beside the PDF, then read it back
         and check it. Its name is its hash, so it is never overwritten.
         """
-        record_hash = await self._archive_record(
-            "metadata", snapshot, record, metadata_key(snapshot.document_id, sha256_hex(record))
-        )
+        record_hash = await self._archive_record("metadata", snapshot, record, metadata_key)
         if record_hash is None:
             return False
         snapshot.metadata_sha256 = record_hash
@@ -206,18 +205,22 @@ class SnapshotArchive:
 
     async def archive_analysis(self, snapshot: DocumentSnapshot, record: bytes) -> bool:
         """The same for the analysis record."""
-        record_hash = await self._archive_record(
-            "analysis", snapshot, record, analysis_key(snapshot.document_id, sha256_hex(record))
-        )
+        record_hash = await self._archive_record("analysis", snapshot, record, analysis_key)
         if record_hash is None:
             return False
         snapshot.analysis_sha256 = record_hash
         return True
 
     async def _archive_record(
-        self, name: str, snapshot: DocumentSnapshot, record: bytes, key: str
+        self,
+        name: str,
+        snapshot: DocumentSnapshot,
+        record: bytes,
+        key_for: Callable[[uuid.UUID, str], str],
     ) -> str | None:
         """The record's hash once it is stored and reads back intact."""
+        record_hash = sha256_hex(record)
+        key = key_for(snapshot.document_id, record_hash)
         try:
             if not await self.backup.exists(key):
                 await self.backup.store(key, record, "application/json")
@@ -237,7 +240,7 @@ class SnapshotArchive:
                 key=key,
             )
             return None
-        return sha256_hex(record)
+        return record_hash
 
     async def anchor_pending_metadata(self) -> int:
         """Anchor archived metadata and analysis records finalize couldn't.
@@ -277,7 +280,7 @@ class SnapshotArchive:
                     )
                 except Exception as e:
                     log.error(
-                        "backup.metadata_anchor.failed",
+                        "backup.record_anchor.failed",
                         document_id=str(snapshot.document_id),
                         anchor_id=anchor_id,
                         error=str(e),
@@ -288,13 +291,13 @@ class SnapshotArchive:
         self, snapshot: DocumentSnapshot, anchor_id: str, key: str, record_hash: str
     ) -> bool:
         assert self.chain is not None
-        if await self._metadata_anchored(anchor_id, record_hash):
+        if await self._record_anchored(anchor_id, record_hash):
             return False
         data = await self.backup.fetch(key)
         data_hash = sha256_hex(data)
         if data_hash != record_hash:
             log.error(
-                "backup.metadata_anchor.archive_mismatch",
+                "backup.record_anchor.archive_mismatch",
                 document_id=str(snapshot.document_id),
                 anchor_id=anchor_id,
             )
@@ -304,17 +307,17 @@ class SnapshotArchive:
         except Exception:
             # The contract refuses a second write, so an anchor from a run that
             # lost its answer lands here. It's done if it holds this hash.
-            if not await self._metadata_anchored(anchor_id, data_hash):
+            if not await self._record_anchored(anchor_id, data_hash):
                 raise
             return False
         log.info(
-            "backup.metadata_anchor.done",
+            "backup.record_anchor.done",
             document_id=str(snapshot.document_id),
             anchor_id=anchor_id,
         )
         return True
 
-    async def _metadata_anchored(self, anchor_id: str, expected: str) -> bool:
+    async def _record_anchored(self, anchor_id: str, expected: str) -> bool:
         assert self.chain is not None
         record = await self.chain.get_document_hash(anchor_id, retry_empty=False)
         return record is not None and normalise_hash(record.data_hash) == expected

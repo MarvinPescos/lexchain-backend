@@ -202,3 +202,18 @@ async def test_analysis_skips_a_document_not_anchored_on_the_current_contract(
 
     assert report.done == []
     assert "current contract" in report.review[str(document.id)]
+
+
+async def test_analysis_leaves_a_record_archived_at_finalize_to_the_retry(
+    session, without_analysis, chain, backup
+):
+    snapshot = await _snapshot(session, without_analysis)
+    snapshot.analysis_sha256 = "ab" * 32
+    await session.flush()
+
+    report = await reanchor_analysis(session, chain, backup, apply=True)
+
+    assert report.done == []
+    assert "retry" in report.review[str(without_analysis.id)]
+    assert f"{without_analysis.id}:analysis" not in chain.records
+    assert snapshot.analysis_sha256 == "ab" * 32
