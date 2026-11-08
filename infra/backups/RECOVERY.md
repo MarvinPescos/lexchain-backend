@@ -41,7 +41,9 @@ Use a **fresh Supabase project**. A local Postgres lacks Supabase's `auth` and `
    gunzip -c <dump>.sql.gz | psql "<new project session pooler URL>" 2>&1 | tee restore.log
    ```
 
-   The new project already has Supabase's own objects, so expect `already exists` errors for those. Read the rest of the log.
+   The new project already has Supabase's own objects, so expect `already exists`, `permission denied` and `must be owner` errors for those. Read the rest of the log.
+
+   `auth.identities`, `sessions` and `refresh_tokens` don't load: they come before `auth.users` and fail their foreign keys. Users sign in again, and email sign-in works without `identities`. Other providers weren't tested and would likely need those rows back.
 3. Compare table row counts with the source, and sign in with a real user.
 4. Run the chain reconcile job. Documents finalized after the dump have an archive and an anchor but no database row, and it lists them. Re-enter those from the archive.
 5. If `lifecycle`, the snapshot or the metadata was edited on a document, its Restore action repairs them with the file, from the chain and the archive. Nothing needs fixing by hand first.
@@ -53,7 +55,7 @@ Set `rds = true` in the tfvars and apply. Check that the AWS Backup service opt-
 
 Run the rest from the bastion: `aws ssm start-session --target <rds_bastion_id output>`. The RDS master password is in Secrets Manager, under `rds_master_secret_arn`.
 
-1. **Test the network first.** Private dual-stack RDS endpoints are VPC-only, and whether RDS can open an outbound IPv6 connection to Supabase hasn't been tested. The subscription in step 4 is the test. If it can't connect, buy Supabase's IPv4 add-on and give the RDS subnets a NAT gateway.
+1. **Sort out the network first.** Private dual-stack RDS can't reach Supabase's IPv6-only direct host, so the subscription in step 4 times out. For production, buy Supabase's IPv4 add-on and give the RDS subnets a NAT gateway. The validation run used a `socat` relay on the bastion instead, which is fine for a test but not for keeping.
 2. In Supabase, create the replication role and publication:
 
    ```sql
@@ -121,8 +123,8 @@ Run the rest from the bastion: `aws ssm start-session --target <rds_bastion_id o
    pg_dump --data-only --schema=public --no-owner "<restored rds url>" > public.sql
    ```
 
-   Stop the workers, truncate the app tables in Supabase, and load `public.sql` with `session_replication_role = replica`, so foreign keys don't depend on load order.
-6. The load replicates to the live copy, so it ends up matching. Delete the restored instance when done.
+   Stop the workers, truncate the app tables in Supabase, and load `public.sql` with `session_replication_role = replica`, so foreign keys don't depend on load order. Run the truncate and the load in one transaction (`psql -1 -v ON_ERROR_STOP=1`), so a failed load leaves the data as it was.
+6. The load replicates to the live copy, so it ends up matching. Delete the restored instance when done, and before any teardown: it uses the same subnet group and security group.
 7. Note the time taken and the rows lost.
 
 ## Tear down after validation
@@ -134,6 +136,7 @@ Run the rest from the bastion: `aws ssm start-session --target <rds_bastion_id o
 
    ```sql
    drop publication rds_copy;
+   grant rds_replication to current_user;
    drop owned by rds_replication;
    drop role rds_replication;
    select slot_name from pg_replication_slots;
