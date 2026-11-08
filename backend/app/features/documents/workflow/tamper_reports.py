@@ -51,7 +51,7 @@ class TamperReports:
         self.snapshot_repo = restoration.snapshot_repo
         self.findings = VerificationResultRepository(restoration.session)
         self.deletions = DeletedDocumentRepository(restoration.session)
-        self.recovery = DocumentRecovery(restoration.session)
+        self.recovery = DocumentRecovery(restoration.session, restoration.records.chain)
 
     async def list_open(self, user: AuthenticatedUser) -> TamperReportListResponse:
         reports: list[TamperReportItem] = []

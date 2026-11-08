@@ -2,22 +2,34 @@
 
 Nothing here proves the copy genuine, as the chain does for a finalized document:
 it is what the row held when it was deleted. It stays a person's click.
+
+The snapshot is the exception. Its RESTRICT means it is deleted before the
+document, so the trigger never saves it. For a document anchored on-chain it is
+rebuilt from the anchored hash instead; anything else that no longer matches is
+then a tamper finding that Restore repairs.
 """
 
 import json
 import uuid
 from datetime import datetime, timezone
 
+from app.features.snapshot.models import DocumentSnapshot
+from app.features.snapshot.records import archive_key, normalise_hash
+from app.infrastructure.blockchain import BlockchainProvider
 from app.infrastructure.clients.supabase_storage import get_storage_client
 from app.infrastructure.observability.logging_setup import log
 from app.infrastructure.security.dependencies import AuthenticatedUser
-from app.shared.errors.exceptions import ConflictError, NotFoundError
-from sqlalchemy import text
+from app.shared.errors.exceptions import (
+    ConflictError,
+    NotFoundError,
+    ServiceUnavailableError,
+)
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..constants import ACTION_RECOVER
-from ..models import DeletedDocument, DocumentStageChange
+from ..constants import ACTION_RECOVER, LIFECYCLE_FINALIZED
+from ..models import DeletedDocument, DocumentStageChange, SignedCopy
 from ..repository import DeletedDocumentRepository
 from ..schemas import RecoverResponse
 
@@ -41,8 +53,9 @@ RECOVERED_TABLES = (
 
 
 class DocumentRecovery:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, chain: BlockchainProvider) -> None:
         self.session = session
+        self.chain = chain
         self.repo = DeletedDocumentRepository(session)
 
     async def recover(
@@ -57,10 +70,15 @@ class DocumentRecovery:
                 details={"reason": "BACKUP_NEEDED"},
             )
 
+        # Read before anything is written: a document back without its
+        # snapshot can't be verified at all.
+        onchain_hash = await self._anchored_hash(deleted)
         now = datetime.now(timezone.utc)
         try:
             async with self.session.begin_nested():
                 await self._insert(deleted)
+                if onchain_hash is not None:
+                    await self._rebuild_snapshot(deleted, onchain_hash)
                 self.session.add(
                     DocumentStageChange(
                         document_id=document_id,
@@ -108,6 +126,63 @@ class DocumentRecovery:
                 "copy": deleted.document["signed_copy_id"],
                 "id": deleted.document_id,
             },
+        )
+
+    async def _anchored_hash(self, deleted: DeletedDocument) -> str | None:
+        assert deleted.document is not None
+        try:
+            record = await self.chain.get_document_hash(
+                document_id=str(deleted.document_id),
+                retry_empty=deleted.document["lifecycle"] == LIFECYCLE_FINALIZED,
+            )
+        except Exception as e:
+            log.error(
+                "document.recover.chain_unavailable",
+                document_id=str(deleted.document_id),
+                error=f"{type(e).__name__}: {e}",
+            )
+            raise ServiceUnavailableError(
+                "Could not read the chain to rebuild this document's frozen record. "
+                "Try recovering again once it is reachable."
+            ) from e
+        return normalise_hash(record.data_hash) if record is not None else None
+
+    async def _rebuild_snapshot(
+        self, deleted: DeletedDocument, onchain_hash: str
+    ) -> None:
+        """The snapshot as finalize wrote it, from the anchored hash. The copy is
+        the one claiming that hash, the current one first; failing that, the
+        current copy, which verify then reports and Restore replaces."""
+        assert deleted.document is not None
+        document_id = deleted.document_id
+        current = deleted.document["signed_copy_id"]
+        copies = await self.session.scalars(
+            select(SignedCopy)
+            .where(SignedCopy.document_id == document_id)
+            .order_by(SignedCopy.created_at.desc())
+        )
+        candidates = sorted(
+            copies.all(),
+            key=lambda c: (c.sha256 != onchain_hash, str(c.id) != current),
+        )
+        if not candidates:
+            log.error("document.recover.no_signed_copy", document_id=str(document_id))
+            return
+        copy = candidates[0]
+        self.session.add(
+            DocumentSnapshot(
+                document_id=document_id,
+                signed_copy_id=copy.id,
+                file_sha256=onchain_hash,
+                size_bytes=copy.size_bytes,
+                backup_key=archive_key(document_id, onchain_hash),
+            )
+        )
+        log.warning(
+            "document.recover.snapshot_rebuilt",
+            document_id=str(document_id),
+            signed_copy_id=str(copy.id),
+            genuine=copy.sha256 == onchain_hash,
         )
 
     async def _load(self, table: str, rows: list[dict]) -> None:

@@ -19,6 +19,7 @@ from app.features.documents.models import (
     DocumentStageChange,
 )
 from app.features.documents.workflow.deletion_watch import DeletionWatch, ledger_key
+from app.features.documents.workflow.finalization import DocumentFinalization
 from app.features.documents.workflow.recovery import RECOVERED_TABLES, DocumentRecovery
 from app.features.documents.workflow.restoration import DocumentRestoration
 from app.features.documents.workflow.tamper_reports import TamperReports
@@ -26,8 +27,14 @@ from app.features.notifications.models import Notification, NotificationType
 from app.features.users.models import User
 from app.infrastructure.database import Base
 from app.infrastructure.nlp.embeddings.base import EMBEDDING_DIM
-from app.shared.errors.exceptions import ConflictError, NotFoundError
-from tests.conftest import as_auth, pdf
+from app.features.snapshot.models import DocumentSnapshot
+from app.features.snapshot.records import archive_key
+from app.shared.errors.exceptions import (
+    ConflictError,
+    NotFoundError,
+    ServiceUnavailableError,
+)
+from tests.conftest import as_auth, mark_processed, pdf
 from tests.features.blockchain.test_tamper_report import FakeBackup
 
 MIGRATION = (
@@ -187,7 +194,7 @@ async def test_deleted_with_its_book_is_marked_cascaded(
 
 
 async def test_recover_puts_everything_back(
-    session, trigger, document_id, storage, lawyer
+    session, chain, trigger, document_id, storage, lawyer
 ):
     copy_id = await session.scalar(
         select(Document.signed_copy_id).where(Document.id == document_id)
@@ -212,7 +219,9 @@ async def test_recover_puts_everything_back(
     await session.commit()
     await delete(session, document_id)
 
-    result = await DocumentRecovery(session).recover(as_auth(lawyer), document_id)
+    result = await DocumentRecovery(session, chain).recover(
+        as_auth(lawyer), document_id
+    )
 
     assert result.file_present is True
     document = await session.get(Document, document_id)
@@ -232,36 +241,42 @@ async def test_recover_puts_everything_back(
 
 
 async def test_recover_says_when_the_pdf_is_gone_too(
-    session, trigger, document_id, storage, lawyer
+    session, chain, trigger, document_id, storage, lawyer
 ):
     await delete(session, document_id)
     storage.objects.clear()
 
-    result = await DocumentRecovery(session).recover(as_auth(lawyer), document_id)
+    result = await DocumentRecovery(session, chain).recover(
+        as_auth(lawyer), document_id
+    )
 
     assert result.file_present is False
 
 
 async def test_recovered_document_can_be_recovered_only_once(
-    session, trigger, document_id, lawyer
+    session, chain, trigger, document_id, lawyer
 ):
     await delete(session, document_id)
-    recovery = DocumentRecovery(session)
+    recovery = DocumentRecovery(session, chain)
     await recovery.recover(as_auth(lawyer), document_id)
 
     with pytest.raises(NotFoundError):
         await recovery.recover(as_auth(lawyer), document_id)
 
 
-async def test_only_the_owner_can_recover(session, trigger, document_id, other_lawyer):
+async def test_only_the_owner_can_recover(
+    session, chain, trigger, document_id, other_lawyer
+):
     await delete(session, document_id)
 
     with pytest.raises(NotFoundError):
-        await DocumentRecovery(session).recover(as_auth(other_lawyer), document_id)
+        await DocumentRecovery(session, chain).recover(
+            as_auth(other_lawyer), document_id
+        )
 
 
 async def test_recover_refuses_when_its_book_is_gone(
-    session, trigger, document_id, open_book, lawyer
+    session, chain, trigger, document_id, open_book, lawyer
 ):
     book_id = open_book.id
     await session.execute(text("DELETE FROM books WHERE id = :id"), {"id": book_id})
@@ -269,19 +284,19 @@ async def test_recover_refuses_when_its_book_is_gone(
     forget_documents(session)
 
     with pytest.raises(ConflictError) as refused:
-        await DocumentRecovery(session).recover(as_auth(lawyer), document_id)
+        await DocumentRecovery(session, chain).recover(as_auth(lawyer), document_id)
 
     assert refused.value.details["reason"] == "RECOVERY_CONFLICT"
     assert await session.get(Document, document_id) is None
 
 
 async def test_a_database_restore_closes_the_record(
-    session, trigger, watch, document_id, lawyer
+    session, chain, trigger, watch, document_id, lawyer
 ):
     await delete(session, document_id)
-    await DocumentRecovery(session).recover(as_auth(lawyer), document_id)
+    await DocumentRecovery(session, chain).recover(as_auth(lawyer), document_id)
     await delete(session, document_id)
-    await DocumentRecovery(session).recover(as_auth(lawyer), document_id)
+    await DocumentRecovery(session, chain).recover(as_auth(lawyer), document_id)
     second = (await records(session))[1]
     second.recovered_at = None
     await session.commit()
@@ -357,15 +372,130 @@ async def test_ledger_catches_a_delete_the_trigger_missed(
     assert report.blocked_reason == "backup_needed"
 
 
-async def test_recover_refuses_with_no_saved_copy(session, watch, document_id, lawyer):
+async def test_recover_refuses_with_no_saved_copy(
+    session, chain, watch, document_id, lawyer
+):
     await watch.run()
     await delete(session, document_id)
     await watch.run()
 
     with pytest.raises(ConflictError) as refused:
-        await DocumentRecovery(session).recover(as_auth(lawyer), document_id)
+        await DocumentRecovery(session, chain).recover(as_auth(lawyer), document_id)
 
     assert refused.value.details["reason"] == "BACKUP_NEEDED"
+
+
+# === A finalized document: its snapshot is rebuilt from the chain ===
+
+
+@pytest.fixture
+async def finalized(session, intake, queue, chain, backup, storage, lawyer, open_book):
+    """A finalized, archived deed; returns (document_id, stored url, anchored hash)."""
+    me = as_auth(lawyer)
+    doc = await intake.upload_signed(me, pdf("deed"), "Deed", open_book.id)
+    await mark_processed(session, doc.document_id)
+    record = await DocumentFinalization(session, chain, backup).finalize(
+        me, doc.document_id
+    )
+    [url] = storage.objects
+    return doc.document_id, url, record.data_hash
+
+
+async def delete_finalized(session, document_id):
+    """The snapshot's RESTRICT means it goes first, so the trigger never sees it."""
+    await session.execute(
+        text("DELETE FROM document_snapshots WHERE document_id = :id"),
+        {"id": document_id},
+    )
+    await delete(session, document_id)
+
+
+async def snapshot_of(session, document_id):
+    return await session.scalar(
+        select(DocumentSnapshot).where(DocumentSnapshot.document_id == document_id)
+    )
+
+
+async def test_recover_rebuilds_the_snapshot_from_the_chain(
+    session, trigger, chain, reports, finalized, lawyer
+):
+    document_id, _, anchored = finalized
+    copy_id = await session.scalar(
+        select(Document.signed_copy_id).where(Document.id == document_id)
+    )
+    await delete_finalized(session, document_id)
+
+    await DocumentRecovery(session, chain).recover(as_auth(lawyer), document_id)
+
+    snapshot = await snapshot_of(session, document_id)
+    assert snapshot is not None
+    assert snapshot.file_sha256 == anchored
+    assert snapshot.signed_copy_id == copy_id
+    assert snapshot.backup_key == archive_key(document_id, anchored)
+    verdict = await reports.verifier.verify_document(as_auth(lawyer), document_id)
+    assert verdict.status == "AUTHENTIC"
+    assert verdict.baseline_trusted is True
+    assert (await reports.list_open(as_auth(lawyer))).total == 0
+
+
+async def test_recovered_snapshot_prefers_the_current_copy_of_the_same_file(
+    session, trigger, chain, finalized, lawyer
+):
+    document_id, _, anchored = finalized
+    copy_id = await session.scalar(
+        select(Document.signed_copy_id).where(Document.id == document_id)
+    )
+    await session.execute(
+        text(
+            "INSERT INTO signed_copies (id, document_id, storage_url, sha256, "
+            "content_type, size_bytes, created_at) SELECT gen_random_uuid(), "
+            "document_id, storage_url, sha256, content_type, size_bytes, "
+            "created_at - interval '1 day' FROM signed_copies WHERE id = :id"
+        ),
+        {"id": copy_id},
+    )
+    await delete_finalized(session, document_id)
+
+    await DocumentRecovery(session, chain).recover(as_auth(lawyer), document_id)
+
+    snapshot = await snapshot_of(session, document_id)
+    assert snapshot is not None and snapshot.signed_copy_id == copy_id
+
+
+async def test_a_file_tampered_before_the_delete_is_restorable_after_recover(
+    session, trigger, chain, reports, finalized, storage, lawyer
+):
+    document_id, url, anchored = finalized
+    storage.objects[url] += b" tampered"
+    await delete_finalized(session, document_id)
+
+    await DocumentRecovery(session, chain).recover(as_auth(lawyer), document_id)
+
+    snapshot = await snapshot_of(session, document_id)
+    assert snapshot is not None and snapshot.file_sha256 == anchored
+    verdict = await reports.verifier.verify_document(as_auth(lawyer), document_id)
+    assert verdict.status == "TAMPERED"
+    restored = await reports.restoration.restore(as_auth(lawyer), document_id)
+    assert restored.verification.status == "AUTHENTIC"
+
+
+async def test_recover_waits_for_the_chain(
+    session, trigger, chain, finalized, lawyer, monkeypatch
+):
+    document_id, _, _ = finalized
+    await delete_finalized(session, document_id)
+
+    async def down(document_id, retry_empty=True):
+        raise ServiceUnavailableError("node down")
+
+    monkeypatch.setattr(chain, "get_document_hash", down)
+
+    with pytest.raises(ServiceUnavailableError):
+        await DocumentRecovery(session, chain).recover(as_auth(lawyer), document_id)
+
+    assert await session.get(Document, document_id) is None
+    [saved] = await records(session)
+    assert saved.recovered_at is None
 
 
 async def test_first_run_only_writes_the_ledger(session, watch, backup, document_id):
