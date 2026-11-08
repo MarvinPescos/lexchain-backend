@@ -14,7 +14,7 @@ from .supabase_client import build_supabase_auth_client
 TOTP_ISSUER = "LexChain"
 
 
-# Added 2026-11-08 — MFA calls made with the caller's own JWT.
+# Added 2026-11-08 19:30 PST — MFA calls made with the caller's own JWT.
 # supabase-py's public mfa.* methods read the session stored on the client, and
 # this backend never stores one: the frontend holds its tokens and sends the
 # access token per request (see build_supabase_auth_client for why a client

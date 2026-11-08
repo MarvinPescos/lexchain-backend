@@ -164,7 +164,7 @@ async def get_first_factor_user(
     )
 
 
-# Added 2026-11-08 — a password alone no longer opens a session.
+# Added 2026-11-08 19:30 PST — a password alone no longer opens a session.
 # Sign-in returns an aal1 token; only verifying a TOTP code upgrades it to
 # aal2. Checked here so every route behind require_auth / require_lawyer is
 # covered at once, the same way the is_active guard is. A token without the

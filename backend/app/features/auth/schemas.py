@@ -65,7 +65,7 @@ class SignInResponse(BaseModel):
     token_type: str = Field(default="bearer", description="Token type, always 'bearer'")
     expires_in: int = Field(..., description="Token expiration time in seconds")
     user: SignInUser = Field(..., description="The signed-in user")
-    # Added 2026-11-08 — a password sign-in is only the first step.
+    # Added 2026-11-08 19:30 PST — a password sign-in is only the first step.
     # The tokens above are aal1: every protected route answers 403 until a
     # code is verified at POST /auth/mfa/verify, which returns aal2 tokens in
     # this same shape with mfa_required=false.

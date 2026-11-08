@@ -17,6 +17,7 @@ from app.shared.errors.exceptions import (
     ForbiddenError,
     UnauthorizedError,
 )
+from gotrue.types import Factor
 from sqlalchemy.ext.asyncio import AsyncSession
 from supabase import AuthApiError, Client
 
@@ -66,10 +67,14 @@ _MFA_UNAVAILABLE = (
 )
 
 
-def _verified_totp_id(factors) -> str | None:
+def _is_totp(factor: Factor) -> bool:
+    return factor.factor_type == "totp"
+
+
+def _verified_totp_id(factors: list[Factor] | None) -> str | None:
     """The first verified TOTP factor's id, or None if there is none."""
     for factor in factors or []:
-        if factor.factor_type == "totp" and factor.status == "verified":
+        if _is_totp(factor) and factor.status == "verified":
             return factor.id
     return None
 
@@ -360,7 +365,7 @@ class AuthService:
             mfa_factor_id=_verified_totp_id(supabase_user.factors),
         )
 
-    # Added 2026-11-08 — authenticator-app MFA, held by GoTrue.
+    # Added 2026-11-08 19:30 PST — authenticator-app MFA, held by GoTrue.
     # GoTrue stores the factors, checks the codes and mints the aal2 session;
     # these methods only relay the caller's own JWT to it (see SupabaseMfa) and
     # turn its answers into this API's errors. Enforcement is not here: it is
@@ -397,7 +402,7 @@ class AuthService:
         # closed) would otherwise block the next one on GoTrue's
         # one-name-per-user rule. Unverified factors grant nothing, so they go.
         for factor in factors:
-            if factor.factor_type == "totp" and factor.status != "verified":
+            if _is_totp(factor) and factor.status != "verified":
                 try:
                     await asyncio.to_thread(
                         self.mfa.unenroll, access_token, factor.id
@@ -544,7 +549,9 @@ class AuthService:
         log.info("auth.mfa.factor_removed", email=_mask_email(user.email))
         return MessageResponse(message="Authenticator removed.")
 
-    async def _list_factors(self, access_token: str, user: AuthenticatedUser):
+    async def _list_factors(
+        self, access_token: str, user: AuthenticatedUser
+    ) -> list[Factor]:
         try:
             return await asyncio.to_thread(self.mfa.list_factors, access_token)
         except Exception as e:
