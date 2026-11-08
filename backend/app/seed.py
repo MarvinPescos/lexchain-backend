@@ -16,10 +16,10 @@ Usage (local venv):
 import asyncio
 
 import app.all_models  # noqa: F401 — registers all SQLAlchemy models
-from app.infrastructure.clients.supabase_client import get_supabase_admin
-from app.infrastructure.database.sessions import AsyncSessionLocal
 from app.features.books.repository import BookRepository
 from app.features.users.repository import UserRepository
+from app.infrastructure.clients.supabase_client import get_supabase_admin
+from app.infrastructure.database.sessions import AsyncSessionLocal
 
 # ── Seed data ────────────────────────────────────────────────────────────────
 # Admin and lawyer are one role now, so there is no separate super admin. The
@@ -126,7 +126,9 @@ async def seed() -> None:
             existing_book = await books.get_by_number_and_year(
                 lawyer.id, SEED_BOOK["book_number"], SEED_BOOK["series_year"]
             )
-            label = f"Book {SEED_BOOK['book_number']}, Series of {SEED_BOOK['series_year']}"
+            label = (
+                f"Book {SEED_BOOK['book_number']}, Series of {SEED_BOOK['series_year']}"
+            )
             print(f"  book    {label} ...", end=" ")
             if existing_book:
                 print(f"already seeded, id={existing_book.id}")
