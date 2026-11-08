@@ -118,7 +118,8 @@ class TamperReports:
         if verdict.status == VERIFY_UNAVAILABLE:
             return self._unknown(document_id, file_name, detected_at, verdict.status)
         metadata_unread = verdict.metadata_status == "UNAVAILABLE"
-        if not verdict.needs_restore and not metadata_unread:
+        analysis_unread = verdict.analysis_status == "UNAVAILABLE"
+        if not verdict.needs_restore and not (metadata_unread or analysis_unread):
             return None
 
         archived = None
@@ -132,6 +133,8 @@ class TamperReports:
         blocked = None
         if metadata_unread:
             blocked = "metadata_unreadable"
+        elif analysis_unread:
+            blocked = "analysis_unreadable"
         elif needs_archive and archived is None:
             blocked = "archive_missing"
         return TamperReportItem(
@@ -178,6 +181,12 @@ class TamperReports:
                 kind="metadata", field=c.field, genuine=c.anchored, current=c.current
             )
             for c in verdict.metadata_changes
+        )
+        changes.extend(
+            TamperChange(
+                kind="analysis", field=c.field, genuine=c.anchored, current=c.current
+            )
+            for c in verdict.analysis_changes
         )
         hash_change = (
             document_hash_change(document, verdict.onchain_hash)

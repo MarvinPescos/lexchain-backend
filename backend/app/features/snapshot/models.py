@@ -38,6 +38,8 @@ class DocumentSnapshot(Base, TimestampMixin):
     # Only locates the archived metadata record for the anchor retry. No check
     # trusts it: the hash that counts is the one on-chain.
     metadata_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The same, for the archived analysis record.
+    analysis_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # relationship
 

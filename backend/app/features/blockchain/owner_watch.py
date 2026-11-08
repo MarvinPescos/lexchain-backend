@@ -13,7 +13,7 @@ from app.core import settings
 from app.features.notifications.models import NotificationType
 from app.features.notifications.repository import NotificationRepository
 from app.features.notifications.service import NotificationService
-from app.features.snapshot.records import METADATA_ANCHOR_SUFFIX, is_metadata_anchor
+from app.features.snapshot.records import record_anchor
 from app.features.users.repository import UserRepository
 from app.infrastructure.blockchain import BlockchainProvider, OwnerEvent
 from app.infrastructure.observability.logging_setup import log
@@ -128,8 +128,7 @@ def _describe(event: OwnerEvent) -> tuple[str, str]:
     link = f"{settings.CHAIN_EXPLORER_TX_URL}0x{event.tx_hash.removeprefix('0x')}"
     if event.kind == "correction":
         anchor_id = event.document_id or ""
-        record = "metadata record" if is_metadata_anchor(anchor_id) else "PDF"
-        document_id = anchor_id.removesuffix(METADATA_ANCHOR_SUFFIX)
+        document_id, record = record_anchor(anchor_id) or (anchor_id, "PDF")
         return (
             "Anchor replaced with the owner key",
             (

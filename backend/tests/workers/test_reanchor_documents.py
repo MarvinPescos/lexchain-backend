@@ -5,9 +5,14 @@ import pytest
 from app.features.blockchain.repository import OnChainRecordRepository
 from app.features.documents.models import Document
 from app.features.documents.workflow.finalization import DocumentFinalization
-from app.features.snapshot.records import canonical_json, metadata_record, sha256_hex
+from app.features.snapshot.records import (
+    analysis_rows,
+    canonical_json,
+    metadata_record,
+    sha256_hex,
+)
 from app.features.snapshot.repository import DocumentSnaphotRepository
-from app.workers.reanchor_documents import reanchor
+from app.workers.reanchor_documents import reanchor, reanchor_analysis
 from tests.conftest import FakeChain, as_auth, mark_processed, pdf
 from tests.features.snapshot.test_backups import FakeBackup
 
@@ -132,3 +137,83 @@ async def test_a_document_already_moved_is_not_anchored_twice(
 
     assert report.done == []
     assert new_chain.records == before
+
+
+# === --analysis: documents finalized before the analysis record existed ===
+
+
+@pytest.fixture
+async def without_analysis(session, document) -> Document:
+    """Finalized on the current contract, before the analysis anchor existed."""
+    from app.features.insights.models import DocumentInsight
+
+    session.add(
+        DocumentInsight(
+            document_id=document.id,
+            engine="mock",
+            summary="A sale of a lot.",
+            risk_flags={"items": [{"clause": "Penalty"}]},
+        )
+    )
+    await session.flush()
+    return document
+
+
+async def _snapshot(session, document):
+    return await DocumentSnaphotRepository(session).get_by_document_id(document.id)
+
+
+async def test_analysis_dry_run_lists_each_insight_and_writes_nothing(
+    session, without_analysis, chain, backup
+):
+    records = dict(chain.records)
+
+    report = await reanchor_analysis(session, chain, backup)
+
+    document_id = str(without_analysis.id)
+    assert report.ready == [document_id]
+    assert "A sale of a lot." in report.insights[document_id]
+    assert "1 risk flag" in report.insights[document_id]
+    assert chain.records == records
+    assert backup.objects == {}
+
+
+async def test_analysis_apply_archives_and_anchors_the_rows_as_they_stand(
+    session, without_analysis, chain, backup
+):
+    rows = await analysis_rows(session, without_analysis.id)
+    record = canonical_json(rows.record())
+
+    report = await reanchor_analysis(session, chain, backup, apply=True)
+
+    assert report.done == [str(without_analysis.id)]
+    assert chain.records[f"{without_analysis.id}:analysis"].data_hash == sha256_hex(record)
+    assert backup.objects[f"{without_analysis.id}/analysis-{sha256_hex(record)}.json"] == record
+    assert (await _snapshot(session, without_analysis)).analysis_sha256 == sha256_hex(record)
+    assert (await reanchor_analysis(session, chain, backup, apply=True)).done == []
+
+
+async def test_analysis_skips_a_document_not_anchored_on_the_current_contract(
+    session, document, chain, backup
+):
+    del chain.records[str(document.id)]
+
+    report = await reanchor_analysis(session, chain, backup, apply=True)
+
+    assert report.done == []
+    assert "current contract" in report.review[str(document.id)]
+
+
+async def test_analysis_leaves_a_record_archived_at_finalize_to_the_retry(
+    session, without_analysis, chain, backup
+):
+    snapshot = await _snapshot(session, without_analysis)
+    snapshot.analysis_sha256 = "ab" * 32
+    await session.flush()
+
+    report = await reanchor_analysis(session, chain, backup, apply=True)
+
+    assert report.done == []
+    assert "retry" in report.review[str(without_analysis.id)]
+    assert f"{without_analysis.id}:analysis" not in chain.records
+    assert snapshot.analysis_sha256 == "ab" * 32

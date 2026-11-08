@@ -117,7 +117,11 @@ async def test_finalize_can_be_retried_after_an_archive_outage(
 
     snapshot = await DocumentSnaphotRepository(session).get_by_document_id(doc.document_id)
     assert hashlib.sha256(backup.objects[snapshot.backup_key]).hexdigest() == snapshot.file_sha256
-    assert set(chain.records) == {str(doc.document_id), f"{doc.document_id}:metadata"}
+    assert set(chain.records) == {
+        str(doc.document_id),
+        f"{doc.document_id}:metadata",
+        f"{doc.document_id}:analysis",
+    }
 
 
 async def test_retry_after_a_failed_anchor_reuses_the_archive(

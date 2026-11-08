@@ -16,6 +16,7 @@ from app.features.snapshot.models import DocumentSnapshot
 from app.features.snapshot.records import (
     document_hash_change,
     RecordCheck,
+    analysis_anchor_id,
     metadata_anchor_id,
     normalise_hash,
 )
@@ -186,6 +187,7 @@ class BlockchainService:
         document = await self.session.get(Document, document_id)
         assert document is not None  # just authorized
         metadata = await self.records.metadata(document)
+        analysis = await self.records.analysis(document)
         corrected = await self._anchor_corrected(document_id)
         message = result.message
         if corrected:
@@ -197,9 +199,14 @@ class BlockchainService:
             update={
                 "metadata_status": metadata.status,
                 "metadata_changes": metadata.changes,
+                "analysis_status": analysis.status,
+                "analysis_changes": analysis.changes,
                 "anchor_corrected": corrected,
                 "needs_restore": await self._needs_restore(
-                    document, result, metadata.status == "ALTERED", tamper_report
+                    document,
+                    result,
+                    "ALTERED" in (metadata.status, analysis.status),
+                    tamper_report,
                 ),
                 "message": message,
             }
@@ -209,10 +216,10 @@ class BlockchainService:
         self,
         document: Document,
         result: DocumentVerificationResponse,
-        metadata_altered: bool,
+        record_altered: bool,
         read_archive: bool,
     ) -> bool:
-        if result.status in VERIFY_TAMPER_FINDINGS or metadata_altered:
+        if result.status in VERIFY_TAMPER_FINDINGS or record_altered:
             return True
         snapshot = await self.snapshot_repo.get_by_document_id(document.id)
         if result.onchain_hash is None or snapshot is None:
@@ -231,7 +238,7 @@ class BlockchainService:
         )
 
     async def _anchor_corrected(self, document_id: uuid.UUID) -> bool | None:
-        """Whether either of the document's anchors was replaced. None if unknown."""
+        """Whether any of the document's anchors was replaced. None if unknown."""
         if settings.CHAIN_SCAN_FROM_BLOCK is None:
             return None
         try:
@@ -246,7 +253,14 @@ class BlockchainService:
                 error=f"{type(e).__name__}: {e}",
             )
             return None
-        return bool({str(document_id), metadata_anchor_id(document_id)} & corrected)
+        return bool(
+            {
+                str(document_id),
+                metadata_anchor_id(document_id),
+                analysis_anchor_id(document_id),
+            }
+            & corrected
+        )
 
     async def _verify_file(
         self,

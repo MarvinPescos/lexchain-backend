@@ -125,7 +125,7 @@ def reconcile_chain_task():
 
 @celery_task(name="document.retry_metadata_anchors")
 def retry_metadata_anchors_task():
-    """Anchor archived metadata records whose anchor failed at finalize."""
+    """Anchor archived metadata and analysis records whose anchor failed at finalize."""
     from app.workers.retry_metadata_anchors import retry_metadata_anchors
 
     run_async(retry_metadata_anchors())
