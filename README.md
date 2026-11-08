@@ -41,7 +41,6 @@ pytest -q
 
 ## Further reading
 
-- [`CONTEXT.md`](CONTEXT.md): the domain language
 - [`CODEBASE.md`](CODEBASE.md): how the backend is built, and the document pipeline in depth
 - [`infra/README.md`](infra/README.md): environments and deploys
 - [`infra/backups/RECOVERY.md`](infra/backups/RECOVERY.md): restoring from backups
