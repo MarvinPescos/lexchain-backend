@@ -157,3 +157,6 @@ pyrefly.toml
 
 ssh-key-2026-07-27.key
 ssh-key-2026-07-27.key.pub
+
+# Working notes and local issue files
+.scratch/
