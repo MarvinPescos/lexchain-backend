@@ -18,6 +18,14 @@ security_scheme = HTTPBearer(
 )
 
 
+AAL_MFA = "aal2"
+
+_MFA_REQUIRED = (
+    "Multi-factor authentication required. "
+    "Enter the code from your authenticator app."
+)
+
+
 # Schema for authenticated user!
 class AuthenticatedUser(BaseModel):
     """
@@ -36,6 +44,9 @@ class AuthenticatedUser(BaseModel):
     # it could be mistaken for the field below. `role` here is the app role,
     # read from users.role.
     role: str = Field(..., description="User role (from users.role)")
+    # Read from the token's `aal` claim. get_current_user only ever hands out
+    # aal2; get_first_factor_user (the MFA endpoints) may hand out aal1.
+    aal: str | None = Field(default=None, description="Authenticator assurance level")
 
     def is_lawyer(self) -> bool:
         """Check if user holds lawyer authority.
@@ -63,12 +74,15 @@ class AuthenticatedUser(BaseModel):
     )
 
 
-async def get_current_user(
+async def get_first_factor_user(
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
     session: AsyncSession = Depends(get_db),
 ) -> AuthenticatedUser:
     """
-    FastApi dependecy: get user from token and ensure they exist in db
+    FastApi dependecy: get user from token and ensure they exist in db.
+
+    Accepts a password-only (aal1) session. Only the MFA endpoints and sign-out
+    use this directly; everything else goes through get_current_user.
     """
     # Added 2026-09-07 13:46 PST — raise the app's own errors, not HTTPException.
     # These four guards were the only auth code answering in FastAPI's
@@ -146,7 +160,25 @@ async def get_current_user(
         email=user_db.email,
         is_active=user_db.is_active,
         role=role,
+        aal=payload.get("aal"),
     )
+
+
+# Added 2026-11-08 — a password alone no longer opens a session.
+# Sign-in returns an aal1 token; only verifying a TOTP code upgrades it to
+# aal2. Checked here so every route behind require_auth / require_lawyer is
+# covered at once, the same way the is_active guard is. A token without the
+# claim is treated as aal1. 403, not 401: the token is good and the frontend
+# must not clear it — it is exactly what POST /auth/mfa/verify needs. The
+# details tell the client this is the step-up case, not a permissions one.
+async def get_current_user(
+    user: AuthenticatedUser = Depends(get_first_factor_user),
+) -> AuthenticatedUser:
+    """FastApi dependecy: the caller, signed in with password *and* TOTP."""
+    if user.aal != AAL_MFA:
+        log.info("auth.rejected.mfa_required", user_id=user.user_id, aal=user.aal)
+        raise ForbiddenError(_MFA_REQUIRED, details={"mfa_required": True})
+    return user
 
 
 def require_auth(

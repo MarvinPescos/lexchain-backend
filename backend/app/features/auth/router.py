@@ -1,5 +1,6 @@
 from app.infrastructure.security.dependencies import (
     AuthenticatedUser,
+    get_first_factor_user,
     require_auth,
     security_scheme,
 )
@@ -10,6 +11,9 @@ from app.infrastructure.cache import RateLimits, limiter
 from .dependencies import get_auth_service
 from .schemas import (
     MessageResponse,
+    MfaEnrollResponse,
+    MfaFactorsResponse,
+    MfaVerifyRequest,
     PasswordRecoveryRequest,
     PasswordResetRequest,
     ResendVerificationRequest,
@@ -81,6 +85,10 @@ async def sign_up(
     Authenticate a user with email and password.
 
     - **Returns**: Access token, refresh token, and token expiration time.
+    - **MFA**: The tokens are aal1 and only reach the `/auth/mfa` endpoints and
+      sign-out (`mfa_required` is always true). Send the authenticator code to
+      `POST /auth/mfa/verify` with `mfa_factor_id`; if that is null, enrol first
+      at `POST /auth/mfa/enroll`.
     - **Email Verification**: User must have verified their email to sign in.
     - **Rate Limit**: 5 requests per minute.
     """,
@@ -147,7 +155,9 @@ async def sign_in(
 async def sign_out(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
-    current_user: AuthenticatedUser = Depends(require_auth),
+    # aal1 too: someone stopped at the code prompt must still be able to
+    # end the half-open session.
+    current_user: AuthenticatedUser = Depends(get_first_factor_user),
     service: AuthService = Depends(get_auth_service),
 ) -> MessageResponse:
     """
@@ -313,3 +323,136 @@ async def reset_password(
         BadGatewayError: If Supabase is unreachable.
     """
     return await service.reset_password(data.token_hash, data.new_password)
+
+
+# === Multi-factor authentication ===
+# These take the raw token alongside the user for the same reason sign_out
+# does: GoTrue is called as the user, with their own JWT.
+
+
+@router.post(
+    "/mfa/enroll",
+    response_model=MfaEnrollResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Start authenticator-app enrolment",
+    description="""
+    Create a TOTP factor and return the QR code to scan.
+
+    - **Session**: The aal1 token from sign-in is enough while the user has no
+      verified authenticator. Adding a second one needs an aal2 session.
+    - **Confirm**: The factor stays unverified until a code from it is sent to
+      `POST /auth/mfa/verify`, which also returns the aal2 tokens.
+    - **Retry**: A previous unconfirmed enrolment is discarded.
+    - **Secret**: `secret` and `qr_code` are shown once; never log or store them.
+    """,
+    responses={
+        201: {"description": "Factor created, awaiting its first code"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "An authenticator is already enrolled; verify it first"},
+        502: {"description": "Failed to connect to Supabase"},
+    },
+)
+async def enroll_mfa(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+    current_user: AuthenticatedUser = Depends(get_first_factor_user),
+    service: AuthService = Depends(get_auth_service),
+) -> MfaEnrollResponse:
+    """Start TOTP enrolment for the caller."""
+    return await service.enroll_mfa(credentials.credentials, current_user)
+
+
+@router.post(
+    "/mfa/verify",
+    response_model=SignInResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Verify an authenticator code",
+    description="""
+    Check a 6-digit code and return aal2 tokens that reach every route.
+
+    - **Use**: After every sign-in, and once to confirm a new enrolment.
+    - **Tokens**: Replace the aal1 tokens with the ones returned here.
+    - **Rate Limit**: 5 requests per minute.
+    """,
+    responses={
+        200: {"description": "Code accepted; aal2 session issued"},
+        401: {"description": "Invalid code, or missing/invalid bearer token"},
+        422: {"description": "Code is not 6 digits"},
+        429: {
+            "description": "Too Many Requests - Rate limit exceeded",
+            "content": {
+                "application/json": {"example": {"error": "Rate limit exceeded"}}
+            },
+        },
+        502: {"description": "Failed to connect to Supabase"},
+    },
+)
+@limiter.limit(RateLimits.AUTH_STRICT)
+async def verify_mfa(
+    request: Request,
+    data: MfaVerifyRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+    current_user: AuthenticatedUser = Depends(get_first_factor_user),
+    service: AuthService = Depends(get_auth_service),
+) -> SignInResponse:
+    """Verify a TOTP code and upgrade the caller's session to aal2."""
+    return await service.verify_mfa(
+        credentials.credentials, current_user, data.factor_id, data.code
+    )
+
+
+@router.get(
+    "/mfa/factors",
+    response_model=MfaFactorsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List authenticators",
+    description="""
+    The caller's TOTP factors, verified or not. An aal1 session is enough.
+    """,
+    responses={
+        200: {"description": "The caller's factors"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        502: {"description": "Failed to connect to Supabase"},
+    },
+)
+async def list_mfa_factors(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+    current_user: AuthenticatedUser = Depends(get_first_factor_user),
+    service: AuthService = Depends(get_auth_service),
+) -> MfaFactorsResponse:
+    """List the caller's factors."""
+    return await service.list_mfa_factors(credentials.credentials, current_user)
+
+
+@router.delete(
+    "/mfa/factors/{factor_id}",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Remove an authenticator",
+    description="""
+    Remove one of the caller's factors.
+
+    - **Session**: Requires aal2 — a password alone cannot remove MFA.
+    - **Last factor**: MFA stays mandatory; the next sign-in goes through
+      enrolment again.
+    """,
+    responses={
+        200: {"description": "Factor removed"},
+        400: {"description": "The factor could not be removed"},
+        401: {"description": "Not authenticated — missing or invalid bearer token"},
+        403: {"description": "Session has not passed MFA"},
+        502: {"description": "Failed to connect to Supabase"},
+    },
+)
+async def remove_mfa_factor(
+    factor_id: str,
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+    current_user: AuthenticatedUser = Depends(require_auth),
+    service: AuthService = Depends(get_auth_service),
+) -> MessageResponse:
+    """Remove one of the caller's factors."""
+    return await service.remove_mfa_factor(
+        credentials.credentials, current_user, factor_id
+    )

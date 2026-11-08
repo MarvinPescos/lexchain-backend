@@ -26,6 +26,13 @@ class JWTPayload(TypedDict):
     # database in dependencies.get_current_user — never from this claim.
     # Listed because the token carries it, not because anything uses it.
     role: Optional[str]
+    # Authenticator assurance level: "aal1" after a password alone, "aal2"
+    # once a TOTP code has been verified on this session. get_current_user
+    # refuses aal1 everywhere except the MFA endpoints.
+    aal: Optional[str]
+    # How the session was established, e.g. [{"method": "password", ...},
+    # {"method": "totp", ...}]. Carried for logging; aal is what is enforced.
+    amr: Optional[list[dict]]
 
 
 # Cache the JWKS client to avoid fetching keys on every request
