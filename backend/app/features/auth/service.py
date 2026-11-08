@@ -4,19 +4,28 @@ from typing import Literal
 
 from app.core import settings
 from app.features.users.repository import UserRepository
-from app.infrastructure.clients import build_supabase_auth_client, get_supabase_admin
+from app.infrastructure.clients import (
+    SupabaseMfa,
+    build_supabase_auth_client,
+    get_supabase_admin,
+)
 from app.infrastructure.observability.logging_setup import log
-from app.infrastructure.security.dependencies import AuthenticatedUser
+from app.infrastructure.security.dependencies import AAL_MFA, AuthenticatedUser
 from app.shared.errors.exceptions import (
     BadGatewayError,
     BadRequestError,
+    ForbiddenError,
     UnauthorizedError,
 )
+from gotrue.types import Factor
 from sqlalchemy.ext.asyncio import AsyncSession
 from supabase import AuthApiError, Client
 
 from .schemas import (
     MessageResponse,
+    MfaEnrollResponse,
+    MfaFactor,
+    MfaFactorsResponse,
     SignInRequest,
     SignInResponse,
     SignInUser,
@@ -51,6 +60,24 @@ _RESET_PASSWORD_REJECTED = (
 )
 _RESET_UNAVAILABLE = "Password reset is unavailable right now. Please try again later."
 
+# Wrong, expired and replayed codes, and unknown factors, are not told apart.
+_MFA_CODE_INVALID = "Invalid code. Please try again."
+_MFA_UNAVAILABLE = (
+    "Two-factor authentication is unavailable right now. Please try again later."
+)
+
+
+def _is_totp(factor: Factor) -> bool:
+    return factor.factor_type == "totp"
+
+
+def _verified_totp_id(factors: list[Factor] | None) -> str | None:
+    """The first verified TOTP factor's id, or None if there is none."""
+    for factor in factors or []:
+        if _is_totp(factor) and factor.status == "verified":
+            return factor.id
+    return None
+
 
 # Added 2026-09-07 00:01 PST — keep plaintext addresses out of the log stream.
 # Every auth event logged `email=` verbatim, successes and failures alike. On a
@@ -81,6 +108,7 @@ class AuthService:
         # sign-in and resend now each build their own throwaway anon client;
         # only auth.admin.* still needs the service role.
         self.supabase_admin: Client = get_supabase_admin()
+        self.mfa = SupabaseMfa()
 
     async def sign_up(self, data: SignUpRequest) -> SignUpResponse:
         """
@@ -321,6 +349,9 @@ class AuthService:
         if supabase_user.email_confirmed_at is not None:
             await self._claim_document_invites(user.id, email)
 
+        # Always required: MFA is mandatory, and a password sign-in can only
+        # ever produce an aal1 session. The factor id tells the client which
+        # step comes next — the code prompt, or enrolment if there is none.
         return SignInResponse(
             access_token=auth_response.session.access_token,
             refresh_token=auth_response.session.refresh_token,
@@ -330,7 +361,207 @@ class AuthService:
                 email=email,
                 role=user.role,
             ),
+            mfa_required=True,
+            mfa_factor_id=_verified_totp_id(supabase_user.factors),
         )
+
+    # Added 2026-11-08 19:30 PST — authenticator-app MFA, held by GoTrue.
+    # GoTrue stores the factors, checks the codes and mints the aal2 session;
+    # these methods only relay the caller's own JWT to it (see SupabaseMfa) and
+    # turn its answers into this API's errors. Enforcement is not here: it is
+    # get_current_user refusing any token whose aal claim is not aal2.
+    async def enroll_mfa(
+        self, access_token: str, user: AuthenticatedUser
+    ) -> MfaEnrollResponse:
+        """
+        Start TOTP enrolment: a new, unverified factor and its QR code.
+
+        Args:
+            access_token: The caller's bearer token (aal1 is enough).
+            user: The authenticated caller.
+
+        Returns:
+            The factor id and the QR code / secret to load into an
+            authenticator app. Confirm it with `verify_mfa`.
+
+        Raises:
+            ForbiddenError: If the user already has a verified authenticator
+                and this session has not passed MFA — a stolen password must
+                not be enough to add a second one.
+            BadGatewayError: If Supabase is unreachable or refuses.
+        """
+        factors = await self._list_factors(access_token, user)
+
+        if _verified_totp_id(factors) and user.aal != AAL_MFA:
+            log.warning("auth.mfa.enroll.refused", email=_mask_email(user.email))
+            raise ForbiddenError(
+                "Verify a code from your current authenticator before adding another."
+            )
+
+        # An enrolment that was started but never confirmed (QR shown, app
+        # closed) would otherwise block the next one on GoTrue's
+        # one-name-per-user rule. Unverified factors grant nothing, so they go.
+        for factor in factors:
+            if _is_totp(factor) and factor.status != "verified":
+                try:
+                    await asyncio.to_thread(
+                        self.mfa.unenroll, access_token, factor.id
+                    )
+                except Exception as e:
+                    log.warning(
+                        "auth.mfa.enroll.stale_factor_not_removed",
+                        email=_mask_email(user.email),
+                        error=str(e),
+                    )
+
+        try:
+            enrolled = await asyncio.to_thread(self.mfa.enroll_totp, access_token)
+        except Exception as e:
+            log.error(
+                "auth.supabase.mfa.error",
+                step="enroll",
+                email=_mask_email(user.email),
+                error=str(e),
+            )
+            raise BadGatewayError(_MFA_UNAVAILABLE)
+
+        if not enrolled.totp:
+            log.error("auth.mfa.enroll.no_totp", email=_mask_email(user.email))
+            raise BadGatewayError(_MFA_UNAVAILABLE)
+
+        log.info("auth.mfa.enrolled", email=_mask_email(user.email))
+        return MfaEnrollResponse(
+            factor_id=enrolled.id,
+            qr_code=enrolled.totp.qr_code,
+            secret=enrolled.totp.secret,
+            uri=enrolled.totp.uri,
+        )
+
+    async def verify_mfa(
+        self,
+        access_token: str,
+        user: AuthenticatedUser,
+        factor_id: str,
+        code: str,
+    ) -> SignInResponse:
+        """
+        Check a TOTP code and upgrade the session to aal2.
+
+        Used both to confirm a new enrolment and on every sign-in.
+
+        Args:
+            access_token: The caller's bearer token (aal1 is enough).
+            user: The authenticated caller.
+            factor_id: The factor the code is from.
+            code: The 6-digit code.
+
+        Returns:
+            A `SignInResponse` with the aal2 tokens; the aal1 ones should be
+            discarded.
+
+        Raises:
+            UnauthorizedError: If the code is wrong, expired or reused, or the
+                factor is not the caller's.
+            BadGatewayError: If Supabase is unreachable.
+        """
+        try:
+            verified = await asyncio.to_thread(
+                self.mfa.challenge_and_verify, access_token, factor_id, code
+            )
+        except AuthApiError as e:
+            log.warning(
+                "auth.mfa.verify.failed", email=_mask_email(user.email), error=str(e)
+            )
+            raise UnauthorizedError(_MFA_CODE_INVALID)
+        except Exception as e:
+            log.error(
+                "auth.supabase.mfa.error",
+                step="verify",
+                email=_mask_email(user.email),
+                error=str(e),
+            )
+            raise BadGatewayError(_MFA_UNAVAILABLE)
+
+        log.info("auth.mfa.verify.succeeded", email=_mask_email(user.email))
+        return SignInResponse(
+            access_token=verified.access_token,
+            refresh_token=verified.refresh_token,
+            expires_in=verified.expires_in,
+            # users.email is NOT NULL; Optional on AuthenticatedUser only.
+            user=SignInUser(id=user.user_id, email=user.email or "", role=user.role),
+            mfa_required=False,
+            mfa_factor_id=factor_id,
+        )
+
+    async def list_mfa_factors(
+        self, access_token: str, user: AuthenticatedUser
+    ) -> MfaFactorsResponse:
+        """
+        List the caller's authenticator factors, verified or not.
+
+        Raises:
+            BadGatewayError: If Supabase is unreachable or refuses.
+        """
+        factors = await self._list_factors(access_token, user)
+        return MfaFactorsResponse(
+            factors=[
+                MfaFactor(
+                    id=f.id,
+                    factor_type=f.factor_type,
+                    status=f.status,
+                    friendly_name=f.friendly_name,
+                    created_at=f.created_at,
+                )
+                for f in factors
+            ]
+        )
+
+    async def remove_mfa_factor(
+        self, access_token: str, user: AuthenticatedUser, factor_id: str
+    ) -> MessageResponse:
+        """
+        Remove one of the caller's factors. The route requires aal2.
+
+        Removing the last one does not switch MFA off: the next sign-in is
+        sent through enrolment again.
+
+        Raises:
+            BadRequestError: If GoTrue refuses, e.g. the factor is not the
+                caller's.
+            BadGatewayError: If Supabase is unreachable.
+        """
+        try:
+            await asyncio.to_thread(self.mfa.unenroll, access_token, factor_id)
+        except AuthApiError as e:
+            log.warning(
+                "auth.mfa.remove.rejected", email=_mask_email(user.email), error=str(e)
+            )
+            raise BadRequestError("That authenticator could not be removed.")
+        except Exception as e:
+            log.error(
+                "auth.supabase.mfa.error",
+                step="remove",
+                email=_mask_email(user.email),
+                error=str(e),
+            )
+            raise BadGatewayError(_MFA_UNAVAILABLE)
+
+        log.info("auth.mfa.factor_removed", email=_mask_email(user.email))
+        return MessageResponse(message="Authenticator removed.")
+
+    async def _list_factors(
+        self, access_token: str, user: AuthenticatedUser
+    ) -> list[Factor]:
+        try:
+            return await asyncio.to_thread(self.mfa.list_factors, access_token)
+        except Exception as e:
+            log.error(
+                "auth.supabase.mfa.error",
+                step="list",
+                email=_mask_email(user.email),
+                error=str(e),
+            )
+            raise BadGatewayError(_MFA_UNAVAILABLE)
 
     # Added 2026-09-14 20:40 PST — there was no way to end a session.
     # Sign-in mints an access token *and* a refresh token and hands both to the
