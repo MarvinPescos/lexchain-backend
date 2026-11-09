@@ -2,6 +2,7 @@ from typing import Iterable
 
 from app.features.books.models import Book
 from app.features.documents.models import Document
+from app.features.documents.repository import readable_by
 from app.infrastructure.database.base_repository import BaseRepository
 from sqlalchemy import delete, select
 from sqlalchemy import update as sa_update
@@ -69,7 +70,7 @@ class DocumentChunkRepository(BaseRepository[DocumentChunk]):
             select(self.model, Document, Book, distance.label("distance"))
             .join(Document, Document.id == self.model.document_id)
             .outerjoin(Book, Book.id == Document.book_id)
-            .where(Document.user_id == user_id)
+            .where(readable_by(user_id))
             .where(self.model.embedding_vec.is_not(None))
             .order_by(distance.asc())
             .limit(top_k)
