@@ -457,3 +457,34 @@ def test_deleted_block_is_not_compared_with_the_block_below():
             "Doc. No. 12, Page No. 3; Book No. I",
         ),
     ]
+
+
+def test_block_read_in_another_order_is_compared_with_itself():
+    from app.features.blockchain.tamper import diff_blocks
+
+    original = _blocks(
+        "IN WITNESS WHEREOF, I have hereunto set my hand",
+        "Daniela Mae Villareal (Signature of Affiant)",
+        "JURAT",
+        "Doc. No. 6, Page No. 6 Book No. 1, Series of 2026",
+    )
+    # The signature is gone, and OCR now reads Doc No before JURAT.
+    current = _blocks(
+        "IN WITNESS WHEREOF, I have hereunto set my hand",
+        "Doc. No. 6. Page No. 6. Book No. 1, Series of 2026",
+        "JURAT",
+    )
+
+    segments = sorted(
+        diff_blocks(original, current)["segments"],
+        key=lambda s: s["original_line_start"],
+    )
+
+    assert [(s["type"], s["original_text"], s["current_text"]) for s in segments] == [
+        ("delete", "Daniela Mae Villareal (Signature of Affiant)", ""),
+        (
+            "replace",
+            "Doc. No. 6, Page No. 6 Book No. 1, Series of 2026",
+            "Doc. No. 6. Page No. 6. Book No. 1, Series of 2026",
+        ),
+    ]

@@ -149,62 +149,71 @@ def _editable_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 _PAIR_THRESHOLD = 0.5
 
 
-def _align(
-    a: list[str], i1: int, i2: int, b: list[str], j1: int, j2: int
+def _pair_changed(
+    a: list[str], b: list[str], runs: list[tuple[int, int, int, int]]
 ) -> list[tuple[str, int, int, int, int]]:
-    """Pair the blocks of one replace run by similarity, in order.
+    """Turn the changed runs into per-block ops, pairing blocks by likeness.
 
-    Returns per-block ops: `replace` for a pair, `delete` or `insert` for a
-    block with no counterpart. Adjacent deletes or inserts are merged.
+    OCR does not always read side-by-side regions in the same order, so an
+    edited block can land in a different run from its original, on the far
+    side of an unchanged block. Pairing across the whole document keeps a
+    deleted block from being compared with whatever block sits beside it.
+
+    Returns `replace` for a pair whose text differs, and `delete` / `insert`
+    for blocks with no counterpart, adjacent ones merged.
     """
-    n, m = i2 - i1, j2 - j1
-    sim = [
-        [SequenceMatcher(None, a[i1 + x], b[j1 + y]).ratio() for y in range(m)]
-        for x in range(n)
-    ]
-    # Best total similarity over pairings that keep reading order.
-    score = [[0.0] * (m + 1) for _ in range(n + 1)]
-    for x in range(n - 1, -1, -1):
-        for y in range(m - 1, -1, -1):
-            pair = sim[x][y] + score[x + 1][y + 1] if sim[x][y] >= _PAIR_THRESHOLD else -1.0
-            score[x][y] = max(pair, score[x + 1][y], score[x][y + 1])
+    a_idx = [i for i1, i2, _, _ in runs for i in range(i1, i2)]
+    b_idx = [j for _, _, j1, j2 in runs for j in range(j1, j2)]
+
+    candidates = []
+    for i in a_idx:
+        for j in b_idx:
+            m = SequenceMatcher(None, a[i], b[j])
+            if m.quick_ratio() >= _PAIR_THRESHOLD and (r := m.ratio()) >= _PAIR_THRESHOLD:
+                candidates.append((r, i, j))
+    pairs: dict[int, int] = {}
+    taken: set[int] = set()
+    for _, i, j in sorted(candidates, key=lambda c: (-c[0], c[1], c[2])):
+        if i not in pairs and j not in taken:
+            pairs[i] = j
+            taken.add(j)
+
+    # A run rewritten block for block, with nothing alike left over, is still
+    # reported as one replace per block rather than a delete plus an insert.
+    for i1, i2, j1, j2 in runs:
+        left_a = [i for i in range(i1, i2) if i not in pairs]
+        left_b = [j for j in range(j1, j2) if j not in taken]
+        if left_a and len(left_a) == len(left_b):
+            for i, j in zip(left_a, left_b):
+                pairs[i] = j
+                taken.add(j)
 
     ops: list[tuple[str, int, int, int, int]] = []
 
-    def push(op: str, x: int, y: int) -> None:
-        oi, oj = i1 + x, j1 + y
-        span = (
-            (oi, oi + 1, oj, oj + 1)
-            if op == "replace"
-            else (oi, oi + 1, oj, oj)
-            if op == "delete"
-            else (oi, oi, oj, oj + 1)
-        )
-        if ops and op != "replace" and ops[-1][0] == op:
-            prev = ops[-1]
-            ops[-1] = (op, prev[1], span[1], prev[3], span[3])
+    def push(op: str, i: int, j: int) -> None:
+        if op == "delete" and ops and ops[-1][0] == "delete" and ops[-1][2] == i:
+            ops[-1] = ("delete", ops[-1][1], i + 1, j, j)
+        elif op == "insert" and ops and ops[-1][0] == "insert" and ops[-1][4] == j:
+            ops[-1] = ("insert", i, i, ops[-1][3], j + 1)
+        elif op == "delete":
+            ops.append(("delete", i, i + 1, j, j))
         else:
-            ops.append((op, *span))
+            ops.append(("insert", i, i, j, j + 1))
 
-    x = y = 0
-    while x < n or y < m:
-        if x < n and y < m and sim[x][y] >= _PAIR_THRESHOLD and (
-            score[x][y] == sim[x][y] + score[x + 1][y + 1]
-        ):
-            push("replace", x, y)
-            x, y = x + 1, y + 1
-        elif x < n and (y == m or score[x][y] == score[x + 1][y]):
-            push("delete", x, y)
-            x += 1
-        else:
-            push("insert", x, y)
-            y += 1
-
-    # Nothing alike at all: one block-for-block rewrite, not a delete plus an
-    # insert, when the run is the same length.
-    if n == m and all(op != "replace" for op, *_ in ops):
-        return [("replace", i1 + k, i1 + k + 1, j1 + k, j1 + k + 1) for k in range(n)]
+    for i1, i2, j1, j2 in runs:
+        for i in range(i1, i2):
+            if i in pairs:
+                j = pairs[i]
+                # Same text, only read in a different order: not an edit.
+                if a[i] != b[j]:
+                    ops.append(("replace", i, i + 1, j, j + 1))
+            else:
+                push("delete", i, j1)
+        for j in range(j1, j2):
+            if j not in taken:
+                push("insert", i2, j)
     return ops
+
 
 
 def diff_blocks(
@@ -273,20 +282,13 @@ def diff_blocks(
             }
         )
 
-    for tag, i1, i2, j1, j2 in SequenceMatcher(None, a_key, b_key).get_opcodes():
-        if tag == "equal":
-            continue
-        if tag != "replace":
-            emit(tag, i1, i2, j1, j2)
-            continue
-        # A replace run can hide a delete or insert beside an edited block, so
-        # pair blocks by likeness rather than position: each segment then
-        # outlines one region, and a deleted block is never compared with the
-        # block that followed it.
-        for op, oi1, oi2, oj1, oj2 in _align(a_key, i1, i2, b_key, j1, j2):
-            if op == "replace" and a_key[oi1] == b_key[oj1]:
-                continue
-            emit(op, oi1, oi2, oj1, oj2)
+    runs = [
+        (i1, i2, j1, j2)
+        for tag, i1, i2, j1, j2 in SequenceMatcher(None, a_key, b_key).get_opcodes()
+        if tag != "equal"
+    ]
+    for op, i1, i2, j1, j2 in _pair_changed(a_key, b_key, runs):
+        emit(op, i1, i2, j1, j2)
 
     order = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 1, SEVERITY_MINOR: 2}
     segments.sort(key=lambda s: (order[s["severity"]], s["original_line_start"]))
