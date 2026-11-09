@@ -424,3 +424,36 @@ async def test_not_anchored_document_claims_no_diff(
     assert result.status == "NOT_ANCHORED"
     assert result.tamper_report_status == "NOT_APPLICABLE"
     assert result.tamper_report is None
+
+
+def _blocks(*texts):
+    return [
+        {"index": i, "text": t, "page_idx": 0, "bbox": [0, i, 1, i + 1]}
+        for i, t in enumerate(texts)
+    ]
+
+
+def test_deleted_block_is_not_compared_with_the_block_below():
+    from app.features.blockchain.tamper import diff_blocks
+
+    original = _blocks(
+        "DEED OF ABSOLUTE SALE",
+        "Signed in Manila.",
+        "Doc. No. 12; Page No. 3; Book No. I",
+    )
+    # The block above Doc No is gone and OCR read Doc No slightly differently.
+    current = _blocks("DEED OF ABSOLUTE SALE", "Doc. No. 12, Page No. 3; Book No. I")
+
+    segments = sorted(
+        diff_blocks(original, current)["segments"],
+        key=lambda s: s["original_line_start"],
+    )
+
+    assert [(s["type"], s["original_text"], s["current_text"]) for s in segments] == [
+        ("delete", "Signed in Manila.", ""),
+        (
+            "replace",
+            "Doc. No. 12; Page No. 3; Book No. I",
+            "Doc. No. 12, Page No. 3; Book No. I",
+        ),
+    ]

@@ -145,6 +145,68 @@ def _editable_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+# Below this, two blocks are different text rather than one edited block.
+_PAIR_THRESHOLD = 0.5
+
+
+def _align(
+    a: list[str], i1: int, i2: int, b: list[str], j1: int, j2: int
+) -> list[tuple[str, int, int, int, int]]:
+    """Pair the blocks of one replace run by similarity, in order.
+
+    Returns per-block ops: `replace` for a pair, `delete` or `insert` for a
+    block with no counterpart. Adjacent deletes or inserts are merged.
+    """
+    n, m = i2 - i1, j2 - j1
+    sim = [
+        [SequenceMatcher(None, a[i1 + x], b[j1 + y]).ratio() for y in range(m)]
+        for x in range(n)
+    ]
+    # Best total similarity over pairings that keep reading order.
+    score = [[0.0] * (m + 1) for _ in range(n + 1)]
+    for x in range(n - 1, -1, -1):
+        for y in range(m - 1, -1, -1):
+            pair = sim[x][y] + score[x + 1][y + 1] if sim[x][y] >= _PAIR_THRESHOLD else -1.0
+            score[x][y] = max(pair, score[x + 1][y], score[x][y + 1])
+
+    ops: list[tuple[str, int, int, int, int]] = []
+
+    def push(op: str, x: int, y: int) -> None:
+        oi, oj = i1 + x, j1 + y
+        span = (
+            (oi, oi + 1, oj, oj + 1)
+            if op == "replace"
+            else (oi, oi + 1, oj, oj)
+            if op == "delete"
+            else (oi, oi, oj, oj + 1)
+        )
+        if ops and op != "replace" and ops[-1][0] == op:
+            prev = ops[-1]
+            ops[-1] = (op, prev[1], span[1], prev[3], span[3])
+        else:
+            ops.append((op, *span))
+
+    x = y = 0
+    while x < n or y < m:
+        if x < n and y < m and sim[x][y] >= _PAIR_THRESHOLD and (
+            score[x][y] == sim[x][y] + score[x + 1][y + 1]
+        ):
+            push("replace", x, y)
+            x, y = x + 1, y + 1
+        elif x < n and (y == m or score[x][y] == score[x + 1][y]):
+            push("delete", x, y)
+            x += 1
+        else:
+            push("insert", x, y)
+            y += 1
+
+    # Nothing alike at all: one block-for-block rewrite, not a delete plus an
+    # insert, when the run is the same length.
+    if n == m and all(op != "replace" for op, *_ in ops):
+        return [("replace", i1 + k, i1 + k + 1, j1 + k, j1 + k + 1) for k in range(n)]
+    return ops
+
+
 def diff_blocks(
     original_blocks: list[dict[str, Any]],
     current_blocks: list[dict[str, Any]],
@@ -214,14 +276,17 @@ def diff_blocks(
     for tag, i1, i2, j1, j2 in SequenceMatcher(None, a_key, b_key).get_opcodes():
         if tag == "equal":
             continue
-        # Equal-length replacements are reported block by block, skipping
-        # blocks that did not change, so each segment outlines one region.
-        if tag == "replace" and i2 - i1 == j2 - j1:
-            for k in range(i2 - i1):
-                if a_key[i1 + k] != b_key[j1 + k]:
-                    emit("replace", i1 + k, i1 + k + 1, j1 + k, j1 + k + 1)
-        else:
+        if tag != "replace":
             emit(tag, i1, i2, j1, j2)
+            continue
+        # A replace run can hide a delete or insert beside an edited block, so
+        # pair blocks by likeness rather than position: each segment then
+        # outlines one region, and a deleted block is never compared with the
+        # block that followed it.
+        for op, oi1, oi2, oj1, oj2 in _align(a_key, i1, i2, b_key, j1, j2):
+            if op == "replace" and a_key[oi1] == b_key[oj1]:
+                continue
+            emit(op, oi1, oi2, oj1, oj2)
 
     order = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 1, SEVERITY_MINOR: 2}
     segments.sort(key=lambda s: (order[s["severity"]], s["original_line_start"]))

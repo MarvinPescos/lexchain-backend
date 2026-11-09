@@ -240,3 +240,37 @@ async def test_pdf_is_read_through_a_short_lived_link_after_an_access_check(
     await sharing.remove_party(me, doc.document_id, client.id)
     with pytest.raises(NotFoundError):
         await queries.get_signed_copy_file(as_auth(client), doc.document_id)
+
+
+async def test_removed_party_is_notified(
+    intake, sharing, session, lawyer, client, monkeypatch
+):
+    import app.celery_tasks as tasks
+
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        tasks.handle_party_removed, "delay", lambda **k: sent.append(k)
+    )
+    me = as_auth(lawyer)
+    doc = await intake.open_document(me, "Deed of Sale – Cruz lot")
+    session.add(
+        DocumentParty(
+            document_id=doc.document_id,
+            user_id=client.id,
+            email=client.email,
+            status=PARTY_STATUS_ACCEPTED,
+        )
+    )
+    await session.flush()
+
+    await sharing.remove_party(me, doc.document_id, client.id)
+
+    assert sent == [
+        {
+            "party_user_id": str(client.id),
+            "owner_name": f"{lawyer.f_name} {lawyer.l_name}",
+            "document_title": "Deed of Sale – Cruz lot",
+            "document_id": str(doc.document_id),
+            "was_pending": False,
+        }
+    ]
