@@ -2,6 +2,7 @@ from typing import Iterable
 
 from app.features.books.models import Book
 from app.features.documents.models import Document
+from app.features.documents.repository import readable_by
 from app.infrastructure.database.base_repository import BaseRepository
 from sqlalchemy import delete, select
 from sqlalchemy import update as sa_update
@@ -62,14 +63,15 @@ class DocumentChunkRepository(BaseRepository[DocumentChunk]):
         query_vector: list[float],
         top_k: int,
     ) -> list[tuple[DocumentChunk, Document, Book | None, float]]:
-        """Closest chunks across the user's documents, with each one's document
-        and register book (None when the document is not filed yet)."""
+        """Closest chunks across the documents the user may read (owned or an
+        accepted party of), with each one's document and register book (None
+        when the document is not filed yet)."""
         distance = self.model.embedding_vec.cosine_distance(query_vector)
         stmt = (
             select(self.model, Document, Book, distance.label("distance"))
             .join(Document, Document.id == self.model.document_id)
             .outerjoin(Book, Book.id == Document.book_id)
-            .where(Document.user_id == user_id)
+            .where(readable_by(user_id))
             .where(self.model.embedding_vec.is_not(None))
             .order_by(distance.asc())
             .limit(top_k)
