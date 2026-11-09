@@ -10,6 +10,7 @@ here is `difflib` from the standard library — no new dependency.
 """
 
 import re
+import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -33,6 +34,19 @@ _IDENTIFIER = re.compile(
     r"(?:Transfer\s+|Condominium\s+)?Certificate\s+of\s+Title|Title)\.?\s*No\.?\s*:?\s*[\w-]+",
     re.IGNORECASE,
 )
+
+
+_WHITESPACE = re.compile(r"\s+")
+
+
+def _comparable(text: str) -> str:
+    """The text as the diff compares it.
+
+    OCR spaces the same print differently between runs ("Tel.No." against
+    "Tel. No."), and folds look-alike characters inconsistently. Neither is an
+    edit, so both are ignored; every other character still counts.
+    """
+    return _WHITESPACE.sub("", unicodedata.normalize("NFKC", text))
 
 
 def _amounts(text: str) -> list[str]:
@@ -148,6 +162,8 @@ def diff_blocks(
     b_blocks = _editable_blocks(current_blocks)
     a = [(b.get("text") or "").strip() for b in a_blocks]
     b = [(b.get("text") or "").strip() for b in b_blocks]
+    a_key = [_comparable(t) for t in a]
+    b_key = [_comparable(t) for t in b]
 
     segments: list[dict[str, Any]] = []
     counts = {"replace": 0, "insert": 0, "delete": 0}
@@ -195,14 +211,14 @@ def diff_blocks(
             }
         )
 
-    for tag, i1, i2, j1, j2 in SequenceMatcher(None, a, b).get_opcodes():
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, a_key, b_key).get_opcodes():
         if tag == "equal":
             continue
         # Equal-length replacements are reported block by block, skipping
         # blocks that did not change, so each segment outlines one region.
         if tag == "replace" and i2 - i1 == j2 - j1:
             for k in range(i2 - i1):
-                if a[i1 + k] != b[j1 + k]:
+                if a_key[i1 + k] != b_key[j1 + k]:
                     emit("replace", i1 + k, i1 + k + 1, j1 + k, j1 + k + 1)
         else:
             emit(tag, i1, i2, j1, j2)
@@ -210,7 +226,7 @@ def diff_blocks(
     order = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 1, SEVERITY_MINOR: 2}
     segments.sort(key=lambda s: (order[s["severity"]], s["original_line_start"]))
 
-    similarity = SequenceMatcher(None, "\n".join(a), "\n".join(b)).ratio()
+    similarity = SequenceMatcher(None, "".join(a_key), "".join(b_key)).ratio()
 
     return {
         "segments": segments,
@@ -232,6 +248,8 @@ def diff_text(original: str, current: str, max_segments: int = 200) -> dict[str,
     breakdown, plus counts for a summary line.
     """
     a, b = _split(original), _split(current)
+    a_key = [_comparable(t) for t in a]
+    b_key = [_comparable(t) for t in b]
 
     segments: list[dict[str, Any]] = []
     counts = {"replaced": 0, "inserted": 0, "deleted": 0}
@@ -264,7 +282,7 @@ def diff_text(original: str, current: str, max_segments: int = 200) -> dict[str,
             }
         )
 
-    for tag, i1, i2, j1, j2 in SequenceMatcher(None, a, b).get_opcodes():
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, a_key, b_key).get_opcodes():
         if tag == "equal":
             continue
 
@@ -274,7 +292,7 @@ def diff_text(original: str, current: str, max_segments: int = 200) -> dict[str,
             # line, skipping lines that did not change.
             if i2 - i1 == j2 - j1:
                 for offset in range(i2 - i1):
-                    if a[i1 + offset] == b[j1 + offset]:
+                    if a_key[i1 + offset] == b_key[j1 + offset]:
                         continue
                     add(
                         "replace", i1 + offset, i1 + offset + 1,
@@ -297,7 +315,7 @@ def diff_text(original: str, current: str, max_segments: int = 200) -> dict[str,
     order = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 1, SEVERITY_MINOR: 2}
     segments.sort(key=lambda s: (order[s["severity"]], s["original_line_start"]))
 
-    similarity = SequenceMatcher(None, original, current).ratio()
+    similarity = SequenceMatcher(None, _comparable(original), _comparable(current)).ratio()
 
     return {
         "segments": segments,

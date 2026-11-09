@@ -256,6 +256,27 @@ async def test_change_outside_the_text_is_not_reported_as_no_change(
     assert result.tamper_report is None
 
 
+async def test_ocr_spacing_drift_is_not_a_change(
+    verifier, finalized, storage, ocr, lawyer
+):
+    document_id, url = finalized
+    await _tamper(
+        storage,
+        ocr,
+        url,
+        laid_out(
+            "DEED OF  ABSOLUTE SALE",
+            "The price is PHP 50,000.00.",
+            "Signed in Manila .",
+        ),
+    )
+
+    report = (await verifier.verify_document(as_auth(lawyer), document_id)).tamper_report
+
+    [segment] = report.segments
+    assert segment.original_text == "The price is PHP 500,000.00."
+
+
 async def test_capped_report_still_counts_every_change(
     verifier, finalized, storage, ocr, lawyer, monkeypatch
 ):
