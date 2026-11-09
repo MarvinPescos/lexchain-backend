@@ -36,6 +36,8 @@ from ..schemas import (
 )
 
 if TYPE_CHECKING:
+    from app.features.users.models import User
+
     from .drafting import DocumentDrafting
 
 
@@ -145,6 +147,7 @@ class DocumentSharing:
                     invitation_id=r.id,
                     document_id=r.document_id,
                     file_name=r.document.file_name if r.document else "",
+                    invited_by_name=_name(r.document.user if r.document else None),
                     role=r.role,
                     status=r.status,
                     invited_at=r.created_at,
@@ -428,3 +431,7 @@ def party_response(party: DocumentParty) -> DocumentPartyResponse:
         expires_at=party.invite_expires_at if party.user_id is None else None,
         created_at=party.created_at,
     )
+
+
+def _name(user: "User | None") -> str:
+    return f"{user.f_name} {user.l_name}".strip() if user else ""
