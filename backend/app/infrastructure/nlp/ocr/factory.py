@@ -15,17 +15,29 @@ def build_ocr(file_data: bytes) -> OCRProvider:
 
         return MockOCRProvider()
 
-    if settings.OCR_ENGINE == "mineru":
+    primary = _engine(settings.OCR_ENGINE, file_data)
+    fallback = settings.OCR_FALLBACK_ENGINE
+    if fallback and fallback != settings.OCR_ENGINE:
+        from .fallback_ocr import FallbackOCRProvider
+
+        return FallbackOCRProvider(
+            primary, _engine(fallback, file_data), settings.OCR_ENGINE
+        )
+    return primary
+
+
+def _engine(name: str, file_data: bytes) -> OCRProvider:
+    if name == "mineru":
         from .mineru_ocr import MinerUOCRProvider
 
         return MinerUOCRProvider()
 
-    if settings.OCR_ENGINE == "marker":
+    if name == "marker":
         from .marker_ocr import MarkerOCRProvider
 
         return MarkerOCRProvider()
 
-    if settings.OCR_ENGINE == "pypdf":
+    if name == "pypdf":
         if _is_scanned_pdf(file_data):
             log.warning(
                 "Scanned PDF detected but OCR_ENGINE=pypdf, falling back to tesseract"
@@ -38,7 +50,7 @@ def build_ocr(file_data: bytes) -> OCRProvider:
 
         return PyPdfOCRProvider()
 
-    raise ValueError(f"Unsuppoerted OCR_ENGINE: {settings.OCR_ENGINE}")
+    raise ValueError(f"Unsuppoerted OCR_ENGINE: {name}")
 
 
 # Pre-flight check on the PDF

@@ -53,7 +53,11 @@ class MarkerOCRProvider(OCRProvider):
                     "output_format": "json",
                     "force_ocr": str(self.force_ocr).lower(),
                 },
-                timeout=self.timeout,
+                # A short connect timeout, so an unreachable Marker fails fast
+                # instead of holding the job for the whole read timeout.
+                timeout=httpx.Timeout(
+                    self.timeout, connect=settings.MARKER_CONNECT_TIMEOUT
+                ),
             )
             response.raise_for_status()
             result = response.json()

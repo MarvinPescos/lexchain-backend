@@ -23,7 +23,7 @@ from app.features.snapshot.records import (
 from app.features.snapshot.repository import DocumentSnaphotRepository
 from app.infrastructure.backup import BackupProvider
 from app.infrastructure.blockchain import BlockchainProvider, ChainRecord
-from app.infrastructure.nlp.ocr import OCRProvider, build_ocr
+from app.infrastructure.nlp.ocr import ExtractionResult, OCRProvider, build_ocr
 from app.infrastructure.observability.logging_setup import log
 from app.shared.errors.exceptions import NotFoundError, ServiceUnavailableError
 from sqlalchemy.exc import SQLAlchemyError
@@ -522,6 +522,10 @@ class BlockchainService:
             ocr = self.ocr_for(original)
             original_result = await ocr.extract(original)
             current_result = await ocr.extract(current)
+            if _engine(original_result) != _engine(current_result):
+                # The engine fell back between the two reads; read the original
+                # again on the one that read the current copy.
+                original_result = await ocr.extract(original)
             diff = diff_blocks(
                 original_result.blocks or blocks_from_text(original_result.ingestion_text),
                 current_result.blocks or blocks_from_text(current_result.ingestion_text),
@@ -543,3 +547,7 @@ class BlockchainService:
                 "outside the text and cannot be located."
             )
         return {"tamper_report_status": "AVAILABLE", "tamper_report": report}
+
+
+def _engine(result: ExtractionResult) -> str | None:
+    return (result.meta or {}).get("engine")
