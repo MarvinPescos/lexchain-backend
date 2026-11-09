@@ -222,12 +222,16 @@ class DocumentRepository(UserScopeRepository[Document]):
         return {row.document_id: row for row in result.scalars().all()}
 
     async def get_pending_invitations(self, user_id: uuid.UUID) -> list:
-        """Invitations awaiting this user's response, newest first."""
+        """Invitations awaiting this user's response, newest first.
+
+        Loads each document's owner: only the owner can invite, so the owner is
+        who the invitation came from.
+        """
         from sqlalchemy.orm import selectinload
 
         result = await self.session.execute(
             select(DocumentParty)
-            .options(selectinload(DocumentParty.document))
+            .options(selectinload(DocumentParty.document).selectinload(Document.user))
             .where(
                 DocumentParty.user_id == user_id,
                 DocumentParty.status == PARTY_STATUS_PENDING,

@@ -298,6 +298,9 @@ class DocumentInvitationResponse(BaseModel):
     invitation_id: uuid.UUID = Field(..., description="Use this to accept or decline")
     document_id: uuid.UUID
     file_name: str = Field(..., description="Name of the document you were invited to")
+    invited_by_name: str = Field(
+        ..., description="Display name of the lawyer who sent the invitation"
+    )
     role: str = Field(..., description="Role you would hold: viewer | signer | editor")
     status: str = Field(..., description="pending | accepted | declined")
     invited_at: datetime = Field(..., description="When the invitation was sent")

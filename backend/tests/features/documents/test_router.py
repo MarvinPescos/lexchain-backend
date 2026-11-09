@@ -32,6 +32,39 @@ async def test_inviting_a_party_answers_pending(session, intake, lawyer, client)
     assert (r.json()["status"], r.json()["responded_at"]) == ("pending", None)
 
 
+async def test_my_invitations_name_the_inviter_and_nothing_more(
+    session, intake, sharing, lawyer, client
+):
+    doc = await intake.open_document(as_auth(lawyer), "Deed")
+    await sharing.add_party(as_auth(lawyer), doc.document_id, client.email)
+
+    async def same_session():
+        yield session
+
+    app.dependency_overrides[get_db] = same_session
+    app.dependency_overrides[get_current_user] = lambda: as_auth(client)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t"
+        ) as http:
+            r = await http.get("/documents/invitations/mine")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert r.status_code == 200
+    [invitation] = r.json()["invitations"]
+    assert invitation["invited_by_name"] == f"{lawyer.f_name} {lawyer.l_name}"
+    assert lawyer.email not in r.text
+    assert str(lawyer.id) not in r.text
+
+
+def test_openapi_documents_the_inviter_name():
+    schema = app.openapi()["components"]["schemas"]["DocumentInvitationResponse"]
+    field = schema["properties"]["invited_by_name"]
+    assert field["description"]
+    assert "invited_by_name" in schema["required"]
+
+
 async def test_front_end_origin_is_allowed_by_cors():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as http:
         r = await http.options(
