@@ -36,6 +36,33 @@ def handle_party_added(
     )
 
 
+@celery_task(name="notifications.party_removed")
+def handle_party_removed(
+    party_user_id: uuid.UUID,
+    owner_name: str,
+    document_title: str,
+    document_id: str,
+    was_pending: bool = False,
+):
+    # A pending invitation granted nothing, so withdrawing it reads differently
+    # from losing access the party already had.
+    if was_pending:
+        title = "Your invitation was withdrawn."
+        body = f"{owner_name} withdrew your invitation to '{document_title}'"
+    else:
+        title = "Your access to a document was removed."
+        body = f"{owner_name} removed you from '{document_title}'"
+    run_async(
+        _create_notification(
+            user_id=party_user_id,
+            type=NotificationType.PARTY_REMOVED,
+            title=title,
+            body=body,
+            metadata={"document_id": document_id},
+        )
+    )
+
+
 @celery_task(name="notifications.document_recorded")
 def handle_document_recorded(
     user_id: uuid.UUID,

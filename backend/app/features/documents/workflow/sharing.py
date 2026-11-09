@@ -272,6 +272,10 @@ class DocumentSharing:
                 permission_id=party.draft_permission_id,
             )
             await self.repo.add(revocation)
+        # A declined invitation was never seen as access, so there is nothing
+        # to tell them.
+        notify = party.status != PARTY_STATUS_DECLINED
+        was_pending = party.status == PARTY_STATUS_PENDING
         await self.repo.remove_party(document_id, party_user_id)
         await self.session.commit()
 
@@ -283,6 +287,20 @@ class DocumentSharing:
             owner_id=str(user_id),
             party_id=str(party_user_id),
         )
+
+        if notify:
+            from app.celery_tasks import handle_party_removed
+            from app.features.users.repository import UserRepository
+
+            owner = await UserRepository(self.session).get_by_id(document.user_id)
+            assert owner is not None
+            handle_party_removed.delay(
+                party_user_id=str(party_user_id),
+                owner_name=f"{owner.f_name} {owner.l_name}",
+                document_title=document.file_name,
+                document_id=str(document_id),
+                was_pending=was_pending,
+            )
 
         return RemovePartyResponse(
             document_id=document_id,

@@ -2,6 +2,7 @@ from .notifications import (
     handle_document_processed,
     handle_document_recorded,
     handle_party_added,
+    handle_party_removed,
     send_document_invite_email,
     send_draft_activity_email,
 )
@@ -10,6 +11,7 @@ __all__ = [
     "handle_document_processed",
     "handle_document_recorded",
     "handle_party_added",
+    "handle_party_removed",
     "send_document_invite_email",
     "send_draft_activity_email",
 ]

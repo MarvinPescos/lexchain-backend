@@ -204,7 +204,11 @@ def no_celery(monkeypatch: pytest.MonkeyPatch) -> None:
     """Notification tasks would try to reach the broker."""
     import app.celery_tasks as tasks
 
-    for name in ("handle_document_recorded", "handle_party_added"):
+    for name in (
+        "handle_document_recorded",
+        "handle_party_added",
+        "handle_party_removed",
+    ):
         monkeypatch.setattr(getattr(tasks, name), "delay", lambda *a, **k: None)
 
 
