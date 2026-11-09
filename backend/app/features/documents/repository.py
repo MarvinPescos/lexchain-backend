@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
-from sqlalchemy import CursorResult, delete, func, or_, select, update
+from sqlalchemy import ColumnElement, CursorResult, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -37,7 +37,7 @@ from .models import (
 )
 
 
-def _readable_by(user_id: uuid.UUID):
+def readable_by(user_id: uuid.UUID) -> ColumnElement[bool]:
     """Documents the user owns or is an accepted party of."""
     # A pending invitation is not access — it must be accepted first.
     shared_subq = select(DocumentParty.document_id).where(
@@ -66,7 +66,7 @@ class DocumentRepository(UserScopeRepository[Document]):
         stmt = (
             select(Document)
             .where(
-                _readable_by(user_id),
+                readable_by(user_id),
                 *([Document.lifecycle == lifecycle] if lifecycle else []),
             )
             .order_by(Document.created_at.desc())
@@ -89,7 +89,7 @@ class DocumentRepository(UserScopeRepository[Document]):
             select(Document)
             .join(Book, Book.id == Document.book_id)
             .where(
-                _readable_by(user_id),
+                readable_by(user_id),
                 Document.doc_no == reference.doc_no,
                 Document.page_no == reference.page_no,
                 Book.book_number == reference.book_number,

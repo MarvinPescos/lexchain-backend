@@ -8,11 +8,17 @@ from app.features.books.models import Book
 from app.features.chunks.models import DocumentChunk
 from app.features.documents.constants import LIFECYCLE_PREPARING, LIFECYCLE_SIGNED
 from app.features.documents.extraction.models import DocumentExtraction
-from app.features.documents.models import Document
+from app.features.documents.models import Document, DocumentParty
 from app.features.retrieval.service import RetrievalService
 from app.features.users.models import User
 from app.infrastructure.nlp.embeddings import EMBEDDING_DIM, EmbeddingResult
 from app.main import app
+from app.shared.constants import (
+    PARTY_STATUS_ACCEPTED,
+    PARTY_STATUS_DECLINED,
+    PARTY_STATUS_EXPIRED,
+    PARTY_STATUS_PENDING,
+)
 
 VECTOR = [1.0] * EMBEDDING_DIM
 
@@ -110,6 +116,65 @@ async def test_other_users_documents_are_not_returned(
     )
 
     response = await retrieval.search_all(lawyer.id, "deed")
+
+    assert response.results == []
+
+
+async def _shared_with(
+    session: AsyncSession, owner: User, party: User, status: str
+) -> Document:
+    """An indexed document `owner` invited `party` to, in `status`."""
+    document = await _indexed(
+        session,
+        Document(user_id=owner.id, file_name="Shared", lifecycle=LIFECYCLE_PREPARING),
+    )
+    session.add(
+        DocumentParty(
+            document_id=document.id, user_id=party.id, email=party.email, status=status
+        )
+    )
+    await session.flush()
+    return document
+
+
+async def test_accepted_party_finds_the_shared_document(
+    session: AsyncSession, retrieval: RetrievalService, lawyer: User, client: User
+):
+    document = await _shared_with(session, lawyer, client, PARTY_STATUS_ACCEPTED)
+
+    response = await retrieval.search_all(client.id, "deed")
+
+    [hit] = response.results
+    assert hit.document_id == document.id
+
+
+async def test_lawyer_party_finds_another_lawyers_shared_document(
+    session: AsyncSession,
+    retrieval: RetrievalService,
+    lawyer: User,
+    other_lawyer: User,
+):
+    document = await _shared_with(session, other_lawyer, lawyer, PARTY_STATUS_ACCEPTED)
+
+    response = await retrieval.search_all(lawyer.id, "deed")
+
+    [hit] = response.results
+    assert hit.document_id == document.id
+
+
+@pytest.mark.parametrize(
+    "status", [PARTY_STATUS_PENDING, PARTY_STATUS_DECLINED, PARTY_STATUS_EXPIRED]
+)
+async def test_party_without_access_finds_nothing(
+    session: AsyncSession,
+    retrieval: RetrievalService,
+    lawyer: User,
+    client: User,
+    status: str,
+):
+    await _shared_with(session, lawyer, client, status)
+
+    response = await retrieval.search_all(client.id, "deed")
 
     assert response.results == []
 

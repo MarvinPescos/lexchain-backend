@@ -53,7 +53,7 @@ async def ask_document(
     "/search",
     response_model=GlobalSearchResponse,
     status_code=status.HTTP_200_OK,
-    summary="Semantic search across all of the user's documents",
+    summary="Semantic search across the documents the user can read",
 )
 async def search_all(
     body: SearchRequest,
