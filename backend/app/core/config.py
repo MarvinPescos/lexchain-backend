@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     # OCR
     USE_REAL_OCR: bool = Field(default=False, description="Use real OCR providers")
     OCR_ENGINE: str = Field(default="pypdf", description="pypdf | mineru | marker")
+    OCR_FALLBACK_ENGINE: str | None = Field(
+        default=None,
+        description="Engine used when OCR_ENGINE can't be reached, e.g. mineru behind marker",
+    )
 
     CHUNKER_ENGINE: str = Field(..., description="Engine would be used in chunking")
 
@@ -104,6 +108,10 @@ class Settings(BaseSettings):
         default=False, description="OCR every page even where the PDF has a text layer"
     )
     MARKER_TIMEOUT: int = Field(default=900, description="Marker API timeout in seconds")
+    MARKER_CONNECT_TIMEOUT: float = Field(
+        default=5,
+        description="How long to wait to reach Marker before treating it as down",
+    )
 
     # Backup / recovery
     BACKUP_ENABLED: bool = Field(

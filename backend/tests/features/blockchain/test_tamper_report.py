@@ -213,6 +213,36 @@ async def test_both_sides_are_read_by_the_engine_chosen_for_the_original(
     assert ocr.calls == [original, storage.objects[url]]
 
 
+async def test_an_engine_that_fell_back_mid_check_rereads_the_original(
+    verifier, finalized, storage, ocr, lawyer
+):
+    document_id, url = finalized
+    original = storage.objects[url]
+    await _tamper(storage, ocr, url, laid_out(ORIGINAL[0], ORIGINAL[2]))
+    on_marker = laid_out(*ORIGINAL).model_copy(update={"meta": {"engine": "marker-api"}})
+    on_mineru = laid_out(*ORIGINAL).model_copy(update={"meta": {"engine": "mineru-api"}})
+    current = ocr.results[storage.objects[url]].model_copy(
+        update={"meta": {"engine": "mineru-api"}}
+    )
+    ocr.results[storage.objects[url]] = current
+    reads = iter([on_marker, on_mineru])
+    extract = ocr.extract
+
+    async def fall_back_after_the_first_read(file_data: bytes) -> ExtractionResult:
+        if file_data == original:
+            ocr.calls.append(file_data)
+            return next(reads)
+        return await extract(file_data)
+
+    ocr.extract = fall_back_after_the_first_read
+
+    result = await verifier.verify_document(as_auth(lawyer), document_id)
+
+    assert ocr.calls == [original, storage.objects[url], original]
+    assert result.tamper_report.deleted == 1
+    assert result.tamper_report.replaced == result.tamper_report.inserted == 0
+
+
 async def test_change_outside_the_text_is_not_reported_as_no_change(
     verifier, finalized, storage, ocr, lawyer
 ):
