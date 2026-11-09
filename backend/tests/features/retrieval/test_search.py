@@ -148,6 +148,20 @@ async def test_accepted_party_finds_the_shared_document(
     assert hit.document_id == document.id
 
 
+async def test_lawyer_party_finds_another_lawyers_shared_document(
+    session: AsyncSession,
+    retrieval: RetrievalService,
+    lawyer: User,
+    other_lawyer: User,
+):
+    document = await _shared_with(session, other_lawyer, lawyer, PARTY_STATUS_ACCEPTED)
+
+    response = await retrieval.search_all(lawyer.id, "deed")
+
+    [hit] = response.results
+    assert hit.document_id == document.id
+
+
 @pytest.mark.parametrize(
     "status", [PARTY_STATUS_PENDING, PARTY_STATUS_DECLINED, PARTY_STATUS_EXPIRED]
 )

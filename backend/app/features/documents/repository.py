@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
-from sqlalchemy import CursorResult, delete, func, or_, select, update
+from sqlalchemy import ColumnElement, CursorResult, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -37,7 +37,7 @@ from .models import (
 )
 
 
-def readable_by(user_id: uuid.UUID):
+def readable_by(user_id: uuid.UUID) -> ColumnElement[bool]:
     """Documents the user owns or is an accepted party of."""
     # A pending invitation is not access — it must be accepted first.
     shared_subq = select(DocumentParty.document_id).where(
