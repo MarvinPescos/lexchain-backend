@@ -77,6 +77,34 @@ async def test_path2_upload_then_finalize(
     assert doc.lifecycle == "FINALIZED"
 
 
+async def test_finalize_notifies_the_lawyer_and_the_clients(
+    session, intake, finalization, lawyer, client, closed_book, monkeypatch
+):
+    import app.celery_tasks as tasks
+
+    notified: list[str] = []
+    monkeypatch.setattr(
+        tasks.handle_document_recorded, "delay", lambda **kw: notified.append(kw["user_id"])
+    )
+    me = as_auth(lawyer)
+    doc = await intake.upload_signed(
+        me, pdf("cruz-deed"), "Cruz deed", closed_book.id, doc_no=46, page_no=9
+    )
+    session.add(
+        DocumentParty(
+            document_id=doc.document_id,
+            user_id=client.id,
+            email=client.email,
+            status=PARTY_STATUS_ACCEPTED,
+        )
+    )
+    await session.flush()
+
+    await mark_processed(session, doc.document_id)
+    await finalization.finalize(me, doc.document_id)
+    assert sorted(notified) == sorted([str(lawyer.id), str(client.id)])
+
+
 async def test_closed_book_requires_numbers(intake, lawyer, closed_book):
     from app.shared.errors.exceptions import BadRequestError
 
