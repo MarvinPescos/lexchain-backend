@@ -32,6 +32,7 @@ from app.infrastructure.blockchain import BlockchainProvider
 from app.infrastructure.clients.supabase_storage import get_storage_client
 from app.infrastructure.observability.logging_setup import log
 from app.infrastructure.security.dependencies import AuthenticatedUser
+from app.shared.constants import PARTY_STATUS_ACCEPTED
 from app.shared.errors.exceptions import ConflictError, ServiceUnavailableError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -173,12 +174,20 @@ class DocumentFinalization:
 
         from app.celery_tasks import handle_document_recorded
 
-        handle_document_recorded.delay(
-            user_id=str(user_id),
-            document_title=document.file_name,
-            document_id=str(document_id),
-            tx_hash=record.tx_hash,
-        )
+        # The lawyer and every client on the document hear it is permanent.
+        parties = await self.repo.get_parties(document_id)
+        recipients = {document.user_id, user_id} | {
+            p.user_id
+            for p in parties
+            if p.status == PARTY_STATUS_ACCEPTED and p.user_id is not None
+        }
+        for recipient in recipients:
+            handle_document_recorded.delay(
+                user_id=str(recipient),
+                document_title=document.file_name,
+                document_id=str(document_id),
+                tx_hash=record.tx_hash,
+            )
 
         log.info(
             "document.finalize",
