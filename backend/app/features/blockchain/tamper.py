@@ -49,6 +49,27 @@ def _comparable(text: str) -> str:
     return _WHITESPACE.sub("", unicodedata.normalize("NFKC", text))
 
 
+_NOT_ALNUM = re.compile(r"[\W_]+")
+# Letters OCR mixes up from one read of a stamp to the next, folded to one.
+_LOOKALIKES = str.maketrans({"i": "l", "|": "l", "!": "l", "j": "l", "e": "c"})
+
+
+def _fold(text: str) -> str:
+    folded = _NOT_ALNUM.sub("", text).lower().replace("rn", "m").replace("vv", "w")
+    return folded.translate(_LOOKALIKES)
+
+
+def _ocr_noise(original: str, current: str) -> bool:
+    """Same figures, and text that differs only in punctuation or look-alike letters.
+
+    Re-reading a stamp or a scanned page flips "," to "." or "-" to "–", or reads
+    "lcastillo" as "Icastillo" or "leastillo", without the document changing.
+    Figures must match exactly, so "1,000.00" → "10,00.0" or "78945" → "78845"
+    still counts as an edit.
+    """
+    return _fold(original) == _fold(current) and _numbers(original) == _numbers(current)
+
+
 def _amounts(text: str) -> list[str]:
     return [m.replace(",", "") for m in _AMOUNT.findall(text)]
 
@@ -61,8 +82,16 @@ def _classify(original: str, current: str) -> tuple[str, str]:
     """Rank a change by what it would do to the agreement.
 
     Returns (severity, human-readable reason). Money moving is the worst case,
-    then other figures, dates and reference numbers, then wording.
+    then other figures, dates and reference numbers, then wording. A change in
+    punctuation or look-alike letters alone is most likely OCR reading the page
+    differently.
     """
+    if original and current and _ocr_noise(original, current):
+        return (
+            SEVERITY_MINOR,
+            "Possible OCR inconsistency: only punctuation or look-alike letters differ",
+        )
+
     orig_amounts, cur_amounts = _amounts(original), _amounts(current)
     if orig_amounts != cur_amounts:
         if orig_amounts and cur_amounts:
